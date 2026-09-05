@@ -128,6 +128,10 @@
   /* Mid-width screens: tighten nav further before the mobile breakpoint */
   @media (max-width: 1300px) {
     .nav-btn { font-size: 12px; padding: 6px 10px; letter-spacing: 1px; }
+    .pill-full-text { display: none; }
+    .pill-short-text { display: inline; }
+    .account-battletag-text { display: none; }
+    .account-icon { display: inline-block; }
   }
 
   .nav-btn:hover { color: var(--text); border-color: var(--border2); }
@@ -168,6 +172,8 @@
     white-space: nowrap;
   }
   .header-pill-btn:hover { border-color: var(--border2); color: var(--text); }
+
+  .pill-short-text, .account-icon { display: none; }
 
   /* ── MAIN CONTENT ── */
   main { padding: 32px; max-width: 1600px; margin: 0 auto; }
@@ -1488,10 +1494,11 @@
         <span>⚔</span>
         <span><strong id="badge-guild">—</strong> — <span id="badge-server">—</span></span>
       </div>
-      <button id="share-btn" class="header-pill-btn" style="display:none;" onclick="showInviteModal()">⚭ Invite</button>
+      <button id="share-btn" class="header-pill-btn" style="display:none;" onclick="showInviteModal()"><span class="pill-full-text">Invite</span><span class="pill-short-text">Inv</span></button>
       <div class="account-menu" id="account-menu" style="display:none;">
         <button class="account-btn" onclick="toggleAccountMenu()">
-          <span id="account-battletag">—</span>
+          <span id="account-battletag" class="account-battletag-text">—</span>
+          <svg class="account-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20.5c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
           <span style="font-size:10px; color:var(--text-mute);">▼</span>
         </button>
         <div class="account-dropdown" id="account-dropdown">
