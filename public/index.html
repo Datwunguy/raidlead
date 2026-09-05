@@ -102,7 +102,11 @@
 
   .logo span { color: var(--text-dim); font-weight: 400; font-size: 12px; letter-spacing: 6px; margin-left: 4px; }
 
-  nav { display: flex; gap: 4px; flex-shrink: 1; min-width: 0; }
+  nav {
+    display: flex; gap: 4px; flex-shrink: 1; min-width: 0;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  nav::-webkit-scrollbar { display: none; }
 
   .nav-btn {
     background: none;
@@ -118,10 +122,11 @@
     transition: all 0.2s;
     border-radius: 2px;
     white-space: nowrap;
+    flex-shrink: 0;
   }
 
   /* Mid-width screens: tighten nav further before the mobile breakpoint */
-  @media (max-width: 1100px) {
+  @media (max-width: 1300px) {
     .nav-btn { font-size: 12px; padding: 6px 10px; letter-spacing: 1px; }
   }
 
@@ -1330,7 +1335,7 @@
   /* ── RESPONSIVE ── */
 
   /* Tablet: 600–900px */
-  @media (max-width: 1100px) {
+  @media (max-width: 1300px) {
     .guild-badge span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
   }
 
