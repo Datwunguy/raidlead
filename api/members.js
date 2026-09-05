@@ -182,6 +182,19 @@ module.exports = async (req, res) => {
     }
   }
 
+  // ── DIAGNOSTIC: which Supabase key role is actually loaded in this deployment ──
+  // Decodes only the JWT payload's `role` claim -- never exposes the key itself.
+  if (action === 'diagKey') {
+    if (!isOwner) return res.status(403).json({ error: 'Owners only' });
+    try {
+      const key = process.env.SUPABASE_SERVICE_KEY || '';
+      const parts = key.split('.');
+      if (parts.length !== 3) return res.status(200).json({ error: 'SUPABASE_SERVICE_KEY is not set or is not a JWT', length: key.length });
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+      return res.status(200).json({ role: payload.role, projectRef: payload.ref, issuer: payload.iss });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
   // ── GET ATTENDANCE: raid extra nights + all marks for the team ──
   // ── DIAGNOSTIC: test attendance read/write directly ──
   if (action === 'diagAttendance') {

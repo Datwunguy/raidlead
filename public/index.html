@@ -5507,7 +5507,9 @@ function showClaimCharacter(accountId) {
     </div>`;
   }).join('');
 
-  // Insert claim picker into members modal
+  // Insert claim picker into members modal (remove any prior one first so repeated
+  // clicks on +Assign don't stack up duplicate pickers)
+  document.getElementById('claim-picker')?.remove();
   const el = document.getElementById('members-list');
   el.insertAdjacentHTML('beforebegin', `
     <div id="claim-picker" style="background:var(--bg3); border:1px solid var(--gold-dim); border-radius:6px; padding:16px; margin-bottom:16px;">
@@ -5516,6 +5518,7 @@ function showClaimCharacter(accountId) {
       <button onclick="document.getElementById('claim-picker').remove()" class="btn-secondary" style="margin-top:8px; width:100%;">Cancel</button>
     </div>
   `);
+  document.getElementById('claim-picker')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function claimCharacter(characterName) {
