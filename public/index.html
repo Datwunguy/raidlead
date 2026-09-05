@@ -1286,7 +1286,7 @@
   .dropdown-item.danger:hover { background: rgba(196,30,58,0.1); color: #ff6b6b; }
 
   /* ── GUILD SETUP ── */
-  #guild-setup-screen {
+  #guild-setup-screen, #landing-choice-screen, #join-guild-screen {
     display: none;
     flex-direction: column;
     align-items: center;
@@ -1697,7 +1697,64 @@
       </div>
       <div class="setup-footer">
         <span class="status-msg" id="gs-status"></span>
+        <button class="btn-secondary" onclick="showLandingChoice()">Back</button>
         <button class="btn-primary" onclick="createGuild()">Create Guild</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- LANDING CHOICE: Create vs Join -->
+  <div id="landing-choice-screen">
+    <div class="setup-card" style="max-width:480px; text-align:center;">
+      <div class="setup-header">
+        <h1>Welcome to RaidLead</h1>
+        <p>You're signed in! Are you starting a new guild, or joining one that's already using RaidLead?</p>
+      </div>
+      <div class="setup-body" style="display:flex; flex-direction:column; gap:12px;">
+        <button class="btn-primary" style="padding:16px; font-size:16px;" onclick="showGuildSetup()">Create Guild</button>
+        <button class="btn-secondary" style="padding:16px; font-size:16px;" onclick="showJoinGuildScreen()">Join Guild</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- JOIN GUILD -->
+  <div id="join-guild-screen">
+    <div class="setup-card" style="max-width:520px;">
+      <div class="setup-header">
+        <h1>Join a Guild</h1>
+        <p>Join by searching for your guild's name and server, or paste a join code from an officer.</p>
+      </div>
+      <div class="setup-body">
+        <div style="font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--text-mute); margin-bottom:12px;">By Guild Name &amp; Server</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Guild Name</label>
+            <input type="text" id="jg-guild" placeholder="Threat Level Midnight" />
+          </div>
+          <div class="form-group">
+            <label>Server</label>
+            <input type="text" id="jg-server" placeholder="Sargeras" />
+          </div>
+        </div>
+        <div class="setup-footer" style="padding:0; border:none; justify-content:flex-end; margin-bottom:28px;">
+          <span class="status-msg" id="jg-status"></span>
+          <button class="btn-primary" onclick="joinGuildByNameServer()">Join Guild</button>
+        </div>
+
+        <div style="font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--text-mute); margin-bottom:12px; border-top:1px solid var(--border); padding-top:20px;">Have a Join Code?</div>
+        <div class="form-row">
+          <div class="form-group full">
+            <label>Join Code or Invite Link</label>
+            <input type="text" id="jg-code" placeholder="Paste the code or full invite link here" />
+          </div>
+        </div>
+        <div class="setup-footer" style="padding:0; border:none; justify-content:flex-end;">
+          <span class="status-msg" id="jg-code-status"></span>
+          <button class="btn-primary" onclick="joinGuildByCode()">Join with Code</button>
+        </div>
+      </div>
+      <div class="setup-footer">
+        <button class="btn-secondary" onclick="showLandingChoice()">Back</button>
       </div>
     </div>
   </div>
@@ -2468,7 +2525,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   } else {
     // Truly new user — no guild in DB or localStorage
-    showGuildSetup();
+    showLandingChoice();
   }
 });
 
@@ -2816,6 +2873,8 @@ async function showClaimGateScreen() {
   document.getElementById('dashboard').style.display          = 'none';
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
+  document.getElementById('landing-choice-screen').style.display = 'none';
+  document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('main-nav').style.display            = 'none';
   document.getElementById('guild-badge').style.display         = 'none';
   const _shareBtnGate = document.getElementById('share-btn');
@@ -2899,6 +2958,8 @@ function showDashboard() {
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
   document.getElementById('claim-gate-screen').style.display  = 'none';
+  document.getElementById('landing-choice-screen').style.display = 'none';
+  document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('account-menu').style.display       = 'flex';
   if (AUTH.session && AUTH.session.battletag) {
     document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
@@ -5119,6 +5180,8 @@ function showLoginScreen() {
   document.getElementById('login-screen').style.display       = 'flex';
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
+  document.getElementById('landing-choice-screen').style.display = 'none';
+  document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('dashboard').style.display          = 'none';
   document.getElementById('main-nav').style.display           = 'none';
   document.getElementById('guild-badge').style.display        = 'none';
@@ -5131,6 +5194,8 @@ function showGuildSetup() {
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'flex';
+  document.getElementById('landing-choice-screen').style.display = 'none';
+  document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('dashboard').style.display          = 'none';
   document.getElementById('main-nav').style.display           = 'none';
   document.getElementById('guild-badge').style.display        = 'none';
@@ -5140,6 +5205,145 @@ function showGuildSetup() {
   if (AUTH.session && AUTH.session.battletag) {
     document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
     document.getElementById('dropdown-battletag').textContent = AUTH.session.battletag;
+  }
+}
+
+function showLandingChoice() {
+  document.getElementById('login-screen').style.display       = 'none';
+  document.getElementById('setup-screen').style.display       = 'none';
+  document.getElementById('guild-setup-screen').style.display = 'none';
+  document.getElementById('join-guild-screen').style.display  = 'none';
+  document.getElementById('dashboard').style.display          = 'none';
+  document.getElementById('claim-gate-screen').style.display  = 'none';
+  document.getElementById('main-nav').style.display           = 'none';
+  document.getElementById('guild-badge').style.display        = 'none';
+  const _shareBtnSetup = document.getElementById('share-btn');
+  if (_shareBtnSetup) _shareBtnSetup.style.display = 'none';
+  document.getElementById('account-menu').style.display       = 'flex';
+  document.getElementById('landing-choice-screen').style.display = 'flex';
+  if (AUTH.session && AUTH.session.battletag) {
+    document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
+    document.getElementById('dropdown-battletag').textContent = AUTH.session.battletag;
+  }
+}
+
+function showJoinGuildScreen() {
+  document.getElementById('login-screen').style.display          = 'none';
+  document.getElementById('setup-screen').style.display          = 'none';
+  document.getElementById('guild-setup-screen').style.display    = 'none';
+  document.getElementById('landing-choice-screen').style.display = 'none';
+  document.getElementById('dashboard').style.display             = 'none';
+  document.getElementById('claim-gate-screen').style.display     = 'none';
+  document.getElementById('main-nav').style.display              = 'none';
+  document.getElementById('guild-badge').style.display           = 'none';
+  const _shareBtnSetup = document.getElementById('share-btn');
+  if (_shareBtnSetup) _shareBtnSetup.style.display = 'none';
+  document.getElementById('account-menu').style.display       = 'flex';
+  document.getElementById('join-guild-screen').style.display  = 'flex';
+  document.getElementById('jg-status').textContent = '';
+  document.getElementById('jg-status').className   = 'status-msg';
+  document.getElementById('jg-code-status').textContent = '';
+  document.getElementById('jg-code-status').className   = 'status-msg';
+}
+
+// Completes joining a guild (via name+server or a join code) — hydrates STATE
+// from the DB and routes to either the claim gate or the dashboard.
+async function completeGuildJoin(guildName, server) {
+  const joinResp = await fetch('/api/auth?action=join-guild', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ guildName, server }),
+  });
+  const joinData = await joinResp.json();
+  if (!joinResp.ok) throw new Error(joinData.error || 'Failed to join guild');
+
+  const freshData = await fetchGuildFromDB();
+  if (!freshData || !freshData.guild) throw new Error('Joined, but could not load guild data. Try refreshing the page.');
+
+  const g = freshData.guild;
+  const config = {
+    guild:      g.name,
+    server:     g.server,
+    region:     g.region,
+    difficulty: g.difficulty,
+    wowaudit:   g.wowaudit_url,
+    wclUrl:     g.wcl_url      || '',
+    wclTeamId:  g.wcl_team_id  || null,
+    zoneId:     g.zone_id      || null,
+    zoneName:   g.zone_name    || '',
+    raidDays:   g.raid_days    || [],
+  };
+  STATE.config           = config;
+  STATE.zoneId           = config.zoneId;
+  STATE.zoneName         = config.zoneName;
+  STATE.guildId          = g.id;
+  STATE.teamId           = freshData.team?.id   || null;
+  STATE.teamName         = freshData.team?.name || null;
+  STATE.claimedCharacter = freshData.claimedCharacter || null;
+  const role = freshData.role || 'member';
+  saveConfig(config);
+  localStorage.setItem('raidlead_my_role', role);
+  if (freshData.team?.id) localStorage.setItem('raidlead_team_id', freshData.team.id);
+  if (g.id)               localStorage.setItem('raidlead_guild_id', g.id);
+  applyRolePermissions(role);
+  await loadRosterFromWowaudit();
+
+  if (!STATE.claimedCharacter) {
+    showToast('Welcome to ' + g.name + '! Please claim your character to continue.', 'success');
+    await showClaimGateScreen();
+  } else {
+    showDashboard();
+    loadCachedScores();
+    showToast('Welcome to ' + g.name + '!', 'success');
+  }
+}
+
+async function joinGuildByNameServer() {
+  const guildName = document.getElementById('jg-guild').value.trim();
+  const server    = document.getElementById('jg-server').value.trim();
+  const statusEl  = document.getElementById('jg-status');
+  if (!guildName || !server) {
+    statusEl.textContent = 'Please enter both guild name and server.';
+    statusEl.className   = 'status-msg error';
+    return;
+  }
+  statusEl.textContent = 'Joining...';
+  statusEl.className   = 'status-msg loading';
+  try {
+    await completeGuildJoin(guildName, server);
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className   = 'status-msg error';
+  }
+}
+
+async function joinGuildByCode() {
+  let raw = document.getElementById('jg-code').value.trim();
+  const statusEl = document.getElementById('jg-code-status');
+  if (!raw) {
+    statusEl.textContent = 'Please enter a join code or invite link.';
+    statusEl.className   = 'status-msg error';
+    return;
+  }
+  statusEl.textContent = 'Joining...';
+  statusEl.className   = 'status-msg loading';
+  try {
+    // Accept either a bare code, or a full invite link — pull the code out of the URL if so
+    try {
+      const url = new URL(raw);
+      const inviteParam = url.searchParams.get('invite');
+      if (inviteParam) raw = inviteParam;
+    } catch(e) { /* not a URL — treat input as the raw code */ }
+
+    let data;
+    try { data = JSON.parse(atob(raw)); } catch(e) { throw new Error('That doesn\'t look like a valid join code.'); }
+    if (!data.invite || !data.guild) throw new Error('That doesn\'t look like a valid join code.');
+    if (data.exp && data.exp < Date.now()) throw new Error('This join code has expired — ask an officer for a new one.');
+
+    await completeGuildJoin(data.guild, data.server);
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className   = 'status-msg error';
   }
 }
 
@@ -5518,7 +5722,14 @@ function showClaimCharacter(accountId) {
       <button onclick="document.getElementById('claim-picker').remove()" class="btn-secondary" style="margin-top:8px; width:100%;">Cancel</button>
     </div>
   `);
-  document.getElementById('claim-picker')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const picker = document.getElementById('claim-picker');
+  const stickyHeader = document.querySelector('#members-modal .modal-header');
+  if (picker) {
+    // Account for the modal's sticky header, which otherwise overlaps the top
+    // of the picker once scrolled into view.
+    picker.style.scrollMarginTop = ((stickyHeader?.offsetHeight || 0) + 12) + 'px';
+    picker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 async function claimCharacter(characterName) {
