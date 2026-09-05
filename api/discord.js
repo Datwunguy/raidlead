@@ -41,6 +41,12 @@ function ephemeral(content) {
   return { type: 4, data: { content, flags: 64 } };
 }
 
+// Strips accents/diacritics and case so "Tiesto" matches a roster entry stored
+// as "Tiësto" -- players shouldn't need special characters on their keyboard.
+function normalizeName(s) {
+  return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
 function attendanceDateStr(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -116,8 +122,11 @@ async function handleAttendanceCommand(supabase, interaction) {
   if (characterOpt) {
     // Direct character-name mode -- no Discord/RaidLead account linking required.
     // Note: this means anyone in the server can mark any character's attendance.
-    const { data: char } = await supabase
-      .from('characters').select('name').eq('team_id', teamRow.id).ilike('name', characterOpt.trim()).maybeSingle();
+    // Matched accent-insensitively (Postgres ilike alone won't treat "Tiesto" and
+    // "Tiësto" as equal), so players don't need to type special characters.
+    const { data: chars } = await supabase.from('characters').select('name').eq('team_id', teamRow.id);
+    const target = normalizeName(characterOpt);
+    const char = (chars || []).find(c => normalizeName(c.name) === target);
     if (!char) return ephemeral(`Couldn't find a character named "${characterOpt}" on this team's roster.`);
     character = char;
   } else {
