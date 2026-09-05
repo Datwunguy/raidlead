@@ -17,12 +17,28 @@ module.exports = async (req, res) => {
   // ── GET: return guild + role for current user ──
   if (action === 'get' || req.method === 'GET') {
     try {
-      const { data: membership } = await supabase
+      // Fetched as an array rather than .single() -- .single() throws the same
+      // generic error for "0 rows" and "more than 1 row", which previously made a
+      // genuine data problem (an account belonging to more than one guild) look
+      // identical to "not a member of any guild" and silently 404'd instead of
+      // surfacing what was actually wrong.
+      const { data: memberships, error: membershipErr } = await supabase
         .from('guild_members')
-        .select(`role, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, teams ( id, name ) )`)
+        .select(`role, guild_id, created_at, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, teams ( id, name ) )`)
         .eq('account_id', session.id)
-        .single();
-      if (!membership) return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
+        .order('created_at', { ascending: true });
+
+      if (membershipErr) {
+        console.error('[guild.get] membership lookup error:', membershipErr.message);
+        return res.status(500).json({ error: membershipErr.message });
+      }
+      if (!memberships || memberships.length === 0) {
+        return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
+      }
+      if (memberships.length > 1) {
+        console.warn('[guild.get] account belongs to more than one guild -- using the earliest:', session.id, memberships.map(m => m.guild_id));
+      }
+      const membership = memberships[0];
 
       const teamId = membership.guilds?.teams?.[0]?.id || null;
 
