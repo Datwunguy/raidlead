@@ -1,0 +1,9 @@
+{
+  "name": "raidlead-functions",
+  "version": "1.0.0",
+  "description": "Netlify serverless functions for RaidLead",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "node-fetch": "^3.3.2"
+  }
+}

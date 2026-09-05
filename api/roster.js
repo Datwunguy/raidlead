@@ -1,0 +1,909 @@
+// ============================================================
+//  roster.js — handles roster/character/scores + WCL actions
+//  Actions: sync, getFlex, updateFlex, saveScores, getScores,
+//           wclZones, wclQuery
+//  (wcl.js is now consolidated here — wcl.js can be deleted)
+// ============================================================
+const { createClient } = require('@supabase/supabase-js');
+const { getSession, setCommonHeaders } = require('./lib/session');
+
+// ── WCL token cache (best-effort within a warm Lambda; cold starts re-fetch) ──
+let cachedWclToken    = null;
+let cachedWclTokenExp = 0;
+
+async function getWclToken() {
+  if (cachedWclToken && cachedWclTokenExp > Date.now() + 60000) return cachedWclToken;
+
+  const clientId     = process.env.WCL_CLIENT_ID;
+  const clientSecret = process.env.WCL_CLIENT_SECRET;
+  if (!clientId || !clientSecret) throw new Error('WCL credentials are not configured');
+
+  const resp = await fetch('https://www.warcraftlogs.com/oauth/token', {
+    method:  'POST',
+    headers: {
+      'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+      'Content-Type':  'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  });
+
+  const data = await resp.json();
+  if (!resp.ok || !data.access_token) throw new Error('Failed to get WCL token');
+
+  cachedWclToken    = data.access_token;
+  cachedWclTokenExp = Date.now() + ((data.expires_in || 3600) * 1000);
+  return cachedWclToken;
+}
+
+async function wclQuery(query) {
+  const token = await getWclToken();
+  const resp  = await fetch('https://www.warcraftlogs.com/api/v2/client', {
+    method:  'POST',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type':  'application/json',
+    },
+    body: JSON.stringify({ query }),
+  });
+  return await resp.json();
+}
+
+function normaliseTs(ts) {
+  if (!ts || ts === 0) return 0;
+  // WCL sometimes returns seconds, sometimes ms — normalise to ms
+  return ts < 9999999999 ? ts * 1000 : ts;
+}
+
+module.exports = async (req, res) => {
+  setCommonHeaders(res);
+
+  const action  = req.query.action || req.body?.action;
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+
+  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+
+  // Resolve caller's guild membership once
+  const { data: membership } = await supabase
+    .from('guild_members')
+    .select('role, guild_id')
+    .eq('account_id', session.id)
+    .single();
+
+  const isOfficer = ['owner', 'officer'].includes(membership?.role);
+  const myGuildId = membership?.guild_id || null;
+
+  // Helper: verify a teamId belongs to the caller's guild
+  async function assertTeamOwnership(teamId) {
+    if (!teamId) throw Object.assign(new Error('teamId required'), { status: 400 });
+    const { data: team } = await supabase
+      .from('teams')
+      .select('id')
+      .eq('id', teamId)
+      .eq('guild_id', myGuildId)
+      .single();
+    if (!team) throw Object.assign(new Error('Team does not belong to your guild'), { status: 403 });
+  }
+
+  // ── WCL ZONES (accessible to all authenticated members) ──
+  if (action === 'wclZones' || action === 'zones') {
+    try {
+      const data = await wclQuery(`query { worldData { zones { id name frozen } } }`);
+      return res.status(200).json(data);
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── PROGRESSION: own guild + benchmark data for Compare tab ──
+  // Uses only worldData (client credentials compatible — reportData requires OAuth)
+  if (action === 'progression') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { guildName, serverSlug, region, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
+
+    try {
+      if (!bossIds || bossIds.length === 0) return res.status(400).json({ error: 'bossIds required' });
+
+      // ── Batch all bosses in chunks of 5 using GraphQL aliases ──
+      // Each boss gets: guildRankings (all guilds, for benchmark)
+      // We also search for this specific guild within those rankings for "own" data
+      const benchmark = {};
+
+      // Query one boss at a time to stay under WCL's 50k complexity limit
+      // Strategy: fetch page 1 to get total count, then jump to last page
+      // metric:progress sorts by speed (world-first first), so last page = most recent kills
+      // This gives us the most recent first-kills in just 2 API calls per boss
+      function parseRankings(raw) {
+        if (typeof raw === 'string') {
+          try {
+            const p = JSON.parse(raw);
+            return { rankings: p?.rankings || p?.data || [], hasMore: p?.hasMorePages || false };
+          } catch(e) { return { rankings: [], hasMore: false }; }
+        }
+        if (raw?.rankings) return { rankings: raw.rankings, hasMore: raw.hasMorePages || false };
+        if (Array.isArray(raw)) return { rankings: raw, hasMore: false };
+        return { rankings: [], hasMore: false };
+      }
+
+      for (const id of bossIds) {
+        try {
+          const baseArgs = `difficulty: ${diffId} serverRegion: "${region}" metric: progress`;
+          // metric:progress sorts by speed (world-first first, most recent last)
+          // We page forward until we find kills within the date window
+          // Cap at 15 pages (750 guilds) to limit API usage
+          const MAX_PAGES = 15;
+          let found = [];
+          let page = 1;
+
+          while (page <= MAX_PAGES) {
+            const q = `query { worldData { encounter(id: ${id}) { fightRankings(${baseArgs} page: ${page}) } } }`;
+            const r = await wclQuery(q);
+            if (r?.errors) { console.log('[progression] boss', id, 'p'+page+' error:', r.errors[0]?.message); break; }
+
+            const rawFR = r?.data?.worldData?.encounter?.fightRankings;
+            // Log full raw structure on page 1 to find count/total field
+            if (page === 1) {
+              if (typeof rawFR === 'string') {
+                try { const p = JSON.parse(rawFR); console.log('[progression] boss', id, 'page1 keys:', Object.keys(p).join(','), '| count:', p.count, '| total:', p.total, '| hasMore:', p.hasMorePages, '| rankings len:', p.rankings?.length); } catch(e) {}
+              } else if (rawFR) {
+                console.log('[progression] boss', id, 'page1 keys:', Object.keys(rawFR).join(','), '| count:', rawFR.count, '| total:', rawFR.total, '| hasMore:', rawFR.hasMorePages);
+              }
+            }
+            const { rankings, hasMore } = parseRankings(rawFR);
+            if (!rankings.length) break;
+
+            // Check if any kill on this page is within our window
+            const inWindow = rankings.filter(r => {
+              const ts = normaliseTs(r.startTime || r.start_time || r.date || 0);
+              return ts >= startMs && ts <= endMs;
+            });
+
+            // Check if we've gone past the window (all kills newer than endMs)
+            const allNewer = rankings.every(r => {
+              const ts = normaliseTs(r.startTime || r.start_time || r.date || 0);
+              return ts > endMs;
+            });
+
+            if (inWindow.length > 0) { found = found.concat(inWindow); }
+            if (allNewer) break; // Past the window, stop
+            if (!hasMore) break; // No more pages
+            page++;
+          }
+
+          const hitMaxPages = (found.length === 0 && page > MAX_PAGES);
+          benchmark[id] = { kills: found, hitMaxPages };
+          console.log('[progression] boss', id, 'pages checked:', page, 'in window:', found.length, hitMaxPages ? '(hit max pages — boss popular/old)' : '');
+        } catch(e) {
+          console.error('[progression] boss', id, 'error:', e.message);
+          benchmark[id] = [];
+        }
+      }
+
+      return res.status(200).json({ benchmark });
+    } catch(err) {
+      console.error('progression error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // ── WCL QUERY PROXY (officers only) ──
+  // ── DIAGNOSTIC: probe Summary table structure for a known fight ──
+  // ── GET MITIGATION CACHE ──
+  if (action === 'getMitigationCache') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    const zoneId = req.query.zoneId || req.body?.zoneId;
+    const diffId = req.query.diffId || req.body?.diffId || 5;
+    if (!teamId) return res.status(200).json({ mitigationMap: {}, bossNames: [] });
+    try {
+      const { data } = await supabase
+        .from('wcl_scores').select('boss_scores, fetched_at')
+        .eq('team_id', teamId).eq('zone_id', zoneId)
+        .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffId}`)
+        .single();
+      if (!data?.boss_scores) return res.status(200).json({ mitigationMap: {}, bossNames: [] });
+      const parsed = JSON.parse(data.boss_scores);
+      return res.status(200).json({ mitigationMap: parsed.mitigationMap || {}, bossNames: parsed.bossNames || [], savedAt: parsed.savedAt || 0 });
+    } catch(e) { return res.status(200).json({ mitigationMap: {}, bossNames: [] }); }
+  }
+
+  // ── GET MITIGATION DATA ──
+  if (action === 'getMitigation') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { guildName, serverSlug, region, zoneId, diffId, guildTagID, memberNames, validBossIds, teamId } = req.body || {};
+    if (!guildName || !serverSlug || !region || !zoneId) return res.status(400).json({ error: 'missing params' });
+
+    const memberSet    = new Set((memberNames || []).map(n => n.toLowerCase()));
+    const validBossSet = new Set((validBossIds || []).map(id => parseInt(id)));
+    const tagId        = guildTagID ? parseInt(guildTagID) : null;
+    const tagParam     = tagId ? `guildTagID: ${tagId}` : '';
+    console.log('[mitigation] guildTagID:', tagId, '| diffId:', diffId);
+
+    try {
+      const reportsResp = await wclQuery(`query {
+        reportData { reports(
+          guildName: "${guildName}" guildServerSlug: "${serverSlug}"
+          guildServerRegion: "${region}" zoneID: ${zoneId} limit: 50 ${tagParam}
+        ) { data { code startTime fights(killType: All) { id encounterID name difficulty startTime endTime kill } } } }
+      }`);
+      if (reportsResp?.errors) { console.error('[mitigation] reports error:', reportsResp.errors[0]?.message); return res.status(200).json({ mitigationMap: {}, bossNames: [] }); }
+      const allReports = reportsResp?.data?.reportData?.reports?.data || [];
+      allReports.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+      console.log('[mitigation] reports:', allReports.length);
+      console.log('[mitigation] first 3 startTimes:', allReports.slice(0,3).map(r => r.code + ':' + r.startTime).join(', '));
+      console.log('[mitigation] last 3 startTimes:', allReports.slice(-3).map(r => r.code + ':' + r.startTime).join(', '));
+
+      // Load existing incremental cache
+      let existingCache = null, lastReportTime = 0;
+      if (teamId) {
+        try {
+          const { data: cr } = await supabase.from('wcl_scores').select('boss_scores')
+            .eq('team_id', teamId).eq('zone_id', zoneId)
+            .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffId || 5}`).single();
+          if (cr?.boss_scores) { existingCache = JSON.parse(cr.boss_scores); lastReportTime = existingCache.lastReportTime || 0; }
+        } catch(e) {}
+      }
+
+      const reportsToProcess = lastReportTime > 0 ? allReports.filter(r => (r.startTime||0) > lastReportTime) : allReports;
+      console.log('[mitigation] to process:', reportsToProcess.length, '| skip:', allReports.length - reportsToProcess.length);
+
+      // mitigData[player][boss] = { mitigated: total, unmitigated: total }
+      const mitigData  = {};
+      const bossSet    = new Set(existingCache?.bossNames || []);
+      if (existingCache?.mitigRaw) {
+        for (const [p, bosses] of Object.entries(existingCache.mitigRaw)) {
+          mitigData[p] = {};
+          for (const [b, v] of Object.entries(bosses)) { mitigData[p][b] = v; bossSet.add(b); }
+        }
+      }
+
+      const killedBosses = new Set(existingCache?.killedBossIds || []);
+      const startedAt = Date.now();
+      const MAX_MS = 50000;
+      let newestReportTime = lastReportTime;
+
+      for (const report of reportsToProcess) {
+        if (!report.fights?.length) continue;
+        if (Date.now() - startedAt > MAX_MS) { console.log('[mitigation] timeout guard hit'); break; }
+        if ((report.startTime||0) > newestReportTime) newestReportTime = report.startTime;
+
+        // Get actor id -> name map for this report
+        const masterResp = await wclQuery(`query { reportData { report(code: "${report.code}") { masterData { actors(type: "Player") { id name } } } } }`);
+        const actors = masterResp?.data?.reportData?.report?.masterData?.actors || [];
+        const actorMap = {};
+        actors.forEach(a => { actorMap[a.id] = a.name; });
+
+        const fightsByEncounter = {};
+        for (const fight of report.fights) {
+          if (validBossSet.size > 0 && !validBossSet.has(fight.encounterID)) continue;
+          if (killedBosses.has(fight.encounterID)) continue;
+          const fightDiff = fight.difficulty ? parseInt(fight.difficulty) : null;
+          const reqDiff   = diffId ? parseInt(diffId) : null;
+          if (fightDiff && reqDiff && fightDiff !== reqDiff) continue;
+          if (!fight.encounterID || fight.encounterID === 0) continue;
+          if (!fightsByEncounter[fight.encounterID]) fightsByEncounter[fight.encounterID] = { name: fight.name, fights: [], firstKillTime: null };
+          const enc = fightsByEncounter[fight.encounterID];
+          enc.fights.push(fight);
+          bossSet.add(fight.name);
+          if (fight.kill && (!enc.firstKillTime || fight.startTime < enc.firstKillTime)) enc.firstKillTime = fight.startTime;
+        }
+
+        for (const [encId, encData] of Object.entries(fightsByEncounter)) {
+          const fightsToUse = encData.firstKillTime
+            ? encData.fights.filter(f => f.startTime < encData.firstKillTime && !f.kill)
+            : encData.fights.filter(f => !f.kill);
+
+          for (const fight of fightsToUse) {
+            try {
+              // Fetch raw damage-taken events for this fight (has mitigated + unmitigatedAmount per hit)
+              const resp = await wclQuery(`query { reportData { report(code: "${report.code}") {
+                events(startTime: ${fight.startTime} endTime: ${fight.endTime} fightIDs: [${fight.id}] dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
+              } } }`);
+              let events = resp?.data?.reportData?.report?.events?.data || [];
+              let nextTs = resp?.data?.reportData?.report?.events?.nextPageTimestamp;
+
+              // Paginate within the fight if there are more events than the page limit
+              let guard = 0;
+              while (nextTs && guard < 10) {
+                const pageResp = await wclQuery(`query { reportData { report(code: "${report.code}") {
+                  events(startTime: ${nextTs} endTime: ${fight.endTime} fightIDs: [${fight.id}] dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
+                } } }`);
+                const pageEvents = pageResp?.data?.reportData?.report?.events?.data || [];
+                events = events.concat(pageEvents);
+                nextTs = pageResp?.data?.reportData?.report?.events?.nextPageTimestamp;
+                guard++;
+              }
+
+              // Aggregate mitigated/unmitigated per target (player) for this pull
+              const perTarget = {};
+              for (const ev of events) {
+                if (ev.type !== 'damage') continue;
+                const tId = ev.targetID;
+                const name = actorMap[tId];
+                if (!name) continue; // not a tracked player (could be a pet/NPC)
+                if (memberSet.size > 0 && !memberSet.has(name.toLowerCase())) continue;
+                const mitigated   = ev.mitigated || 0;
+                const unmitigated = ev.unmitigatedAmount != null ? ev.unmitigatedAmount : (ev.amount || 0) + mitigated;
+                if (!perTarget[name]) perTarget[name] = { mitigated: 0, unmitigated: 0 };
+                perTarget[name].mitigated   += mitigated;
+                perTarget[name].unmitigated += unmitigated;
+              }
+
+              // Roll this pull's totals into the player's boss aggregate
+              for (const [name, vals] of Object.entries(perTarget)) {
+                if (vals.unmitigated <= 0) continue;
+                if (!mitigData[name]) mitigData[name] = {};
+                if (!mitigData[name][encData.name]) mitigData[name][encData.name] = { mitigated: 0, unmitigated: 0 };
+                mitigData[name][encData.name].mitigated   += vals.mitigated;
+                mitigData[name][encData.name].unmitigated += vals.unmitigated;
+              }
+            } catch(e) { console.error('[mitigation] error', report.code, fight.id, e.message); }
+          }
+
+          if (encData.firstKillTime !== null) killedBosses.add(parseInt(encId));
+          if (fightsToUse.length > 0) console.log('[mitigation] report', report.code, 'boss', encData.name, '| fights:', fightsToUse.length);
+        }
+      }
+
+      // Compute final mitigated % per player per boss = total mitigated / total unmitigated
+      const mitigationMap = {};
+      for (const [player, bosses] of Object.entries(mitigData)) {
+        mitigationMap[player] = {};
+        for (const [boss, { mitigated, unmitigated }] of Object.entries(bosses)) {
+          if (unmitigated > 0) mitigationMap[player][boss] = parseFloat(((mitigated / unmitigated) * 100).toFixed(1));
+        }
+      }
+      const bossNames = [...bossSet];
+      console.log('[mitigation] complete | players:', Object.keys(mitigationMap).length, '| bosses:', bossNames.length);
+
+      if (teamId && Object.keys(mitigData).length > 0) {
+        try {
+          await supabase.from('wcl_scores').upsert({
+            team_id: teamId, zone_id: zoneId, character_name: '_mitig_cache_', server: `mitig_${diffId||5}`,
+            boss_scores: JSON.stringify({ mitigationMap, mitigRaw: mitigData, bossNames, killedBossIds: [...killedBosses], lastReportTime: newestReportTime, savedAt: Date.now() }),
+            fetched_at: new Date().toISOString(),
+          }, { onConflict: 'team_id,zone_id,character_name,server', ignoreDuplicates: false });
+          console.log('[mitigation] cache saved');
+        } catch(e) { console.error('[mitigation] cache save error:', e.message); }
+      }
+
+      return res.status(200).json({ mitigationMap, bossNames });
+    } catch(err) { console.error('[mitigation] error:', err.message); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── DIAGNOSTIC: probe DamageTaken table structure for mitigation ──
+  if (action === 'diagMitigation') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { reportCode, encounterID, targetName } = req.body || {};
+    try {
+      // Get ALL fights for this encounter in the report
+      const fightsResp = await wclQuery(`query {
+        reportData {
+          report(code: "${reportCode}") {
+            fights(killType: All) { id encounterID name startTime endTime kill }
+          }
+        }
+      }`);
+      const allFights = fightsResp?.data?.reportData?.report?.fights || [];
+      const targetFights = encounterID
+        ? allFights.filter(f => f.encounterID === parseInt(encounterID))
+        : allFights;
+      console.log('[diagMitigation] fights matched:', targetFights.length, 'of', allFights.length);
+
+      const masterResp = await wclQuery(`query { reportData { report(code: "${reportCode}") { masterData { actors(type: "Player") { id name } } } } }`);
+      const actors = masterResp?.data?.reportData?.report?.masterData?.actors || [];
+      const actorMap = {};
+      actors.forEach(a => { actorMap[a.id] = a.name; });
+
+      let mitigatedSum = 0, unmitigatedSum = 0, hitCount = 0, totalEvents = 0;
+
+      for (const fight of targetFights) {
+        let events = [];
+        let nextTs = fight.startTime;
+        let guard = 0;
+        while (guard < 20) {
+          const resp = await wclQuery(`query { reportData { report(code: "${reportCode}") {
+            events(startTime: ${nextTs}, endTime: ${fight.endTime}, fightIDs: [${fight.id}], dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
+          } } }`);
+          const page = resp?.data?.reportData?.report?.events?.data || [];
+          events = events.concat(page);
+          nextTs = resp?.data?.reportData?.report?.events?.nextPageTimestamp;
+          guard++;
+          if (!nextTs) break;
+        }
+        totalEvents += events.length;
+
+        for (const ev of events) {
+          if (ev.type !== 'damage') continue;
+          const name = actorMap[ev.targetID];
+          if (targetName && name !== targetName) continue;
+          if (!targetName && !name) continue;
+          mitigatedSum   += ev.mitigated || 0;
+          unmitigatedSum += ev.unmitigatedAmount != null ? ev.unmitigatedAmount : (ev.amount||0) + (ev.mitigated||0);
+          hitCount++;
+        }
+      }
+
+      const mitigPct = unmitigatedSum > 0 ? (mitigatedSum / unmitigatedSum) * 100 : null;
+
+      return res.status(200).json({
+        fightsChecked: targetFights.length,
+        totalEvents, hitsForTarget: hitCount,
+        mitigatedSum, unmitigatedSum,
+        calculatedMitigPct: mitigPct != null ? mitigPct.toFixed(2) : null,
+      });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
+  if (action === 'diagSurvival') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { reportCode, fightId, startTime, endTime } = req.body || {};
+    try {
+      const q = `query {
+        reportData {
+          report(code: "${reportCode}") {
+            table(startTime: ${startTime}, endTime: ${endTime}, fightIDs: [${fightId}], dataType: Summary)
+          }
+        }
+      }`;
+      const resp = await wclQuery(q);
+      const table  = resp?.data?.reportData?.report?.table;
+      const parsed = typeof table === 'string' ? JSON.parse(table) : table;
+      const data   = parsed?.data || parsed;
+      return res.status(200).json({
+        errors:            resp?.errors || null,
+        dataKeys:          data ? Object.keys(data) : null,
+        totalTime:         data?.totalTime,
+        playerDetailsSample: data?.playerDetails ? JSON.stringify(data.playerDetails).slice(0, 1200) : null,
+        deathEventsSample:   data?.deathEvents   ? JSON.stringify(data.deathEvents).slice(0, 1200)   : null,
+        compositionSample:   data?.composition   ? JSON.stringify(data.composition).slice(0, 400)    : null,
+      });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
+  // ── GET SURVIVAL CACHE: read incremental survival cache from Supabase ──
+  if (action === 'getSurvivalCache') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    const zoneId = req.query.zoneId || req.body?.zoneId;
+    const diffId = req.query.diffId || req.body?.diffId || 5;
+    if (!teamId) return res.status(200).json({ survivorMap: {}, bossNames: [] });
+    try {
+      const survCacheKey = `surv_${diffId}`;
+      const { data } = await supabase
+        .from('wcl_scores')
+        .select('boss_scores, fetched_at')
+        .eq('team_id', teamId)
+        .eq('zone_id', zoneId)
+        .eq('character_name', '_surv_cache_')
+        .eq('server', survCacheKey)
+        .single();
+      if (!data?.boss_scores) return res.status(200).json({ survivorMap: {}, bossNames: [] });
+      const parsed = JSON.parse(data.boss_scores);
+      return res.status(200).json({
+        survivorMap: parsed.survivorMap || {},
+        bossNames:   parsed.bossNames   || [],
+        savedAt:     parsed.savedAt     || 0,
+      });
+    } catch(e) {
+      return res.status(200).json({ survivorMap: {}, bossNames: [] });
+    }
+  }
+
+  // ── GET SURVIVAL DATA: per-player survival % per boss using Summary table deathEvents ──
+  if (action === 'getSurvival') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { guildName, serverSlug, region, zoneId, diffId, guildTagID, memberNames, validBossIds } = req.body || {};
+    const validBossSet = new Set((validBossIds || []).map(id => parseInt(id)));
+    if (!guildName || !serverSlug || !region || !zoneId) {
+      return res.status(400).json({ error: 'guildName, serverSlug, region, zoneId required' });
+    }
+
+    const memberSet = new Set((memberNames || []).map(n => n.toLowerCase()));
+    const tagId     = guildTagID ? parseInt(guildTagID) : null;
+    const tagParam  = tagId ? `guildTagID: ${tagId}` : '';
+    console.log('[survival] guildTagID:', tagId, '| diffId:', diffId);
+
+    try {
+      // Step 1: Get all reports for this zone + team tag in one call
+      // The difficulty filter on fights is done below; reports API doesn't filter by difficulty
+      const reportsQuery = `query {
+        reportData {
+          reports(
+            guildName: "${guildName}"
+            guildServerSlug: "${serverSlug}"
+            guildServerRegion: "${region}"
+            zoneID: ${zoneId}
+            limit: 50
+            ${tagParam}
+          ) {
+            data {
+              code startTime
+              fights(killType: All) {
+                id encounterID name difficulty startTime endTime kill
+              }
+            }
+          }
+        }
+      }`;
+      let reportsResp;
+      try {
+        reportsResp = await wclQuery(reportsQuery);
+      } catch(e) {
+        console.error('[survival] wclQuery threw:', e.message);
+        return res.status(200).json({ survivorMap: {}, bossNames: [], error: e.message });
+      }
+      console.log('[survival] raw reports resp keys:', reportsResp ? Object.keys(reportsResp).join(',') : 'null');
+      if (reportsResp?.errors) {
+        console.error('[survival] reports error:', JSON.stringify(reportsResp.errors[0]));
+        return res.status(200).json({ survivorMap: {}, bossNames: [] });
+      }
+      const allReports = reportsResp?.data?.reportData?.reports?.data || [];
+      console.log('[survival] reports found:', allReports.length);
+      if (allReports.length === 0) return res.status(200).json({ survivorMap: {}, bossNames: [] });
+
+      // Sort oldest first
+      allReports.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+
+      // Load existing survival cache from Supabase — merge incrementally
+      const survCacheKey = `surv_${diffId || 5}`;
+      let existingCache  = null;
+      let lastReportTime = 0;
+      if (req.body?.teamId) {
+        try {
+          const { data: cacheRow } = await supabase
+            .from('wcl_scores')
+            .select('boss_scores, fetched_at')
+            .eq('team_id', req.body.teamId)
+            .eq('zone_id', zoneId)
+            .eq('character_name', '_surv_cache_')
+            .eq('server', survCacheKey)
+            .single();
+          if (cacheRow?.boss_scores) {
+            existingCache  = JSON.parse(cacheRow.boss_scores);
+            lastReportTime = existingCache.lastReportTime || 0;
+            console.log('[survival] existing cache: players:', Object.keys(existingCache.survivorMap || {}).length, '| lastReportTime:', lastReportTime);
+          }
+        } catch(e) { /* no cache yet */ }
+      }
+
+      // Only process reports newer than what we've already cached
+      const reportsToProcess = lastReportTime > 0
+        ? allReports.filter(r => (r.startTime || 0) > lastReportTime)
+        : allReports;
+      console.log('[survival] reports to process:', reportsToProcess.length, '(skipping', allReports.length - reportsToProcess.length, 'already cached)');
+
+      // Start with existing cached data
+      const survivorData = {};
+      const bossSet      = new Set(existingCache?.bossNames || []);
+
+      // Merge existing cached survivorMap into survivorData as weighted totals
+      // We store {total, count} in cache so we can merge properly
+      if (existingCache?.survivorRaw) {
+        for (const [player, bosses] of Object.entries(existingCache.survivorRaw)) {
+          survivorData[player] = {};
+          for (const [boss, { total, count }] of Object.entries(bosses)) {
+            survivorData[player][boss] = { total, count };
+            bossSet.add(boss);
+          }
+        }
+      }
+
+      // Track which bosses have been killed
+      const killedBosses = new Set(existingCache?.killedBossIds || []);
+      const startedAt    = Date.now();
+      const MAX_MS       = 50000;
+      let   newestReportTime = lastReportTime;
+
+      for (const report of reportsToProcess) {
+        if (!report.fights?.length) continue;
+        if (Date.now() - startedAt > MAX_MS) {
+          console.log('[survival] timeout guard hit');
+          break;
+        }
+        // Track newest report processed
+        if ((report.startTime || 0) > newestReportTime) newestReportTime = report.startTime;
+
+        // Group fights by encounter, filter by difficulty, stop at first kill
+        const fightsByEncounter = {};
+        for (const fight of report.fights) {
+          const fightDiff = fight.difficulty ? parseInt(fight.difficulty) : null;
+          const reqDiff   = diffId ? parseInt(diffId) : null;
+          if (fightDiff && reqDiff && fightDiff !== reqDiff) continue;
+          if (!fight.encounterID || fight.encounterID === 0) continue;
+          // Skip non-zone bosses (M+ dungeons etc)
+          if (validBossSet.size > 0 && !validBossSet.has(fight.encounterID)) continue;
+          // Skip bosses already killed in an earlier report
+          if (killedBosses.has(fight.encounterID)) continue;
+          if (!fightsByEncounter[fight.encounterID]) {
+            fightsByEncounter[fight.encounterID] = { name: fight.name, fights: [], firstKillTime: null };
+          }
+          const enc = fightsByEncounter[fight.encounterID];
+          enc.fights.push(fight);
+          bossSet.add(fight.name);
+          if (fight.kill && (!enc.firstKillTime || fight.startTime < enc.firstKillTime)) {
+            enc.firstKillTime = fight.startTime;
+          }
+        }
+
+        // For each encounter, fetch Summary table per fight (has deathTime pre-calculated)
+        for (const [encId, encData] of Object.entries(fightsByEncounter)) {
+          // Only include wipes up to (but NOT including) the first kill
+          // The kill itself is excluded — survival on a kill isn't meaningful
+          const fightsToUse = encData.firstKillTime
+            ? encData.fights.filter(f => f.startTime < encData.firstKillTime && !f.kill)
+            : encData.fights.filter(f => !f.kill);
+
+          for (const fight of fightsToUse) {
+            const fightDuration = fight.endTime - fight.startTime;
+            if (fightDuration <= 0) continue;
+
+            const summaryQ = `query {
+              reportData {
+                report(code: "${report.code}") {
+                  table(
+                    startTime: ${fight.startTime}
+                    endTime: ${fight.endTime}
+                    fightIDs: [${fight.id}]
+                    dataType: Summary
+                  )
+                }
+              }
+            }`;
+
+            try {
+              const summaryResp = await wclQuery(summaryQ);
+              const table       = summaryResp?.data?.reportData?.report?.table;
+              const parsed      = typeof table === 'string' ? JSON.parse(table) : table;
+              const data        = parsed?.data || parsed;
+              const totalTime   = data?.totalTime || fightDuration;
+              const deathEvents = data?.deathEvents || [];   // [{name, deathTime, ...}]
+              const composition = data?.composition || [];   // [{name, ...}] = who was in fight
+
+              if (composition.length === 0) continue;
+
+              // Build death time map by player name
+              const deathMap = {};
+              for (const ev of deathEvents) {
+                if (ev.name && ev.deathTime != null) {
+                  deathMap[ev.name] = ev.deathTime;
+                }
+              }
+
+              // Calculate survival % for each player in composition
+              for (const player of composition) {
+                const name = player.name;
+                if (!name) continue;
+                if (memberSet.size > 0 && !memberSet.has(name.toLowerCase())) continue;
+
+                const deathTime = deathMap[name];
+                const survPct   = deathTime != null
+                  ? Math.min(100, (deathTime / totalTime) * 100)
+                  : 100; // not in deathEvents = survived full pull
+
+                if (!survivorData[name]) survivorData[name] = {};
+                if (!survivorData[name][encData.name]) {
+                  survivorData[name][encData.name] = { total: 0, count: 0 };
+                }
+                survivorData[name][encData.name].total += survPct;
+                survivorData[name][encData.name].count += 1;
+              }
+            } catch(e) {
+              console.error('[survival] summary error', report.code, fight.id, e.message);
+            }
+          }
+          if (fightsToUse.length > 0) {
+            console.log('[survival] report', report.code, 'boss', encData.name, '| fights used:', fightsToUse.length);
+          }
+          // If this boss was killed in this report, mark it so we skip it in subsequent reports
+          if (encData.firstKillTime !== null) {
+            killedBosses.add(parseInt(encId));
+          }
+        }
+      }
+
+      // Average survival % per player per boss
+      const survivorMap = {};
+      for (const [player, bosses] of Object.entries(survivorData)) {
+        survivorMap[player] = {};
+        for (const [boss, { total, count }] of Object.entries(bosses)) {
+          survivorMap[player][boss] = parseFloat((total / count).toFixed(1));
+        }
+      }
+
+      const bossNames = [...bossSet];
+      console.log('[survival] complete | players:', Object.keys(survivorMap).length, '| bosses:', bossNames.length);
+      if (Object.keys(survivorMap).length > 0) {
+        const first = Object.entries(survivorMap)[0];
+        console.log('[survival] sample:', first[0], JSON.stringify(first[1]));
+      }
+
+      // Save incremental cache to Supabase for next fetch
+      if (req.body?.teamId && Object.keys(survivorData).length > 0) {
+        try {
+          const cachePayload = JSON.stringify({
+            survivorMap,
+            survivorRaw:    survivorData,         // raw totals for future merging
+            bossNames,
+            killedBossIds:  [...killedBosses],
+            lastReportTime: newestReportTime,
+            savedAt:        Date.now(),
+          });
+          const survCacheKey = `surv_${diffId || 5}`;
+          await supabase.from('wcl_scores').upsert({
+            team_id:        req.body.teamId,
+            zone_id:        zoneId,
+            character_name: '_surv_cache_',
+            server:         survCacheKey,
+            boss_scores:    cachePayload,
+            fetched_at:     new Date().toISOString(),
+          }, { onConflict: 'team_id,zone_id,character_name,server', ignoreDuplicates: false });
+          console.log('[survival] cache saved | lastReportTime:', newestReportTime);
+        } catch(e) {
+          console.error('[survival] cache save error:', e.message);
+        }
+      }
+
+      return res.status(200).json({ survivorMap, bossNames });
+    } catch(err) {
+      console.error('[survival] error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  if (action === 'wclQuery' || action === 'query') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const { query } = req.body || {};
+    if (!query) return res.status(400).json({ error: 'query required' });
+    try {
+      const data = await wclQuery(query);
+      return res.status(200).json(data);
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── SYNC: write Wowaudit players to characters table ──
+  if (action === 'sync') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { teamId, players } = req.body;
+    if (!players?.length) return res.status(400).json({ error: 'teamId and players required' });
+    try {
+      await assertTeamOwnership(teamId);
+      const { data: existing } = await supabase
+        .from('characters')
+        .select('name, account_id, flex_tank, flex_heal, flex_melee, flex_ranged, can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged')
+        .eq('team_id', teamId);
+      const existingMap = {};
+      (existing || []).forEach(c => { existingMap[c.name.toLowerCase()] = c; });
+
+      const upsertData = players.map(p => {
+        const ex = existingMap[p.name.toLowerCase()];
+        return {
+          team_id:         teamId,
+          name:            p.name,
+          class:           p.class        || 'unknown',
+          server:          p.server       || '',
+          primary_role:    p.role         || 'ranged',
+          account_id:      ex?.account_id || null,
+          flex_tank:       ex?.flex_tank       || false,
+          flex_heal:       ex?.flex_heal       || false,
+          flex_melee:      ex?.flex_melee      || false,
+          flex_ranged:     ex?.flex_ranged     || false,
+          can_flex_tank:   ex?.can_flex_tank   || false,
+          can_flex_heal:   ex?.can_flex_heal   || false,
+          can_flex_melee:  ex?.can_flex_melee  || false,
+          can_flex_ranged: ex?.can_flex_ranged || false,
+        };
+      });
+
+      const { error } = await supabase
+        .from('characters')
+        .upsert(upsertData, { onConflict: 'team_id,name', ignoreDuplicates: false });
+      if (error) throw error;
+      return res.status(200).json({ success: true, synced: upsertData.length });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── GET FLEX ──
+  if (action === 'getFlex') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    try {
+      await assertTeamOwnership(teamId);
+      const { data: chars, error } = await supabase
+        .from('characters')
+        .select('name, flex_tank, flex_heal, flex_melee, flex_ranged, can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged')
+        .eq('team_id', teamId);
+      if (error) throw error;
+      const flexData = {};
+      (chars || []).forEach(c => {
+        if (c.flex_tank || c.flex_heal || c.flex_melee || c.flex_ranged
+          || c.can_flex_tank || c.can_flex_heal || c.can_flex_melee || c.can_flex_ranged) {
+          flexData[c.name] = {
+            flex_tank:       c.flex_tank       || false,
+            flex_heal:       c.flex_heal       || false,
+            flex_melee:      c.flex_melee      || false,
+            flex_ranged:     c.flex_ranged     || false,
+            can_flex_tank:   c.can_flex_tank   || false,
+            can_flex_heal:   c.can_flex_heal   || false,
+            can_flex_melee:  c.can_flex_melee  || false,
+            can_flex_ranged: c.can_flex_ranged || false,
+          };
+        }
+      });
+      return res.status(200).json({ flexData });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── UPDATE FLEX (officer only) ──
+  if (action === 'updateFlex') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { teamId, playerName, flex_tank, flex_heal, flex_melee, flex_ranged } = req.body;
+    try {
+      await assertTeamOwnership(teamId);
+      const { error } = await supabase
+        .from('characters')
+        .update({
+          flex_tank:   flex_tank   || false,
+          flex_heal:   flex_heal   || false,
+          flex_melee:  flex_melee  || false,
+          flex_ranged: flex_ranged || false,
+        })
+        .eq('team_id', teamId)
+        .eq('name', playerName);
+      if (error) throw error;
+      return res.status(200).json({ success: true });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── SAVE SCORES (officer only) ──
+  if (action === 'saveScores') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { teamId, zoneId, scores, bossNames, fetchedAt, difficulty } = req.body;
+    if (!scores?.length) return res.status(400).json({ error: 'teamId and scores required' });
+    try {
+      await assertTeamOwnership(teamId);
+      // Use difficulty as part of the server key so each difficulty has its own row
+      const cacheKey = `cache_${difficulty || 'mythic'}`;
+      const { error } = await supabase.from('wcl_scores').upsert({
+        team_id:        teamId,
+        zone_id:        zoneId || 0,
+        character_name: '_cache_',
+        server:         cacheKey,
+        boss_scores:    JSON.stringify({ scores, bossNames, fetchedAt, difficulty }),
+        fetched_at:     new Date(fetchedAt || Date.now()).toISOString(),
+      }, { onConflict: 'team_id,zone_id,character_name,server', ignoreDuplicates: false });
+      if (error) throw error;
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      console.error('saveScores error:', err);
+      return res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+
+  // ── GET SCORES ──
+  if (action === 'getScores') {
+    const teamId    = req.query.teamId    || req.body?.teamId;
+    const zoneId    = parseInt(req.query.zoneId || req.body?.zoneId || '0');
+    const difficulty = req.query.difficulty || req.body?.difficulty || 'mythic';
+    const cacheKey  = `cache_${difficulty}`;
+    try {
+      await assertTeamOwnership(teamId);
+      const { data, error } = await supabase
+        .from('wcl_scores')
+        .select('boss_scores, fetched_at')
+        .eq('team_id', teamId)
+        .eq('zone_id', zoneId)
+        .eq('character_name', '_cache_')
+        .eq('server', cacheKey)
+        .single();
+      if (error || !data) return res.status(200).json({ scores: [], bossNames: [] });
+      const cache = JSON.parse(data.boss_scores || '{}');
+      return res.status(200).json({
+        scores:    cache.scores    || [],
+        bossNames: cache.bossNames || [],
+        fetchedAt: new Date(data.fetched_at).getTime(),
+      });
+    } catch (err) { return res.status(200).json({ scores: [], bossNames: [] }); }
+  }
+
+  res.status(400).json({ error: 'Invalid action' });
+};
