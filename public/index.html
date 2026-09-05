@@ -5459,9 +5459,7 @@ function renderUnclaimedListFromDB(members) {
 
   el.innerHTML = unclaimed.map(p => {
     const color = CLASS_COLORS[p.class] || '#888';
-    const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
-    const click = isOfficer ? ` cursor:pointer;" onclick="officerClaimChar('${p.name}')"` : '"';
-    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;${click}>${p.name}</span>`;
+    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;">${p.name}</span>`;
   }).join('');
 }
 
@@ -5541,11 +5539,6 @@ async function claimCharacter(characterName) {
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
   }
-}
-
-function officerClaimChar(name) {
-  // Officers can assign characters to members from unclaimed list
-  showToast('Click a member above to assign them ' + name, '');
 }
 
 function renderMembersList() {
