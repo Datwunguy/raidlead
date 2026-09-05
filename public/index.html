@@ -2867,10 +2867,14 @@ function renderClaimGateList() {
 
 async function claimMyCharacter(characterName) {
   try {
+    const player = STATE.players.find(p => p.name === characterName);
     const resp = await fetch('/api/members?action=claimCharacter', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ characterName, teamId: STATE.teamId }),
+      body: JSON.stringify({
+        characterName, teamId: STATE.teamId,
+        characterClass: player?.class, characterServer: player?.server, characterRole: player?.role,
+      }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Claim failed');
@@ -5473,7 +5477,7 @@ async function removeMember(accountId) {
     if (!resp.ok) throw new Error(data.error || 'Failed to remove member');
     showToast('Member removed', 'success');
     showMembersModal(); // refresh
-  } catch(e) { showToast('Error removing member', 'error'); }
+  } catch(e) { showToast('Error removing member: ' + e.message, 'error'); }
 }
 
 async function updateRoleFromDB(accountId, role) {
@@ -5518,7 +5522,11 @@ function showClaimCharacter(accountId) {
 
 async function claimCharacter(characterName) {
   try {
-    const resp = await fetch('/api/members?action=claimCharacter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ characterName, teamId: STATE.teamId, targetAccountId: claimingAccountId }) });
+    const player = STATE.players.find(p => p.name === characterName);
+    const resp = await fetch('/api/members?action=claimCharacter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      characterName, teamId: STATE.teamId, targetAccountId: claimingAccountId,
+      characterClass: player?.class, characterServer: player?.server, characterRole: player?.role,
+    }) });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Claim failed');
     document.getElementById('claim-picker')?.remove();

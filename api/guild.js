@@ -24,13 +24,22 @@ module.exports = async (req, res) => {
         .single();
       if (!membership) return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
 
-      // Check whether this account has claimed a character — used to gate access until claimed
-      const { data: claimedChar } = await supabase
-        .from('characters')
-        .select('name')
-        .eq('account_id', session.id)
-        .limit(1)
-        .maybeSingle();
+      const teamId = membership.guilds?.teams?.[0]?.id || null;
+
+      // Check whether this account has claimed a character ON THIS TEAM — used to gate
+      // access until claimed. Scoped to teamId so a character claimed in another guild
+      // doesn't falsely satisfy the gate for a newly-joined guild.
+      let claimedChar = null;
+      if (teamId) {
+        const { data } = await supabase
+          .from('characters')
+          .select('name')
+          .eq('account_id', session.id)
+          .eq('team_id', teamId)
+          .limit(1)
+          .maybeSingle();
+        claimedChar = data;
+      }
 
       return res.status(200).json({
         role: membership.role,

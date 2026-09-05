@@ -91,7 +91,7 @@ module.exports = async (req, res) => {
 
   // ── CLAIM CHARACTER ──
   if (action === 'claimCharacter') {
-    const { characterName, teamId, targetAccountId } = req.body;
+    const { characterName, teamId, targetAccountId, characterClass, characterServer, characterRole } = req.body;
     if (!characterName || !teamId) return res.status(400).json({ error: 'characterName and teamId required' });
 
     // Verify the teamId belongs to the caller's guild — prevents cross-guild claims
@@ -107,14 +107,37 @@ module.exports = async (req, res) => {
     const accountId = (isOfficer && targetAccountId) ? targetAccountId : session.id;
 
     try {
-      const { error: claimErr } = await supabase
+      const { data: updated, error: claimErr } = await supabase
         .from('characters')
         .update({ account_id: accountId })
         .eq('name', characterName)
-        .eq('team_id', teamId);
+        .eq('team_id', teamId)
+        .select('name');
       if (claimErr) throw new Error(claimErr.message);
+
+      // The character row may not exist yet (roster hasn't synced to the DB for this
+      // name/team combo) — a plain UPDATE silently matches zero rows in that case.
+      // Fall back to creating the row so the claim isn't lost.
+      if (!updated || updated.length === 0) {
+        const { error: upsertErr } = await supabase
+          .from('characters')
+          .upsert({
+            team_id:      teamId,
+            name:         characterName,
+            class:        characterClass  || 'unknown',
+            server:       characterServer || '',
+            primary_role: characterRole   || 'ranged',
+            account_id:   accountId,
+          }, { onConflict: 'team_id,name' });
+        if (upsertErr) throw new Error(upsertErr.message);
+        console.warn('[claimCharacter] character row did not exist, created via upsert:', characterName, teamId);
+      }
+
       return res.status(200).json({ success: true, characterName, accountId });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) {
+      console.error('[claimCharacter] error:', err.message, { characterName, teamId, accountId });
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   // ── REMOVE MEMBER ──
@@ -141,14 +164,22 @@ module.exports = async (req, res) => {
         if (unclaimErr) throw new Error('unclaim: ' + unclaimErr.message);
       }
       // Remove from guild
-      const { error: removeErr } = await supabase
+      const { data: removed, error: removeErr } = await supabase
         .from('guild_members')
         .delete()
         .eq('account_id', targetAccountId)
-        .eq('guild_id', myGuildId);
+        .eq('guild_id', myGuildId)
+        .select('account_id');
       if (removeErr) throw new Error('remove: ' + removeErr.message);
+      if (!removed || removed.length === 0) {
+        console.warn('[removeMember] delete matched 0 rows — check RLS/service key permissions:', { targetAccountId, myGuildId });
+        throw new Error('remove: no matching guild_members row was deleted (check that account_id/guild_id match, and that the Supabase key has delete permission)');
+      }
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) {
+      console.error('[removeMember] error:', err.message, { targetAccountId, myGuildId });
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   // ── GET ATTENDANCE: raid extra nights + all marks for the team ──
