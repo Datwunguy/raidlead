@@ -32,7 +32,7 @@ module.exports = async (req, res) => {
     try {
       const { data: members, error } = await supabase
         .from('guild_members')
-        .select(`role, account_id, accounts ( id, battletag, display_name, last_login )`)
+        .select(`role, account_id, accounts ( id, battletag, display_name, last_login, discord_id )`)
         .eq('guild_id', myGuildId);
       if (error) throw error;
 
@@ -86,6 +86,42 @@ module.exports = async (req, res) => {
     try {
       await supabase.from('accounts').update({ display_name: displayName.trim() }).eq('id', session.id);
       return res.status(200).json({ success: true });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── SET MEMBER DISCORD ID: officer manually links a member's Discord account ──
+  if (action === 'setMemberDiscordId') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { targetAccountId, discordId } = req.body;
+    if (!targetAccountId) return res.status(400).json({ error: 'targetAccountId required' });
+    const value = (discordId || '').trim() || null;
+    if (value && !/^\d{5,25}$/.test(value)) {
+      return res.status(400).json({ error: 'That doesn\'t look like a Discord user ID (should be a long number -- right-click their name in Discord with Developer Mode on and choose "Copy User ID").' });
+    }
+    try {
+      const { error } = await supabase.from('accounts').update({ discord_id: value }).eq('id', targetAccountId);
+      if (error) {
+        if (error.code === '23505') return res.status(409).json({ error: 'That Discord account is already linked to a different RaidLead account.' });
+        throw error;
+      }
+      return res.status(200).json({ success: true });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── GENERATE DISCORD LINK CODE: self-service linking, used when an officer hasn't set it ──
+  if (action === 'generateDiscordLinkCode') {
+    try {
+      const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+      const code = Array.from({ length: 6 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('');
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
+
+      const { error } = await supabase.from('accounts').update({
+        discord_link_code: code,
+        discord_link_code_expires_at: expiresAt,
+      }).eq('id', session.id);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true, code, expiresAt });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
@@ -314,11 +350,16 @@ module.exports = async (req, res) => {
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
     try {
-      await supabase.from('raid_extra_days').upsert({
+      const { data, error } = await supabase.from('raid_extra_days').upsert({
         team_id: teamId, raid_date: raidDate, created_by: session.id,
-      }, { onConflict: 'team_id,raid_date' });
+      }, { onConflict: 'team_id,raid_date' }).select();
+      if (error) throw error;
+      console.log('[addRaidNight] upserted:', data);
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) {
+      console.error('[addRaidNight] error:', err.message, { teamId, raidDate });
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   // ── REMOVE RAID NIGHT: remove a one-off extra raid date (officers only) ──
@@ -327,9 +368,13 @@ module.exports = async (req, res) => {
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
     try {
-      await supabase.from('raid_extra_days').delete().eq('team_id', teamId).eq('raid_date', raidDate);
+      const { error } = await supabase.from('raid_extra_days').delete().eq('team_id', teamId).eq('raid_date', raidDate);
+      if (error) throw error;
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) {
+      console.error('[removeRaidNight] error:', err.message, { teamId, raidDate });
+      return res.status(500).json({ error: err.message });
+    }
   }
 
   res.status(400).json({ error: 'Invalid action' });

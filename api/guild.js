@@ -19,7 +19,7 @@ module.exports = async (req, res) => {
     try {
       const { data: membership } = await supabase
         .from('guild_members')
-        .select(`role, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, teams ( id, name ) )`)
+        .select(`role, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, teams ( id, name ) )`)
         .eq('account_id', session.id)
         .single();
       if (!membership) return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
@@ -156,6 +156,35 @@ module.exports = async (req, res) => {
       if (error) throw error;
 
       return res.status(200).json({ success: true, joinCode: code });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── SET DISCORD GUILD ID: link a Discord server to this RaidLead guild (officers+) ──
+  if (action === 'setDiscordGuildId') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    try {
+      const { data: myMembership } = await supabase
+        .from('guild_members')
+        .select('role, guild_id')
+        .eq('account_id', session.id)
+        .single();
+      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
+        return res.status(403).json({ error: 'Officers only' });
+      }
+
+      const { discordGuildId } = req.body;
+      const value = (discordGuildId || '').trim() || null;
+      if (value && !/^\d{5,25}$/.test(value)) {
+        return res.status(400).json({ error: 'That doesn\'t look like a Discord Server ID (should be a long number).' });
+      }
+
+      const { error } = await supabase.from('guilds').update({ discord_guild_id: value }).eq('id', myMembership.guild_id);
+      if (error) {
+        if (error.code === '23505') return res.status(409).json({ error: 'That Discord server is already linked to a different RaidLead guild.' });
+        throw error;
+      }
+
+      return res.status(200).json({ success: true, discordGuildId: value });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
