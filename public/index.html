@@ -1745,7 +1745,7 @@
         <div class="form-row">
           <div class="form-group full">
             <label>Join Code or Invite Link</label>
-            <input type="text" id="jg-code" placeholder="Paste the code or full invite link here" />
+            <input type="text" id="jg-code" placeholder="e.g. K7XPQ2, or a pasted invite link" />
           </div>
         </div>
         <div class="setup-footer" style="padding:0; border:none; justify-content:flex-end;">
@@ -2085,6 +2085,21 @@
           <button class="btn-primary" style="padding:10px 20px; white-space:nowrap;" onclick="copyInviteLink()">Copy</button>
         </div>
         <div id="invite-copy-msg" style="font-size:12px; color:#1EFF00; margin-top:8px; display:none;">✓ Copied to clipboard!</div>
+
+        <div style="margin-top:20px; padding:12px 16px; background:var(--bg3); border:1px solid var(--gold-dim); border-radius:6px;">
+          <div style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold); margin-bottom:8px;">Join Code</div>
+          <p style="font-size:13px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); margin-bottom:10px; line-height:1.5;">
+            A short code members can type into the "Join Guild" screen instead of clicking a link. Regenerating invalidates the old code.
+          </p>
+          <div id="join-code-display" style="display:none; gap:8px; align-items:center; margin-bottom:8px;">
+            <input type="text" id="join-code-input" readonly
+              style="flex:1; background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--gold); font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:700; letter-spacing:4px; text-align:center; padding:10px 14px; outline:none;" />
+            <button class="btn-primary" style="padding:10px 20px; white-space:nowrap;" onclick="copyJoinCode()">Copy</button>
+          </div>
+          <button class="btn-secondary" id="join-code-generate-btn" style="width:100%;" onclick="generateJoinCode()">Generate Join Code</button>
+          <div id="join-code-msg" style="font-size:12px; margin-top:8px; display:none;"></div>
+        </div>
+
         <div style="margin-top:20px; padding:12px 16px; background:var(--bg3); border:1px solid var(--border); border-radius:6px;">
           <div style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-mute); margin-bottom:8px;">Role Permissions</div>
           <div style="display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:13px; font-family:'Rajdhani',sans-serif;">
@@ -2429,6 +2444,7 @@ window.addEventListener('DOMContentLoaded', async () => {
           STATE.teamId           = freshData.team?.id   || null;
           STATE.teamName         = freshData.team?.name || null;
           STATE.claimedCharacter = freshData.claimedCharacter || null;
+          STATE.joinCode         = freshData.guild?.join_code || null;
           if (freshData.team?.id) localStorage.setItem('raidlead_team_id', freshData.team.id);
         }
 
@@ -2473,6 +2489,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     STATE.teamId           = guildData.team?.id   || null;
     STATE.teamName         = guildData.team?.name || null;
     STATE.claimedCharacter = guildData.claimedCharacter || null;
+    STATE.joinCode         = g.join_code || null;
     const role     = guildData.role || 'member';
     saveConfig(config);
     localStorage.setItem('raidlead_my_role',  role);
@@ -5248,11 +5265,11 @@ function showJoinGuildScreen() {
 
 // Completes joining a guild (via name+server or a join code) — hydrates STATE
 // from the DB and routes to either the claim gate or the dashboard.
-async function completeGuildJoin(guildName, server) {
+async function completeGuildJoin(guildName, server, joinCode) {
   const joinResp = await fetch('/api/auth?action=join-guild', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guildName, server }),
+    body: JSON.stringify({ guildName, server, joinCode }),
   });
   const joinData = await joinResp.json();
   if (!joinResp.ok) throw new Error(joinData.error || 'Failed to join guild');
@@ -5280,6 +5297,7 @@ async function completeGuildJoin(guildName, server) {
   STATE.teamId           = freshData.team?.id   || null;
   STATE.teamName         = freshData.team?.name || null;
   STATE.claimedCharacter = freshData.claimedCharacter || null;
+  STATE.joinCode         = g.join_code || null;
   const role = freshData.role || 'member';
   saveConfig(config);
   localStorage.setItem('raidlead_my_role', role);
@@ -5328,19 +5346,24 @@ async function joinGuildByCode() {
   statusEl.textContent = 'Joining...';
   statusEl.className   = 'status-msg loading';
   try {
-    // Accept either a bare code, or a full invite link — pull the code out of the URL if so
+    // Accept a full invite link too — pull the code out of the URL if so
     try {
       const url = new URL(raw);
       const inviteParam = url.searchParams.get('invite');
       if (inviteParam) raw = inviteParam;
     } catch(e) { /* not a URL — treat input as the raw code */ }
 
-    let data;
-    try { data = JSON.parse(atob(raw)); } catch(e) { throw new Error('That doesn\'t look like a valid join code.'); }
-    if (!data.invite || !data.guild) throw new Error('That doesn\'t look like a valid join code.');
-    if (data.exp && data.exp < Date.now()) throw new Error('This join code has expired — ask an officer for a new one.');
-
-    await completeGuildJoin(data.guild, data.server);
+    // Short DB-backed join codes are 6 characters from a fixed alphabet; anything
+    // longer is the legacy self-contained invite-link blob (base64 JSON).
+    if (raw.length <= 8) {
+      await completeGuildJoin(null, null, raw);
+    } else {
+      let data;
+      try { data = JSON.parse(atob(raw)); } catch(e) { throw new Error('That doesn\'t look like a valid join code.'); }
+      if (!data.invite || !data.guild) throw new Error('That doesn\'t look like a valid join code.');
+      if (data.exp && data.exp < Date.now()) throw new Error('This join code has expired — ask an officer for a new one.');
+      await completeGuildJoin(data.guild, data.server);
+    }
   } catch(e) {
     statusEl.textContent = 'Error: ' + e.message;
     statusEl.className   = 'status-msg error';
@@ -5410,6 +5433,7 @@ async function createGuild() {
       STATE.teamId           = freshGuildData.team?.id   || null;
       STATE.teamName         = freshGuildData.team?.name || null;
       STATE.claimedCharacter = freshGuildData.claimedCharacter || null;
+      STATE.joinCode         = freshGuildData.guild?.join_code || null;
       if (freshGuildData.team?.id) localStorage.setItem('raidlead_team_id', freshGuildData.team.id);
     }
 
@@ -5453,6 +5477,7 @@ function showInviteModal() {
   const link    = code ? `${baseUrl}?invite=${encodeURIComponent(code)}` : 'Could not generate link';
   document.getElementById('invite-link-input').value = link;
   document.getElementById('invite-copy-msg').style.display = 'none';
+  renderJoinCodeUI();
   document.getElementById('invite-modal').classList.add('open');
 }
 
@@ -5466,6 +5491,59 @@ function copyInviteLink() {
     const msg = document.getElementById('invite-copy-msg');
     msg.style.display = 'block';
     setTimeout(() => msg.style.display = 'none', 3000);
+  }).catch(() => {
+    input.select();
+    document.execCommand('copy');
+  });
+}
+
+function renderJoinCodeUI() {
+  const display = document.getElementById('join-code-display');
+  const genBtn  = document.getElementById('join-code-generate-btn');
+  const msg     = document.getElementById('join-code-msg');
+  msg.style.display = 'none';
+  if (STATE.joinCode) {
+    document.getElementById('join-code-input').value = STATE.joinCode;
+    display.style.display = 'flex';
+    genBtn.textContent = 'Regenerate Join Code';
+  } else {
+    display.style.display = 'none';
+    genBtn.textContent = 'Generate Join Code';
+  }
+}
+
+async function generateJoinCode() {
+  const msg = document.getElementById('join-code-msg');
+  const hadCode = !!STATE.joinCode;
+  if (hadCode && !confirm('This will invalidate the current join code. Continue?')) return;
+
+  msg.style.display = 'block';
+  msg.style.color   = 'var(--text-mute)';
+  msg.textContent   = 'Generating...';
+  try {
+    const resp = await fetch('/api/guild?action=generateJoinCode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to generate join code');
+    STATE.joinCode = data.joinCode;
+    renderJoinCodeUI();
+    msg.style.display = 'block';
+    msg.style.color   = '#1EFF00';
+    msg.textContent   = 'New join code generated!';
+    setTimeout(() => { msg.style.display = 'none'; }, 3000);
+  } catch(e) {
+    msg.style.color = '#ff6b6b';
+    msg.textContent = 'Error: ' + e.message;
+  }
+}
+
+function copyJoinCode() {
+  const input = document.getElementById('join-code-input');
+  navigator.clipboard.writeText(input.value).then(() => {
+    const msg = document.getElementById('join-code-msg');
+    msg.style.display = 'block';
+    msg.style.color   = '#1EFF00';
+    msg.textContent   = '✓ Copied to clipboard!';
+    setTimeout(() => { msg.style.display = 'none'; }, 3000);
   }).catch(() => {
     input.select();
     document.execCommand('copy');

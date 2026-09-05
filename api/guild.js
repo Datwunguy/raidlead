@@ -19,7 +19,7 @@ module.exports = async (req, res) => {
     try {
       const { data: membership } = await supabase
         .from('guild_members')
-        .select(`role, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, teams ( id, name ) )`)
+        .select(`role, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, teams ( id, name ) )`)
         .eq('account_id', session.id)
         .single();
       if (!membership) return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
@@ -124,6 +124,38 @@ module.exports = async (req, res) => {
       }
 
       return res.status(200).json({ guild: data });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── GENERATE JOIN CODE: short, DB-backed code members can type in to join (officers+) ──
+  if (action === 'generateJoinCode') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    try {
+      const { data: myMembership } = await supabase
+        .from('guild_members')
+        .select('role, guild_id')
+        .eq('account_id', session.id)
+        .single();
+      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
+        return res.status(403).json({ error: 'Officers only' });
+      }
+
+      // Skip visually ambiguous characters (0/O, 1/I/L)
+      const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+      const genCode = () => Array.from({ length: 6 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('');
+
+      let code = null;
+      for (let attempt = 0; attempt < 5 && !code; attempt++) {
+        const candidate = genCode();
+        const { data: clash } = await supabase.from('guilds').select('id').eq('join_code', candidate).maybeSingle();
+        if (!clash) code = candidate;
+      }
+      if (!code) return res.status(500).json({ error: 'Could not generate a unique join code — try again' });
+
+      const { error } = await supabase.from('guilds').update({ join_code: code }).eq('id', myMembership.guild_id);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true, joinCode: code });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 

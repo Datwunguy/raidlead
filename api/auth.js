@@ -135,22 +135,34 @@ module.exports = async (req, res) => {
     const session = getSession(req);
     if (!session) return res.status(401).json({ error: 'Not authenticated' });
 
-    const { guildName, server } = req.body;
-    if (!guildName) return res.status(400).json({ error: 'Guild name required' });
+    const { guildName, server, joinCode } = req.body;
+    if (!guildName && !joinCode) return res.status(400).json({ error: 'Guild name or join code required' });
 
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
     try {
-      let query = supabase.from('guilds').select('id').ilike('name', guildName.trim());
-      if (server) query = query.ilike('server', server.trim());
-      const { data: guilds, error: findErr } = await query;
-      if (findErr) throw findErr;
-      if (!guilds || guilds.length === 0) {
-        return res.status(404).json({ error: 'No guild found with that name/server. Double-check the spelling, or ask an officer for a join code.' });
+      let guild;
+      if (joinCode) {
+        const { data, error: codeErr } = await supabase
+          .from('guilds')
+          .select('id')
+          .eq('join_code', joinCode.trim().toUpperCase())
+          .maybeSingle();
+        if (codeErr) throw codeErr;
+        if (!data) return res.status(404).json({ error: 'Invalid join code.' });
+        guild = data;
+      } else {
+        let query = supabase.from('guilds').select('id').ilike('name', guildName.trim());
+        if (server) query = query.ilike('server', server.trim());
+        const { data: guilds, error: findErr } = await query;
+        if (findErr) throw findErr;
+        if (!guilds || guilds.length === 0) {
+          return res.status(404).json({ error: 'No guild found with that name/server. Double-check the spelling, or ask an officer for a join code.' });
+        }
+        if (guilds.length > 1) {
+          return res.status(409).json({ error: 'Multiple guilds match that name — please also enter the server.' });
+        }
+        guild = guilds[0];
       }
-      if (guilds.length > 1) {
-        return res.status(409).json({ error: 'Multiple guilds match that name — please also enter the server.' });
-      }
-      const guild = guilds[0];
 
       const { data: existing } = await supabase
         .from('guild_members')
