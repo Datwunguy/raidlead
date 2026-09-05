@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔</text></svg>">
+  <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCA4Ni42IDEwMCc+PGRlZnM+PGcgaWQ9J3MnIHN0cm9rZT0nIzFhMWExYScgc3Ryb2tlLXdpZHRoPSc5JyBzdHJva2UtbGluZWpvaW49J3JvdW5kJz48cG9seWdvbiBwb2ludHM9JzAsLTI2NiAyOC41LC0yMzYgMjguNSwxMTIgMjUsMTE2IDU1LDExOSA1OS41LDEzMiA1OCwxNDEgNTAsMTQ0IDI4LjUsMTQ3IDIzLjUsMTUwIDExLDE3MSAxMSwyNDMgMTMsMjUwIDksMjYxIDAsMjY1IC05LDI2MSAtMTMsMjUwIC0xMSwyNDMgLTExLDE3MSAtMjMuNSwxNTAgLTI4LjUsMTQ3IC01MCwxNDQgLTU4LDE0MSAtNTkuNSwxMzIgLTU1LDExOSAtMjUsMTE2IC0yOC41LDExMiAtMjguNSwtMjM2JyBmaWxsPScjOWFhMGFhJy8+PGxpbmUgeDE9JzAnIHkxPSctMjI1JyB4Mj0nMCcgeTI9JzEwNScgc3Ryb2tlPScjN2Q4MjhhJyBzdHJva2Utd2lkdGg9JzUnLz48bGluZSB4MT0nLTI3JyB5MT0nMTE0JyB4Mj0nMjcnIHkyPScxMTQnIHN0cm9rZT0nIzFhMWExYScgc3Ryb2tlLXdpZHRoPSc5JyBzdHJva2UtbGluZWNhcD0ncm91bmQnLz48L2c+PC9kZWZzPjxwb2x5Z29uIHBvaW50cz0nNDMuMywwIDg2LjYsMjUgODYuNiw3NSA0My4zLDEwMCAwLDc1IDAsMjUnIGZpbGw9JyNjOGE4NGInIHN0cm9rZT0nIzFhMWExYScgc3Ryb2tlLXdpZHRoPScxLjUnLz48dXNlIGhyZWY9JyNzJyB0cmFuc2Zvcm09J3RyYW5zbGF0ZSg0My4zLDUwKSByb3RhdGUoNDUpIHNjYWxlKDAuMTI3OCknLz48dXNlIGhyZWY9JyNzJyB0cmFuc2Zvcm09J3RyYW5zbGF0ZSg0My4zLDUwKSByb3RhdGUoLTQ1KSBzY2FsZSgwLjEyNzgpJy8+PC9zdmc+">
 <title>RaidLead — Guild Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -96,10 +96,8 @@
 
   .logo-icon {
     width: 32px; height: 32px;
-    background: linear-gradient(135deg, var(--gold), var(--gold-dim));
-    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
     display: flex; align-items: center; justify-content: center;
-    font-size: 14px;
+    flex-shrink: 0;
   }
 
   .logo span { color: var(--text-dim); font-weight: 400; font-size: 12px; letter-spacing: 6px; margin-left: 4px; }
@@ -1460,7 +1458,18 @@
   <!-- HEADER -->
   <header>
     <div class="logo">
-      <div class="logo-icon">⚔</div>
+      <svg class="logo-icon" viewBox="0 0 86.6 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <g id="logoSword" stroke="#1a1a1a" stroke-width="9" stroke-linejoin="round">
+            <polygon points="0,-266 28.5,-236 28.5,112 25,116 55,119 59.5,132 58,141 50,144 28.5,147 23.5,150 11,171 11,243 13,250 9,261 0,265 -9,261 -13,250 -11,243 -11,171 -23.5,150 -28.5,147 -50,144 -58,141 -59.5,132 -55,119 -25,116 -28.5,112 -28.5,-236" fill="#9aa0aa"/>
+            <line x1="0" y1="-225" x2="0" y2="105" stroke="#7d828a" stroke-width="5"/>
+            <line x1="-27" y1="114" x2="27" y2="114" stroke="#1a1a1a" stroke-width="9" stroke-linecap="round"/>
+          </g>
+        </defs>
+        <polygon points="43.3,0 86.6,25 86.6,75 43.3,100 0,75 0,25" fill="#c8a84b" stroke="#1a1a1a" stroke-width="1.5"/>
+        <use href="#logoSword" transform="translate(43.3,50) rotate(45) scale(0.1278)"/>
+        <use href="#logoSword" transform="translate(43.3,50) rotate(-45) scale(0.1278)"/>
+      </svg>
       RAIDLEAD <span>GUILD DASHBOARD</span>
     </div>
     <nav id="main-nav" style="display:none;">
