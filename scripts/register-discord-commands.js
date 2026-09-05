@@ -17,7 +17,7 @@ if (!APPLICATION_ID || !BOT_TOKEN) {
 const commands = [
   {
     name: 'attendance',
-    description: 'Mark yourself out or available for a raid night',
+    description: 'Mark attendance out or available for a raid night',
     options: [
       {
         name: 'status',
@@ -32,6 +32,12 @@ const commands = [
       {
         name: 'date',
         description: 'Raid date, e.g. 9/8 (defaults to the next upcoming raid night)',
+        type: 3, // STRING
+        required: false,
+      },
+      {
+        name: 'character',
+        description: 'Character name (skips needing /link -- marks that character directly)',
         type: 3, // STRING
         required: false,
       },

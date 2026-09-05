@@ -159,6 +159,40 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
+  // ── BEGIN DISCORD CONNECT: kick off the "Connect to Discord" OAuth flow (officers+) ──
+  // Returns a state token + the Discord Application ID so the client can build the
+  // bot-authorization URL. Whoever actually completes that URL (which requires "Manage
+  // Server" on the target Discord server) doesn't need a RaidLead login at all -- the
+  // callback resolves the guild purely from this state token, not from a session.
+  if (action === 'beginDiscordConnect') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    try {
+      const { data: myMembership } = await supabase
+        .from('guild_members')
+        .select('role, guild_id')
+        .eq('account_id', session.id)
+        .single();
+      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
+        return res.status(403).json({ error: 'Officers only' });
+      }
+
+      const appId = process.env.DISCORD_APPLICATION_ID;
+      if (!appId) return res.status(500).json({ error: 'Discord integration is not configured yet (missing DISCORD_APPLICATION_ID).' });
+
+      const { randomBytes } = require('crypto');
+      const state = randomBytes(16).toString('hex');
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+      const { error } = await supabase.from('guilds').update({
+        discord_connect_state: state,
+        discord_connect_state_expires_at: expiresAt,
+      }).eq('id', myMembership.guild_id);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true, state, discordApplicationId: appId });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
   // ── SET DISCORD GUILD ID: link a Discord server to this RaidLead guild (officers+) ──
   if (action === 'setDiscordGuildId') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });

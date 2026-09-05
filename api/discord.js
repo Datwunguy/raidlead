@@ -107,19 +107,30 @@ async function handleAttendanceCommand(supabase, interaction) {
     .from('teams').select('id').eq('guild_id', guildRow.id).order('created_at', { ascending: true }).limit(1).maybeSingle();
   if (!teamRow) return ephemeral('No team found for this guild yet.');
 
-  const { data: account } = await supabase
-    .from('accounts').select('id, battletag').eq('discord_id', discordUserId).maybeSingle();
-  if (!account) {
-    return ephemeral("Your Discord account isn't linked to RaidLead yet. Run `/link <code>` with the code from your RaidLead profile (Members panel), or ask an officer to link you.");
+  const options       = interaction.data.options || [];
+  const statusOpt     = options.find(o => o.name === 'status')?.value;
+  const dateOpt       = options.find(o => o.name === 'date')?.value;
+  const characterOpt  = options.find(o => o.name === 'character')?.value;
+
+  let character;
+  if (characterOpt) {
+    // Direct character-name mode -- no Discord/RaidLead account linking required.
+    // Note: this means anyone in the server can mark any character's attendance.
+    const { data: char } = await supabase
+      .from('characters').select('name').eq('team_id', teamRow.id).ilike('name', characterOpt.trim()).maybeSingle();
+    if (!char) return ephemeral(`Couldn't find a character named "${characterOpt}" on this team's roster.`);
+    character = char;
+  } else {
+    const { data: account } = await supabase
+      .from('accounts').select('id, battletag').eq('discord_id', discordUserId).maybeSingle();
+    if (!account) {
+      return ephemeral("Your Discord account isn't linked to RaidLead yet. Either add `character:YourCharacterName` to this command, run `/link <code>` with the code from your RaidLead profile, or ask an officer to link you.");
+    }
+    const { data: char } = await supabase
+      .from('characters').select('name').eq('team_id', teamRow.id).eq('account_id', account.id).maybeSingle();
+    if (!char) return ephemeral("You haven't claimed a character on RaidLead yet -- do that first in the app, or use `character:YourCharacterName` with this command.");
+    character = char;
   }
-
-  const { data: character } = await supabase
-    .from('characters').select('name').eq('team_id', teamRow.id).eq('account_id', account.id).maybeSingle();
-  if (!character) return ephemeral("You haven't claimed a character on RaidLead yet -- do that first in the app.");
-
-  const options   = interaction.data.options || [];
-  const statusOpt = options.find(o => o.name === 'status')?.value;
-  const dateOpt   = options.find(o => o.name === 'date')?.value;
 
   let raidDate;
   if (dateOpt) {

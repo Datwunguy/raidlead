@@ -1597,12 +1597,25 @@
         </div>
         <div class="form-row">
           <div class="form-group full">
-            <label>Discord Server ID <span style="color:var(--text-mute);font-weight:400;">(optional — links this guild to a Discord server so members can use /attendance and /link. Enable Developer Mode in Discord, then right-click your server icon → Copy Server ID.)</span></label>
-            <div style="display:flex; gap:8px; align-items:center;">
-              <input type="text" id="inp-discord-guild" placeholder="e.g. 123456789012345678" style="flex:1;" />
-              <button class="btn-secondary" onclick="saveDiscordGuildId()">Save</button>
+            <label>Discord <span style="color:var(--text-mute);font-weight:400;">(lets members use /attendance and /link in your server)</span></label>
+            <div id="discord-connect-status" style="font-size:13px; color:var(--text-dim); margin-bottom:10px;"></div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button class="btn-primary" style="padding:8px 16px; font-size:13px;" onclick="beginDiscordConnect()">Connect to Discord</button>
+              <button class="btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="copyDiscordConnectLink()">Copy Link to Share</button>
             </div>
-            <div id="discord-guild-status" class="status-msg" style="margin-top:6px;"></div>
+            <div style="font-size:12px; color:var(--text-mute); margin-top:8px;">
+              Adding the bot to a server requires "Manage Server" permission there. If that's not you, use "Copy Link to Share" and send it to whoever runs that server.
+            </div>
+            <div id="discord-connect-msg" class="status-msg" style="margin-top:6px;"></div>
+
+            <details style="margin-top:14px;">
+              <summary style="cursor:pointer; font-size:12px; color:var(--text-mute); text-transform:none; letter-spacing:0; font-weight:600;">Or enter a Discord Server ID manually</summary>
+              <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+                <input type="text" id="inp-discord-guild" placeholder="e.g. 123456789012345678" style="flex:1;" />
+                <button class="btn-secondary" onclick="saveDiscordGuildId()">Save</button>
+              </div>
+              <div id="discord-guild-status" class="status-msg" style="margin-top:6px;"></div>
+            </details>
           </div>
         </div>
       </div>
@@ -2387,6 +2400,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Handle pending invite link
   checkInviteParam();
 
+  // Handle the "Connect to Discord" OAuth redirect result
+  const discordConnected   = urlParams.get('discord_connected');
+  const discordConnectErr  = urlParams.get('discord_connect_error');
+  if (discordConnected || discordConnectErr) {
+    window.history.replaceState({}, '', '/');
+    if (discordConnected) {
+      setTimeout(() => showToast('Discord connected!', 'success'), 300);
+    } else if (discordConnectErr) {
+      setTimeout(() => showToast('Discord connect failed: ' + discordConnectErr, 'error'), 300);
+    }
+  }
+
   // Handle auth errors from Battle.net callback
   const authError = urlParams.get('auth_error');
   if (authError) {
@@ -2673,6 +2698,7 @@ function showSetup() {
     set('inp-wcl',       s.wclUrl);
     set('inp-wcl-team',  s.wclTeamId);
     set('inp-discord-guild', STATE.discordGuildId);
+    renderDiscordConnectStatus();
     setRaidDaysOn('inp-raid-days', s.raidDays);
 
     // Pre-populate team name if set
@@ -3289,12 +3315,73 @@ async function saveDiscordGuildId() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to save');
     STATE.discordGuildId = data.discordGuildId;
+    renderDiscordConnectStatus();
     statusEl.textContent = 'Saved!';
     statusEl.className   = 'status-msg success';
     setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'status-msg'; }, 3000);
   } catch(e) {
     statusEl.textContent = 'Error: ' + e.message;
     statusEl.className   = 'status-msg error';
+  }
+}
+
+function renderDiscordConnectStatus() {
+  const el = document.getElementById('discord-connect-status');
+  if (!el) return;
+  el.innerHTML = STATE.discordGuildId
+    ? `<span style="color:#5865F2;">🔗 Connected</span> <span style="color:var(--text-mute);">(Server ID: ${STATE.discordGuildId})</span>`
+    : '<span style="color:var(--text-mute);">Not connected yet.</span>';
+}
+
+// Builds the Discord bot-authorization URL. Whoever opens this needs "Manage Server"
+// on the target Discord server to actually complete adding the bot; the redirect back
+// to our callback is resolved via the one-time state token, not a RaidLead session.
+async function buildDiscordConnectUrl() {
+  const resp = await fetch('/api/guild?action=beginDiscordConnect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Failed to start Discord connection');
+  const redirectUri = window.location.origin + '/api/discord-connect-callback';
+  const params = new URLSearchParams({
+    client_id:    data.discordApplicationId,
+    scope:        'bot applications.commands',
+    permissions:  '0',
+    redirect_uri: redirectUri,
+    state:        data.state,
+  });
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+async function beginDiscordConnect() {
+  const msg = document.getElementById('discord-connect-msg');
+  msg.textContent = 'Preparing...';
+  msg.className   = 'status-msg loading';
+  try {
+    const url = await buildDiscordConnectUrl();
+    msg.textContent = '';
+    msg.className   = 'status-msg';
+    window.open(url, '_blank');
+  } catch(e) {
+    msg.textContent = 'Error: ' + e.message;
+    msg.className   = 'status-msg error';
+  }
+}
+
+async function copyDiscordConnectLink() {
+  const msg = document.getElementById('discord-connect-msg');
+  msg.textContent = 'Generating link...';
+  msg.className   = 'status-msg loading';
+  try {
+    const url = await buildDiscordConnectUrl();
+    await navigator.clipboard.writeText(url);
+    msg.textContent = "Link copied! It's valid for 15 minutes -- send it to whoever manages your Discord server.";
+    msg.className   = 'status-msg success';
+  } catch(e) {
+    msg.textContent = 'Error: ' + e.message;
+    msg.className   = 'status-msg error';
   }
 }
 
