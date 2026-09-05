@@ -3346,11 +3346,12 @@ async function buildDiscordConnectUrl() {
   if (!resp.ok) throw new Error(data.error || 'Failed to start Discord connection');
   const redirectUri = window.location.origin + '/api/discord-connect-callback';
   const params = new URLSearchParams({
-    client_id:    data.discordApplicationId,
-    scope:        'bot applications.commands',
-    permissions:  '0',
-    redirect_uri: redirectUri,
-    state:        data.state,
+    client_id:     data.discordApplicationId,
+    scope:         'bot applications.commands',
+    permissions:   '0',
+    redirect_uri:  redirectUri,
+    response_type: 'code', // required for Discord to actually redirect back to us with guild_id -- without it, it just shows its own static "authorized" page and stops
+    state:         data.state,
   });
   return `https://discord.com/oauth2/authorize?${params.toString()}`;
 }
