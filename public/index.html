@@ -1988,6 +1988,7 @@
             <span id="plan-status-badge" style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; padding:4px 10px; border-radius:3px; background:rgba(255,107,107,0.1); color:#ff6b6b; border:1px solid rgba(255,107,107,0.3);">DRAFT</span>
             <button class="btn-secondary" id="planner-edit-btn" style="display:none;" onclick="enterEditMode()">✎ Edit</button>
             <button class="btn-primary" id="planner-publish-btn" style="display:none;" onclick="publishRaidPlan()">⬆ Publish</button>
+            <button class="btn-secondary" id="planner-import-btn" style="display:none;" onclick="importLastRaidRoster()">⤓ Use Last Roster</button>
             <button class="btn-secondary" id="planner-clear-btn" style="display:none;" onclick="clearRaidRoster()">✕ Clear</button>
           </div>
         </div>
@@ -4793,6 +4794,7 @@ function applyPlanData(planData) {
     }
     document.getElementById('planner-edit-btn').style.display    = 'block';
     document.getElementById('planner-publish-btn').style.display = 'none';
+    document.getElementById('planner-import-btn').style.display  = 'none';
   }
 }
 
@@ -4864,6 +4866,8 @@ async function loadPlanForDate(dateStr) {
     if (editBtn) editBtn.style.display = 'block';
     const pubBtn = document.getElementById('planner-publish-btn');
     if (pubBtn) pubBtn.style.display = 'none';
+    const importBtn = document.getElementById('planner-import-btn');
+    if (importBtn) importBtn.style.display = 'none';
   } else {
     STATE.raidPlanPublished = false;
     STATE.raidPlanMode      = null;
@@ -4877,6 +4881,8 @@ async function loadPlanForDate(dateStr) {
     if (editBtn) editBtn.style.display = 'none';
     const pubBtn = document.getElementById('planner-publish-btn');
     if (pubBtn) pubBtn.style.display = 'block';
+    const importBtn = document.getElementById('planner-import-btn');
+    if (importBtn) importBtn.style.display = 'inline-flex';
   }
   const clearBtn = document.getElementById('planner-clear-btn');
   if (clearBtn) clearBtn.style.display = 'none';
@@ -5263,6 +5269,7 @@ function enterEditMode() {
   document.getElementById('planner-edit-banner').style.display = 'block';
   document.getElementById('planner-edit-btn').style.display    = 'none';
   document.getElementById('planner-publish-btn').style.display = 'block';
+  document.getElementById('planner-import-btn').style.display  = 'inline-flex';
   document.getElementById('planner-clear-btn').style.display   = 'inline-flex';
   showToast('Edit mode active — changes are drafts until published', '');
 }
@@ -5275,6 +5282,7 @@ function exitEditMode() {
   document.getElementById('planner-edit-banner').style.display = 'none';
   document.getElementById('planner-edit-btn').style.display    = 'block';
   document.getElementById('planner-publish-btn').style.display = 'none';
+  document.getElementById('planner-import-btn').style.display  = 'none';
   document.getElementById('planner-clear-btn').style.display   = 'none';
   // Reload from DB to discard unsaved changes
   fetchRaidPlanFromDB().then(planData => {
@@ -5293,6 +5301,7 @@ async function publishRaidPlan() {
     document.getElementById('planner-edit-banner').style.display = 'none';
     document.getElementById('planner-edit-btn').style.display    = 'block';
     document.getElementById('planner-publish-btn').style.display = 'none';
+    document.getElementById('planner-import-btn').style.display  = 'none';
     document.getElementById('planner-clear-btn').style.display   = 'none';
     document.getElementById('plan-status-badge').textContent     = 'PUBLISHED';
     // Clear localStorage draft so other devices always read from DB
@@ -5309,6 +5318,7 @@ async function publishRaidPlan() {
     document.getElementById('planner-edit-banner').style.display = 'block';
     document.getElementById('planner-edit-btn').style.display    = 'none';
     document.getElementById('planner-publish-btn').style.display = 'block';
+    document.getElementById('planner-import-btn').style.display  = 'inline-flex';
     document.getElementById('planner-clear-btn').style.display   = 'inline-flex';
     return;
   }
@@ -5322,6 +5332,54 @@ function clearRaidRoster() {
   renderPlannerChecklist();
   renderPlannerRoster();
   showToast('Raid roster cleared.', '');
+}
+
+// Pulls the character selections from the most recent saved raid plan before the
+// current planner date into the in-memory selection -- does NOT save or publish,
+// so it's just a starting point the officer can tweak before publishing themselves.
+async function importLastRaidRoster() {
+  if (!STATE.plannerDate || !STATE.teamId) return;
+  const btn = document.getElementById('planner-import-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Loading...'; }
+  try {
+    const resp = await fetch(`/api/plans?action=getPrevious&teamId=${STATE.teamId}&beforeDate=${STATE.plannerDate}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to load previous roster');
+    if (!data.plan) {
+      showToast('No previous raid roster found.', '');
+      return;
+    }
+
+    const members = data.plan.raid_plan_members || [];
+    const unavailableNames = getUnavailableNamesForDate(STATE.plannerDate);
+    const names = new Set();
+    const flex  = {};
+    let skipped = 0;
+    members.forEach(m => {
+      const name = m.characters?.name;
+      if (!name) return;
+      if (unavailableNames.has(name)) { skipped++; return; }
+      names.add(name);
+      if (m.assigned_role && m.assigned_role !== 'primary') flex[name] = m.assigned_role;
+    });
+
+    plannerSelected  = names;
+    flexRoleSelected = flex;
+    saveFlexSlots();
+    renderPlannerChecklist();
+    renderPlannerRoster();
+
+    const dateLabel = data.plan.raid_date
+      ? new Date(data.plan.raid_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      : 'the last raid night';
+    let msg = `Imported roster from ${dateLabel} (${names.size} players).`;
+    if (skipped > 0) msg += ` Skipped ${skipped} marked unavailable for this date.`;
+    showToast(msg, 'success');
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⤓ Use Last Roster'; }
+  }
 }
 
 
@@ -6376,9 +6434,11 @@ function applyRolePermissions(role) {
   // Raid planner edit controls — officers only
   const editBtn    = document.getElementById('planner-edit-btn');
   const publishBtn = document.getElementById('planner-publish-btn');
+  const importBtn  = document.getElementById('planner-import-btn');
   const clearBtn   = document.getElementById('planner-clear-btn');
   if (editBtn)    editBtn.style.display    = isOfficer ? 'block' : 'none';
   if (publishBtn) publishBtn.style.display = 'none'; // only show in edit mode
+  if (importBtn)  importBtn.style.display  = 'none'; // only visible in edit mode / draft
   if (clearBtn)   clearBtn.style.display   = 'none'; // only visible in edit mode
 
   // Compare tab fetch button — officers only

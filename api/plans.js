@@ -188,5 +188,33 @@ module.exports = async (req, res) => {
     }
   }
 
+  // ── GET PREVIOUS: most recent saved plan strictly before a given date (officers only) ──
+  if (action === 'getPrevious') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const teamId    = req.query.teamId    || req.body?.teamId;
+    const beforeDate = req.query.beforeDate || req.body?.beforeDate;
+    if (!teamId) return res.status(200).json({ plan: null });
+
+    try {
+      await assertTeamOwnership(teamId);
+
+      let query = supabase
+        .from('raid_plans')
+        .select(`id, name, published, updated_at, raid_date,
+          raid_plan_members ( assigned_role, characters ( id, name, class, primary_role ) )`)
+        .eq('team_id', teamId)
+        .not('raid_date', 'is', null);
+
+      if (beforeDate) query = query.lt('raid_date', beforeDate);
+      query = query.order('raid_date', { ascending: false }).limit(1);
+
+      const { data: plans } = await query;
+      const plan = plans?.[0] || null;
+      return res.status(200).json({ plan });
+    } catch (err) {
+      return res.status(200).json({ plan: null });
+    }
+  }
+
   res.status(400).json({ error: 'Invalid action' });
 };
