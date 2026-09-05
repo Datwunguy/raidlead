@@ -24,9 +24,8 @@ module.exports = async (req, res) => {
       // surfacing what was actually wrong.
       const { data: memberships, error: membershipErr } = await supabase
         .from('guild_members')
-        .select(`role, guild_id, created_at, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, teams ( id, name ) )`)
-        .eq('account_id', session.id)
-        .order('created_at', { ascending: true });
+        .select(`role, guild_id, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, teams ( id, name ) )`)
+        .eq('account_id', session.id);
 
       if (membershipErr) {
         console.error('[guild.get] membership lookup error:', membershipErr.message);
@@ -36,7 +35,7 @@ module.exports = async (req, res) => {
         return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
       }
       if (memberships.length > 1) {
-        console.warn('[guild.get] account belongs to more than one guild -- using the earliest:', session.id, memberships.map(m => m.guild_id));
+        console.warn('[guild.get] account belongs to more than one guild -- using the first returned:', session.id, memberships.map(m => m.guild_id));
       }
       const membership = memberships[0];
 
