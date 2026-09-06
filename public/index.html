@@ -4868,6 +4868,8 @@ async function loadPlanForDate(dateStr) {
     if (pubBtn) pubBtn.style.display = 'none';
     const importBtn = document.getElementById('planner-import-btn');
     if (importBtn) importBtn.style.display = 'none';
+    const clearBtn = document.getElementById('planner-clear-btn');
+    if (clearBtn) clearBtn.style.display = 'none';
   } else {
     STATE.raidPlanPublished = false;
     STATE.raidPlanMode      = null;
@@ -4883,9 +4885,11 @@ async function loadPlanForDate(dateStr) {
     if (pubBtn) pubBtn.style.display = 'block';
     const importBtn = document.getElementById('planner-import-btn');
     if (importBtn) importBtn.style.display = 'inline-flex';
+    // A fresh draft has nothing published to fall back to, so "Cancel" here just
+    // means discard the in-progress selection -- same effect as Clear.
+    const clearBtn = document.getElementById('planner-clear-btn');
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
   }
-  const clearBtn = document.getElementById('planner-clear-btn');
-  if (clearBtn) clearBtn.style.display = 'none';
   const editBanner = document.getElementById('edit-mode-banner');
   if (editBanner) editBanner.style.display = 'none';
 }
@@ -5327,8 +5331,10 @@ async function publishRaidPlan() {
 }
 
 function clearRaidRoster() {
-  plannerSelected = new Set();
+  plannerSelected  = new Set();
+  flexRoleSelected = {};
   savePlannerState(plannerSelected);
+  saveFlexSlots();
   renderPlannerChecklist();
   renderPlannerRoster();
   showToast('Raid roster cleared.', '');
