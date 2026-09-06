@@ -321,9 +321,14 @@ module.exports = async (req, res) => {
         }
 
         for (const [encId, encData] of Object.entries(fightsByEncounter)) {
-          const fightsToUse = encData.firstKillTime
+          let fightsToUse = encData.firstKillTime
             ? encData.fights.filter(f => f.startTime < encData.firstKillTime && !f.kill)
             : encData.fights.filter(f => !f.kill);
+          // A boss cleared with zero wipes (one-pull kill) has no pre-kill data to measure --
+          // fall back to the kill fight itself so it isn't left with no data at all.
+          if (fightsToUse.length === 0 && encData.firstKillTime) {
+            fightsToUse = encData.fights.filter(f => f.kill && f.startTime === encData.firstKillTime);
+          }
 
           for (const fight of fightsToUse) {
             try {
@@ -680,9 +685,14 @@ module.exports = async (req, res) => {
         for (const [encId, encData] of Object.entries(fightsByEncounter)) {
           // Only include wipes up to (but NOT including) the first kill
           // The kill itself is excluded — survival on a kill isn't meaningful
-          const fightsToUse = encData.firstKillTime
+          let fightsToUse = encData.firstKillTime
             ? encData.fights.filter(f => f.startTime < encData.firstKillTime && !f.kill)
             : encData.fights.filter(f => !f.kill);
+          // A boss cleared with zero wipes (one-pull kill) has no pre-kill data to measure --
+          // fall back to the kill fight itself so it isn't left with no data at all.
+          if (fightsToUse.length === 0 && encData.firstKillTime) {
+            fightsToUse = encData.fights.filter(f => f.kill && f.startTime === encData.firstKillTime);
+          }
 
           for (const fight of fightsToUse) {
             const fightDuration = fight.endTime - fight.startTime;

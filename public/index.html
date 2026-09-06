@@ -3892,7 +3892,8 @@ async function fetchScores() {
           if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
           return n.toFixed(0);
         };
-        const rawOf = r => r?.bestAmount != null ? fmtAmount(r.bestAmount) : null;
+        const rawOf    = r => r?.bestAmount != null ? fmtAmount(r.bestAmount) : null;
+        const rawNumOf = r => r?.bestAmount != null ? parseFloat(r.bestAmount) : null;
 
         // Death %
         const deaths     = zr.deaths     || 0;
@@ -3903,8 +3904,9 @@ async function fetchScores() {
         // encounterRankings with killType:FastestKills returns all kills sorted fastest first
         // The LAST entry (highest index) per boss = the first kill chronologically (slowest = earliest)
         // Actually we want lowest startTime — sort and take first
-        const firstKillMap    = {};
-        const firstKillRawMap = {};
+        const firstKillMap       = {};
+        const firstKillRawMap    = {};
+        const firstKillRawNumMap = {};
         bossIds.forEach((id, i) => {
           const bossName = STATE.bossOrder?.[i];
           if (!bossName) return;
@@ -3919,6 +3921,7 @@ async function fetchScores() {
           if (first?.rankPercent != null) {
             firstKillMap[bossName] = fmt(first.rankPercent);
             firstKillRawMap[bossName] = rawOf(first);
+            firstKillRawNumMap[bossName] = rawNumOf(first);
           }
         });
 
@@ -3946,7 +3949,10 @@ async function fetchScores() {
           oppoRankingMap: Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
           rawMap:       Object.fromEntries(rankings.map(r => [r.encounter?.name, rawOf(r)])),
           oppoRawMap:   Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawOf(r)])),
+          rawNumMap:      Object.fromEntries(rankings.map(r => [r.encounter?.name, rawNumOf(r)])),
+          oppoRawNumMap:  Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawNumOf(r)])),
           firstKillRawMap,
+          firstKillRawNumMap,
           firstKillMap,
           rankings:     rankings.map(r => fmt(r.rankPercent)),
           error:        null,
@@ -4179,7 +4185,7 @@ function renderScoresTable(roleFilter) {
           const raw = p.firstKillRawMap?.[bossName];
           const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
           const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-          const fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
+          const fg = STATE.scoreShowRaw ? '#fff' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
           return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${showVal}</td>`;
         }).join('');
         // Return early with firstkill-specific row
@@ -4227,7 +4233,7 @@ function renderScoresTable(roleFilter) {
         }
         const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
         const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-        const fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
+        const fg = STATE.scoreShowRaw ? '#fff' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
         return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${showVal}</td>`;
       }).join('');
 
@@ -4590,6 +4596,13 @@ function getScoreSortValue(player, view, column) {
     return parseFloat(player.medianAvg);
   }
   // Otherwise: column is a boss name
+  // When the Raw DPS/HPS toggle is on, sort by the actual raw amount instead of parse % --
+  // the displayed cell shows the raw number, so sorting should match what's on screen.
+  if (STATE.scoreShowRaw && ['performance','oppoparse','firstkill'].includes(view)) {
+    if (view === 'oppoparse') return player.oppoRawNumMap?.[column];
+    if (view === 'firstkill') return player.firstKillRawNumMap?.[column];
+    return player.rawNumMap?.[column];
+  }
   if (view === 'oppoparse')  return parseFloat(player.oppoRankingMap?.[column]);
   if (view === 'firstkill')  return parseFloat(player.firstKillMap?.[column]);
   if (view === 'survival')   return parseFloat(STATE.survivorMap?.[player.name]?.[column]);
