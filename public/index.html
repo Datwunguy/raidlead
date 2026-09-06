@@ -4566,6 +4566,13 @@ function setScoreView(view, btn) {
   const showsRawToggle = ['performance', 'oppoparse'].includes(view);
   if (metricToggleWrap) metricToggleWrap.style.display = showsRawToggle ? 'flex' : 'none';
   if (!showsRawToggle) STATE.scoreShowRaw = false;
+  // The parse/raw button's active class doesn't live-update while the toggle is hidden
+  // on other views -- resync it here so it never shows "Raw" highlighted while
+  // STATE.scoreShowRaw (and the data actually rendered) has reverted to parse %.
+  const parseBtn = document.getElementById('metric-parse-btn');
+  const rawBtn   = document.getElementById('metric-raw-btn');
+  if (parseBtn) parseBtn.classList.toggle('active', !STATE.scoreShowRaw);
+  if (rawBtn)   rawBtn.classList.toggle('active', STATE.scoreShowRaw);
 
   // Rebuild Cache only applies to the two views backed by a server-side incremental cache
   const rebuildBtn = document.getElementById('score-rebuild-btn');
