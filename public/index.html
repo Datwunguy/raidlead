@@ -5159,9 +5159,19 @@ function renderOutUnavailableSection() {
 }
 
 // Boss-by-boss swaps against the published roster (e.g. "Turtles: Dust out, Feided in").
-// OUT options come from the published roster; IN options come from everyone else on the
-// team roster -- both scoped to the base published roster, not to earlier swaps, so each
-// swap stands alone as a record of what changed for that boss.
+// Each new swap's OUT/IN options reflect the roster state AFTER every earlier swap in the
+// list has been applied (so swapping Feided in for Dust means the next swap offers Feided
+// to sit out and Dust to come back in) -- but the swap records themselves are independent
+// of the published roster itself, purely a reference log of what changed and when.
+function getSwapRosterState() {
+  const current = new Set(plannerSelected);
+  (STATE.plannerSwaps || []).forEach(s => {
+    current.delete(s.outName);
+    current.add(s.inName);
+  });
+  return current;
+}
+
 function renderPlannerSwaps() {
   const wrap = document.getElementById('plan-swaps-wrap');
   if (!wrap) return;
@@ -5179,24 +5189,40 @@ function renderPlannerSwaps() {
     </div>
   `;
 
+  const swapPill = name => {
+    const player = STATE.players.find(p => p.name === name);
+    const color  = CLASS_COLORS[player?.class] || '#888';
+    const textColor = isLightColor(color) ? '#000000' : '#ffffff';
+    return `<div class="plan-player-pill" style="background:${color}; border:1px solid ${color}; margin-bottom:0; cursor:default; justify-content:center;">
+      <div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div>
+      <span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${name}</span>
+    </div>`;
+  };
+
   if (swaps.length > 0) {
     const listWrap = document.createElement('div');
-    listWrap.style.cssText = 'display:flex; flex-direction:column; gap:6px; margin-top:8px;';
+    listWrap.style.cssText = 'display:flex; flex-direction:column; gap:10px; margin-top:8px;';
     swaps.forEach(swap => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex; align-items:center; gap:8px; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:8px 10px;';
-      row.innerHTML = `
-        <div style="flex:1; min-width:0;">
-          <div style="color:var(--text-mute); font-size:10px; text-transform:uppercase; letter-spacing:1px; margin-bottom:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${swap.boss}</div>
-          <div style="display:flex; align-items:center; gap:6px; font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px;">
-            <span style="color:#FF6666;">${swap.outName}</span>
-            <span style="color:var(--text-mute);">&rarr;</span>
-            <span style="color:#1EFF00;">${swap.inName}</span>
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:10px 12px 12px;';
+      card.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <div style="color:var(--gold); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase;">${swap.boss}</div>
+          ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : ''}
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 20px 1fr; align-items:center; gap:6px;">
+          <div>
+            <div class="plan-role-label" style="font-size:9px; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #FF333333; color:#FF6666; text-align:center;">OUT</div>
+            ${swapPill(swap.outName)}
+          </div>
+          <div style="text-align:center; color:var(--text-mute); font-size:16px;">&rarr;</div>
+          <div>
+            <div class="plan-role-label" style="font-size:9px; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #1EFF0033; color:#1EFF00; text-align:center;">IN</div>
+            ${swapPill(swap.inName)}
           </div>
         </div>
-        ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : ''}
       `;
-      listWrap.appendChild(row);
+      listWrap.appendChild(card);
     });
     col.appendChild(listWrap);
   }
@@ -5216,20 +5242,21 @@ function renderPlannerSwaps() {
 function openAddSwapForm(col, addBtn) {
   addBtn.style.display = 'none';
 
-  const outNames = [...plannerSelected].sort((a,b) => a.localeCompare(b));
+  const currentRoster = getSwapRosterState();
+  const outNames = [...currentRoster].sort((a,b) => a.localeCompare(b));
   const seenNames = new Set();
   const uniquePlayers = STATE.players.filter(p => {
     if (seenNames.has(p.name)) return false;
     seenNames.add(p.name);
     return true;
   });
-  const inNames = uniquePlayers.map(p => p.name).filter(n => !plannerSelected.has(n)).sort((a,b) => a.localeCompare(b));
+  const inNames = uniquePlayers.map(p => p.name).filter(n => !currentRoster.has(n)).sort((a,b) => a.localeCompare(b));
 
   const form = document.createElement('div');
   form.id = 'planner-swap-form';
   form.style.cssText = 'margin-top:10px; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:12px; display:flex; flex-direction:column; gap:8px;';
   form.innerHTML = `
-    <input type="text" id="swap-boss-input" placeholder="Boss name (e.g. Turtles)" style="width:100%;">
+    <input type="text" id="swap-boss-input" placeholder="Boss Name" style="width:100%;">
     <div style="display:flex; gap:8px;">
       <select id="swap-out-select" style="flex:1;">
         <option value="">Out...</option>
