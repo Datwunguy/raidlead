@@ -5284,8 +5284,11 @@ function exitEditMode() {
   document.getElementById('planner-publish-btn').style.display = 'none';
   document.getElementById('planner-import-btn').style.display  = 'none';
   document.getElementById('planner-clear-btn').style.display   = 'none';
-  // Reload from DB to discard unsaved changes
-  fetchRaidPlanFromDB().then(planData => {
+  // Reload from DB to discard unsaved changes -- must pass the date being edited,
+  // otherwise this falls back to "most recently published plan" (any date), which
+  // could silently jump the planner to a completely different date than the one
+  // you were just editing.
+  fetchRaidPlanFromDB(STATE.plannerDate).then(planData => {
     if (planData && planData.plan) applyPlanData(planData);
   });
 }
