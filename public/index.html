@@ -2296,8 +2296,7 @@ const STATE = {
   compareDate:       null,         // start date (ms timestamp) for benchmark window
   scoreView:         'performance', // performance | firstkill | survival | oppoparse | mitigation
   scoreRoleFilter:   'all',         // 'all' | 'tank' | 'heal' | 'dps'
-  scoreSortCol:      'best',        // 'best' | 'median' | a boss name
-  scoreSortDir:      'desc',        // 'desc' | 'asc'
+  scoreSortCol:      'best',        // 'best' | 'median' | a boss name -- always sorted highest-to-lowest
   survivorMap:       {},            // per-player per-boss survival % from guild reports
   survivorFetched:   false,         // whether survival data has been fetched
   mitigationMap:     {},            // per-player per-boss mitigation % from guild reports
@@ -3809,12 +3808,15 @@ async function fetchScores() {
     const bossNames  = [];
     let   bossesSet  = false;
 
-    // Fetch boss IDs for encounterRankings first-kill queries
-    if (!STATE.bossIds || STATE.bossIds.length === 0) {
+    // Fetch boss IDs for encounterRankings first-kill queries -- re-fetch if we don't
+    // have any yet, or if what's cached was fetched for a different zone (e.g. the
+    // guild progressed to a new tier since the last time this ran).
+    if (!STATE.bossIds || STATE.bossIds.length === 0 || STATE.bossIdsZoneId !== zoneId) {
       try {
         const bosses = await fetchZoneBosses(zoneId);
-        STATE.bossIds   = bosses.map(b => b.id);
-        STATE.bossOrder = bosses.map(b => b.name);
+        STATE.bossIds       = bosses.map(b => b.id);
+        STATE.bossOrder     = bosses.map(b => b.name);
+        STATE.bossIdsZoneId = zoneId;
       } catch(e) { STATE.bossIds = []; STATE.bossOrder = []; }
     }
     const bossIds   = STATE.bossIds   || [];
@@ -3876,10 +3878,8 @@ async function fetchScores() {
         }
 
         const fmt = v => v != null ? parseFloat(v).toFixed(1) : 'N/A';
-        // Raw DPS/HPS number for a ranking entry, if WCL includes it (field name
-        // unconfirmed -- verify via the [WCL ranking keys] log below after deploying;
-        // if it's actually called something else, this will just come back as null
-        // everywhere rather than breaking anything).
+        // Raw DPS/HPS for a ranking entry -- WCL's field is `bestAmount` (confirmed
+        // against warcraftlogs.com's own "Highest DPS/HPS" display).
         const fmtAmount = n => {
           n = parseFloat(n);
           if (isNaN(n)) return null;
@@ -3887,7 +3887,7 @@ async function fetchScores() {
           if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
           return n.toFixed(0);
         };
-        const rawOf = r => r?.amount != null ? fmtAmount(r.amount) : null;
+        const rawOf = r => r?.bestAmount != null ? fmtAmount(r.bestAmount) : null;
 
         // Death %
         const deaths     = zr.deaths     || 0;
@@ -4035,19 +4035,18 @@ function renderScoresTable(roleFilter) {
     { keys: ['melee','ranged','dps'],   label: 'DPS'     },
   ];
 
-  // Sort by whichever column header was last clicked (defaults to 'best', descending —
-  // matching the previous hardcoded per-view behavior).
+  // Sort by whichever column header was last clicked (defaults to 'best'), always
+  // highest-to-lowest -- there's no ascending mode, it's not a useful view for this data.
   const sortCol = STATE.scoreSortCol || 'best';
-  const sortDir = STATE.scoreSortDir === 'asc' ? 1 : -1;
   const sortFn = (a, b) => {
     const av = getScoreSortValue(a, view, sortCol);
     const bv = getScoreSortValue(b, view, sortCol);
     if (isNaN(av) && isNaN(bv)) return 0;
-    if (isNaN(av)) return 1;  // NaN always sorts to the bottom regardless of direction
+    if (isNaN(av)) return 1;  // NaN always sorts to the bottom
     if (isNaN(bv)) return -1;
-    return (bv - av) * sortDir;
+    return bv - av;
   };
-  const sortArrow = col => STATE.scoreSortCol === col ? (STATE.scoreSortDir === 'asc' ? ' ▲' : ' ▼') : '';
+  const sortArrow = col => STATE.scoreSortCol === col ? ' ▼' : '';
 
   // All views use same layout: summary cols + per-boss cols
   // Performance: Best | Median | per-boss best
@@ -4280,12 +4279,16 @@ async function fetchMitigationData() {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Fetching mitigation...'; }
   const wrap = document.getElementById('scores-table-wrap');
   if (wrap) wrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Fetching mitigation data from guild reports...<br><small style="opacity:0.6; text-transform:none; letter-spacing:normal;">This may take multiple fetches</small></div></div>';
-  const zoneId = STATE.zoneId;
-  if ((!STATE.bossIds || STATE.bossIds.length === 0) && zoneId) {
+  // Anchor to Guild Settings' configured zone (not whatever STATE.zoneId currently
+  // holds, which can drift if a newer tier was detected elsewhere in the app) --
+  // this must match the zone in the WCL Guild Progress URL for reports/bosses to line up.
+  const zoneId = STATE.config?.zoneId || STATE.zoneId;
+  if ((!STATE.bossIds || STATE.bossIds.length === 0 || STATE.bossIdsZoneId !== zoneId) && zoneId) {
     try {
       const bosses = await fetchZoneBosses(zoneId);
-      STATE.bossIds   = bosses.map(b => b.id);
-      STATE.bossOrder = bosses.map(b => b.name);
+      STATE.bossIds       = bosses.map(b => b.id);
+      STATE.bossOrder     = bosses.map(b => b.name);
+      STATE.bossIdsZoneId = zoneId;
     } catch(e) {}
   }
   const guildName  = STATE.config?.guild;
@@ -4379,14 +4382,18 @@ async function fetchSurvivalData() {
   console.log('[Survival] STATE.config:', JSON.stringify(STATE.config));
   console.log('[Survival] STATE.zoneId:', STATE.zoneId, 'STATE.teamId:', STATE.teamId);
 
-  const zoneId = STATE.zoneId;
+  // Anchor to Guild Settings' configured zone (not whatever STATE.zoneId currently
+  // holds, which can drift if a newer tier was detected elsewhere in the app) --
+  // this must match the zone in the WCL Guild Progress URL for reports/bosses to line up.
+  const zoneId = STATE.config?.zoneId || STATE.zoneId;
 
-  // Ensure boss IDs are loaded before sending
-  if ((!STATE.bossIds || STATE.bossIds.length === 0) && zoneId) {
+  // Ensure boss IDs are loaded before sending -- re-fetch if cached for a different zone
+  if ((!STATE.bossIds || STATE.bossIds.length === 0 || STATE.bossIdsZoneId !== zoneId) && zoneId) {
     try {
       const bosses = await fetchZoneBosses(zoneId);
-      STATE.bossIds   = bosses.map(b => b.id);
-      STATE.bossOrder = bosses.map(b => b.name);
+      STATE.bossIds       = bosses.map(b => b.id);
+      STATE.bossOrder     = bosses.map(b => b.name);
+      STATE.bossIdsZoneId = zoneId;
       console.log('[Survival] fetched bossIds:', STATE.bossIds);
     } catch(e) { console.warn('[Survival] fetchZoneBosses failed:', e.message); }
   }
@@ -4508,7 +4515,6 @@ function setScoreView(view, btn) {
   STATE.scoreView = view;
   STATE.scoreRoleFilter = 'all';
   STATE.scoreSortCol = 'best';
-  STATE.scoreSortDir = 'desc';
   document.querySelectorAll('#score-view-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   const diffWrap = document.getElementById('difficulty-filter-wrap');
@@ -4527,12 +4533,8 @@ function filterScores(role, btn) {
 
 // Click a column header to sort by it -- clicking the same column again flips direction.
 function setScoreSort(column) {
-  if (STATE.scoreSortCol === column) {
-    STATE.scoreSortDir = STATE.scoreSortDir === 'desc' ? 'asc' : 'desc';
-  } else {
-    STATE.scoreSortCol = column;
-    STATE.scoreSortDir = 'desc';
-  }
+  // Always highest-to-lowest -- there's no meaningful use case for ascending here.
+  STATE.scoreSortCol = column;
   renderScoresTable(STATE.scoreRoleFilter || 'all');
 }
 
