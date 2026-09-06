@@ -1922,6 +1922,7 @@
               <button class="filter-btn active" id="metric-parse-btn" onclick="setScoreMetricMode('parse')" title="Show parse percentile per boss">Parse %</button>
               <button class="filter-btn" id="metric-raw-btn" onclick="setScoreMetricMode('raw')" title="Show raw DPS/HPS per boss">Raw DPS/HPS</button>
             </div>
+            <button class="btn-secondary" id="score-rebuild-btn" onclick="rebuildCurrentScoreCache()" style="display:none; margin-right:8px; padding:8px 14px; font-size:11px;" title="Wipe the cached data and reprocess every report from scratch">↻ Rebuild Cache</button>
             <button class="fetch-btn" id="fetch-scores-btn" onclick="fetchCurrentScoreView()">⚔ Fetch Scores</button>
           </div>
           <div id="scores-table-wrap" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
@@ -3795,6 +3796,23 @@ function fetchCurrentScoreView() {
   return fetchScores();
 }
 
+// Wipes the server-side incremental cache for Survival/Mitigation and reprocesses every
+// report from scratch. Needed when a boss got stuck with no data under the old logic
+// (e.g. a one-pull kill) -- the cache already marked it "done" past that report, so a
+// normal Refresh alone won't go back and pick it up.
+function rebuildCurrentScoreCache() {
+  const view = STATE.scoreView;
+  if (view !== 'survival' && view !== 'mitigation') return;
+  if (!confirm('This wipes the cached ' + view + ' data and reprocesses every guild report from scratch. It may take several clicks of "Refresh Scores" to finish on a large report history. Continue?')) return;
+  if (view === 'survival') {
+    STATE.survivorMap = {};
+    fetchSurvivalData(true);
+  } else {
+    STATE.mitigationMap = {};
+    fetchMitigationData(true);
+  }
+}
+
 async function fetchScores() {
   const btn = document.getElementById('fetch-scores-btn');
   btn.disabled = true;
@@ -4185,8 +4203,9 @@ function renderScoresTable(roleFilter) {
           const raw = p.firstKillRawMap?.[bossName];
           const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
           const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-          const fg = STATE.scoreShowRaw ? '#fff' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${showVal}</td>`;
+          const fg = STATE.scoreShowRaw ? 'var(--text-dim)' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
+          const fw = STATE.scoreShowRaw ? 400 : 700;
+          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:${fw}; font-size:13px; text-align:center;">${showVal}</td>`;
         }).join('');
         // Return early with firstkill-specific row
         html += `<tr>
@@ -4233,8 +4252,9 @@ function renderScoresTable(roleFilter) {
         }
         const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
         const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-        const fg = STATE.scoreShowRaw ? '#fff' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
-        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${showVal}</td>`;
+        const fg = STATE.scoreShowRaw ? 'var(--text-dim)' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
+        const fw = STATE.scoreShowRaw ? 400 : 700;
+        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:${fw}; font-size:13px; text-align:center;">${showVal}</td>`;
       }).join('');
 
       if (view !== 'firstkill') {
@@ -4282,7 +4302,7 @@ window.diagMitigation = async function(reportCode, encounterID, targetName) {
   return data;
 };
 
-async function fetchMitigationData() {
+async function fetchMitigationData(reset) {
   // Guard against overlapping fetches (e.g. an impatient double-click) racing on the
   // same server-side incremental cache row and corrupting it with a partial result.
   if (STATE.mitigationFetchInFlight) { showToast('Already fetching mitigation data — please wait for it to finish.', ''); return; }
@@ -4322,6 +4342,7 @@ async function fetchMitigationData() {
         memberNames:  STATE.players.map(p => p.name),
         validBossIds: STATE.bossIds || [],
         teamId:       STATE.teamId,
+        reset:        !!reset,
       }),
     });
     if (!resp.ok) throw new Error((await resp.json()).error || 'Mitigation fetch failed');
@@ -4382,7 +4403,7 @@ function loadCachedMitigation() {
   return false;
 }
 
-async function fetchSurvivalData() {
+async function fetchSurvivalData(reset) {
   // Guard against overlapping fetches (e.g. an impatient double-click) racing on the
   // same server-side incremental cache row and corrupting it with a partial result.
   if (STATE.survivalFetchInFlight) { showToast('Already fetching survival data — please wait for it to finish.', ''); return; }
@@ -4441,6 +4462,7 @@ async function fetchSurvivalData() {
       memberNames:  STATE.players.map(p => p.name),
       validBossIds: STATE.bossIds || [],
       teamId:       STATE.teamId,
+      reset:        !!reset,
     }),
     });
     console.log('[Survival] response status:', resp.status);
@@ -4547,6 +4569,10 @@ function setScoreView(view, btn) {
   const showsRawToggle = ['performance', 'oppoparse', 'firstkill'].includes(view);
   if (metricToggleWrap) metricToggleWrap.style.display = showsRawToggle ? 'flex' : 'none';
   if (!showsRawToggle) STATE.scoreShowRaw = false;
+
+  // Rebuild Cache only applies to the two views backed by a server-side incremental cache
+  const rebuildBtn = document.getElementById('score-rebuild-btn');
+  if (rebuildBtn) rebuildBtn.style.display = (view === 'survival' || view === 'mitigation') ? 'inline-block' : 'none';
 
   if (view === 'survival' && !STATE.survivorFetched) loadCachedSurvival();
   if (view === 'mitigation' && !STATE.mitigationFetched) loadCachedMitigation();

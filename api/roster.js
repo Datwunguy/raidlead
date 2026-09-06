@@ -265,9 +265,17 @@ module.exports = async (req, res) => {
       console.log('[mitigation] first 3 startTimes:', allReports.slice(0,3).map(r => r.code + ':' + r.startTime).join(', '));
       console.log('[mitigation] last 3 startTimes:', allReports.slice(-3).map(r => r.code + ':' + r.startTime).join(', '));
 
-      // Load existing incremental cache
+      // Load existing incremental cache. A `reset` request discards it and reprocesses
+      // every report from scratch -- used to recover from a stale/corrupted cache
+      // (e.g. a boss that got marked "killed" before a fix without any data recorded).
       let existingCache = null, lastReportTime = 0;
-      if (teamId) {
+      if (teamId && req.body?.reset) {
+        try {
+          await supabase.from('wcl_scores').delete()
+            .eq('team_id', teamId).eq('zone_id', zoneId)
+            .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffId || 5}`);
+        } catch(e) {}
+      } else if (teamId) {
         try {
           const { data: cr } = await supabase.from('wcl_scores').select('boss_scores')
             .eq('team_id', teamId).eq('zone_id', zoneId)
@@ -321,14 +329,11 @@ module.exports = async (req, res) => {
         }
 
         for (const [encId, encData] of Object.entries(fightsByEncounter)) {
-          let fightsToUse = encData.firstKillTime
-            ? encData.fights.filter(f => f.startTime < encData.firstKillTime && !f.kill)
+          // Wipes and the first kill are meaningful (that's the progression effort);
+          // reclears -- any kill after the first -- are not, so they're excluded.
+          const fightsToUse = encData.firstKillTime
+            ? encData.fights.filter(f => f.startTime <= encData.firstKillTime)
             : encData.fights.filter(f => !f.kill);
-          // A boss cleared with zero wipes (one-pull kill) has no pre-kill data to measure --
-          // fall back to the kill fight itself so it isn't left with no data at all.
-          if (fightsToUse.length === 0 && encData.firstKillTime) {
-            fightsToUse = encData.fights.filter(f => f.kill && f.startTime === encData.firstKillTime);
-          }
 
           for (const fight of fightsToUse) {
             try {
@@ -600,11 +605,20 @@ module.exports = async (req, res) => {
       // Sort oldest first
       allReports.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
 
-      // Load existing survival cache from Supabase — merge incrementally
+      // Load existing survival cache from Supabase — merge incrementally. A `reset`
+      // request discards it and reprocesses every report from scratch -- used to
+      // recover from a stale/corrupted cache (e.g. a boss that got marked "killed"
+      // before a fix without any data recorded).
       const survCacheKey = `surv_${diffId || 5}`;
       let existingCache  = null;
       let lastReportTime = 0;
-      if (req.body?.teamId) {
+      if (req.body?.teamId && req.body?.reset) {
+        try {
+          await supabase.from('wcl_scores').delete()
+            .eq('team_id', req.body.teamId).eq('zone_id', zoneId)
+            .eq('character_name', '_surv_cache_').eq('server', survCacheKey);
+        } catch(e) {}
+      } else if (req.body?.teamId) {
         try {
           const { data: cacheRow } = await supabase
             .from('wcl_scores')
@@ -683,16 +697,11 @@ module.exports = async (req, res) => {
 
         // For each encounter, fetch Summary table per fight (has deathTime pre-calculated)
         for (const [encId, encData] of Object.entries(fightsByEncounter)) {
-          // Only include wipes up to (but NOT including) the first kill
-          // The kill itself is excluded — survival on a kill isn't meaningful
-          let fightsToUse = encData.firstKillTime
-            ? encData.fights.filter(f => f.startTime < encData.firstKillTime && !f.kill)
+          // Wipes and the first kill are meaningful (that's the progression effort);
+          // reclears -- any kill after the first -- are not, so they're excluded.
+          const fightsToUse = encData.firstKillTime
+            ? encData.fights.filter(f => f.startTime <= encData.firstKillTime)
             : encData.fights.filter(f => !f.kill);
-          // A boss cleared with zero wipes (one-pull kill) has no pre-kill data to measure --
-          // fall back to the kill fight itself so it isn't left with no data at all.
-          if (fightsToUse.length === 0 && encData.firstKillTime) {
-            fightsToUse = encData.fights.filter(f => f.kill && f.startTime === encData.firstKillTime);
-          }
 
           for (const fight of fightsToUse) {
             const fightDuration = fight.endTime - fight.startTime;
