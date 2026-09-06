@@ -1918,6 +1918,10 @@
             </div>
               <span id="scores-timestamp" style="font-size:11px; color:var(--text-mute); margin-left:8px;"></span>
             </div>
+            <div class="role-filter" id="score-metric-toggle-wrap" style="margin-right:8px; display:flex;">
+              <button class="filter-btn active" id="metric-parse-btn" onclick="setScoreMetricMode('parse')" title="Show parse percentile per boss">Parse %</button>
+              <button class="filter-btn" id="metric-raw-btn" onclick="setScoreMetricMode('raw')" title="Show raw DPS/HPS per boss">Raw DPS/HPS</button>
+            </div>
             <button class="fetch-btn" id="fetch-scores-btn" onclick="fetchCurrentScoreView()">⚔ Fetch Scores</button>
           </div>
           <div id="scores-table-wrap" style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
@@ -2297,6 +2301,7 @@ const STATE = {
   scoreView:         'performance', // performance | firstkill | survival | oppoparse | mitigation
   scoreRoleFilter:   'all',         // 'all' | 'tank' | 'heal' | 'dps'
   scoreSortCol:      'best',        // 'best' | 'median' | a boss name -- always sorted highest-to-lowest
+  scoreShowRaw:      false,         // false = show parse %, true = show raw DPS/HPS (per-boss cells only)
   survivorMap:       {},            // per-player per-boss survival % from guild reports
   survivorFetched:   false,         // whether survival data has been fetched
   mitigationMap:     {},            // per-player per-boss mitigation % from guild reports
@@ -4001,11 +4006,6 @@ async function fetchScores() {
   btn.textContent = '↻ Refresh Scores';
 }
 
-// Small second line under a boss cell's percentile showing the raw DPS/HPS number, if known.
-function rawSubLine(raw) {
-  return raw ? `<div style="font-size:9px; font-weight:500; opacity:0.75; line-height:1.2;">${raw}</div>` : '';
-}
-
 function renderScoresTable(roleFilter) {
   const wrap   = document.getElementById('scores-table-wrap');
   const bosses = STATE.bossNames;
@@ -4177,9 +4177,10 @@ function renderScoresTable(roleFilter) {
         const bossCols = bosses.map(bossName => {
           const val = p.firstKillMap?.[bossName] || 'N/A';
           const raw = p.firstKillRawMap?.[bossName];
-          const bg  = val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-          const fg  = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}${rawSubLine(raw)}</td>`;
+          const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
+          const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
+          const fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
+          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${showVal}</td>`;
         }).join('');
         // Return early with firstkill-specific row
         html += `<tr>
@@ -4213,7 +4214,7 @@ function renderScoresTable(roleFilter) {
 
       // Per-boss columns: performance/oppoparse = best parse, firstkill = first kill parse
       const bossCols = bosses.map(bossName => {
-        let val, bg, fg, raw;
+        let val, raw;
         if (view === 'firstkill') {
           val = p.firstKillMap?.[bossName] || 'N/A';
           raw = p.firstKillRawMap?.[bossName];
@@ -4224,9 +4225,10 @@ function renderScoresTable(roleFilter) {
           val = p.rankingMap?.[bossName] || 'N/A';
           raw = p.rawMap?.[bossName];
         }
-        bg = val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-        fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
-        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}${rawSubLine(raw)}</td>`;
+        const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
+        const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
+        const fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
+        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${showVal}</td>`;
       }).join('');
 
       if (view !== 'firstkill') {
@@ -4275,6 +4277,10 @@ window.diagMitigation = async function(reportCode, encounterID, targetName) {
 };
 
 async function fetchMitigationData() {
+  // Guard against overlapping fetches (e.g. an impatient double-click) racing on the
+  // same server-side incremental cache row and corrupting it with a partial result.
+  if (STATE.mitigationFetchInFlight) { showToast('Already fetching mitigation data — please wait for it to finish.', ''); return; }
+  STATE.mitigationFetchInFlight = true;
   const btn = document.getElementById('fetch-scores-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Fetching mitigation...'; }
   const wrap = document.getElementById('scores-table-wrap');
@@ -4297,6 +4303,7 @@ async function fetchMitigationData() {
   const diffId     = DIFF_MAP[STATE.scoreDifficulty] || 5;
   if (!zoneId || !guildName) {
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh Scores'; }
+    STATE.mitigationFetchInFlight = false;
     showToast('Guild config not ready', 'error'); return;
   }
   try {
@@ -4334,6 +4341,7 @@ async function fetchMitigationData() {
     showToast('Mitigation fetch error: ' + e.message, 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh Scores'; }
+    STATE.mitigationFetchInFlight = false;
   }
 }
 
@@ -4369,9 +4377,13 @@ function loadCachedMitigation() {
 }
 
 async function fetchSurvivalData() {
-  const btn = document.getElementById('fetch-scores-btn');
+  // Guard against overlapping fetches (e.g. an impatient double-click) racing on the
+  // same server-side incremental cache row and corrupting it with a partial result.
+  if (STATE.survivalFetchInFlight) { showToast('Already fetching survival data — please wait for it to finish.', ''); return; }
   if (!STATE.config?.guild) { showToast('Guild not configured', 'error'); return; }
+  STATE.survivalFetchInFlight = true;
 
+  const btn = document.getElementById('fetch-scores-btn');
   btn.disabled = true;
   btn.textContent = '⏳ Fetching survival...';
 
@@ -4379,8 +4391,10 @@ async function fetchSurvivalData() {
   const wrap = document.getElementById('scores-table-wrap');
   if (wrap) wrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Fetching survival data from guild reports...<br><small style="opacity:0.6; text-transform:none; letter-spacing:normal;">This may take 20-30 seconds</small></div></div>';
 
-  console.log('[Survival] STATE.config:', JSON.stringify(STATE.config));
-  console.log('[Survival] STATE.zoneId:', STATE.zoneId, 'STATE.teamId:', STATE.teamId);
+  // Note: STATE.config.difficulty is the guild's general raid difficulty setting and
+  // is NOT what filters survival data -- that's STATE.scoreDifficulty (the LFR/Normal/
+  // Heroic/Mythic tab selected above the table), logged explicitly below as diffId.
+  console.log('[Survival] zoneId:', STATE.config?.zoneId, '| wclTeamId:', STATE.config?.wclTeamId, '| scoreDifficulty:', STATE.scoreDifficulty, '| teamId:', STATE.teamId);
 
   // Anchor to Guild Settings' configured zone (not whatever STATE.zoneId currently
   // holds, which can drift if a newer tier was detected elsewhere in the app) --
@@ -4405,6 +4419,7 @@ async function fetchSurvivalData() {
   if (!zoneId || !guildName) {
     btn.disabled = false;
     btn.textContent = '↻ Refresh Scores';
+    STATE.survivalFetchInFlight = false;
     showToast('Guild config not ready — check Guild Settings', 'error');
     return;
   }
@@ -4473,6 +4488,7 @@ async function fetchSurvivalData() {
   } finally {
     btn.disabled = false;
     btn.textContent = '↻ Refresh Scores';
+    STATE.survivalFetchInFlight = false;
   }
 }
 
@@ -4519,6 +4535,13 @@ function setScoreView(view, btn) {
   btn.classList.add('active');
   const diffWrap = document.getElementById('difficulty-filter-wrap');
   if (diffWrap) diffWrap.style.display = 'flex'; // show for all views
+
+  // Raw DPS/HPS toggle only makes sense for parse-based views
+  const metricToggleWrap = document.getElementById('score-metric-toggle-wrap');
+  const showsRawToggle = ['performance', 'oppoparse', 'firstkill'].includes(view);
+  if (metricToggleWrap) metricToggleWrap.style.display = showsRawToggle ? 'flex' : 'none';
+  if (!showsRawToggle) STATE.scoreShowRaw = false;
+
   if (view === 'survival' && !STATE.survivorFetched) loadCachedSurvival();
   if (view === 'mitigation' && !STATE.mitigationFetched) loadCachedMitigation();
   renderScoresTable('all');
@@ -4535,6 +4558,16 @@ function filterScores(role, btn) {
 function setScoreSort(column) {
   // Always highest-to-lowest -- there's no meaningful use case for ascending here.
   STATE.scoreSortCol = column;
+  renderScoresTable(STATE.scoreRoleFilter || 'all');
+}
+
+// Toggle per-boss cells between showing the parse percentile or the raw DPS/HPS number.
+function setScoreMetricMode(mode) {
+  STATE.scoreShowRaw = (mode === 'raw');
+  const parseBtn = document.getElementById('metric-parse-btn');
+  const rawBtn   = document.getElementById('metric-raw-btn');
+  if (parseBtn) parseBtn.classList.toggle('active', mode === 'parse');
+  if (rawBtn)   rawBtn.classList.toggle('active', mode === 'raw');
   renderScoresTable(STATE.scoreRoleFilter || 'all');
 }
 

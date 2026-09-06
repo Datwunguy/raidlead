@@ -388,18 +388,59 @@ module.exports = async (req, res) => {
       const bossNames = [...bossSet];
       console.log('[mitigation] complete | players:', Object.keys(mitigationMap).length, '| bosses:', bossNames.length);
 
+      // Re-read the cache fresh right before writing and merge into that (rather than
+      // the possibly-stale snapshot read at the start of this request) so a slower/
+      // rate-limited overlapping request can only ever add to what's persisted, never
+      // regress it -- see the identical comment in getSurvival for the full rationale.
+      let finalMitigationMap = mitigationMap;
+      let finalBossNames     = bossNames;
+      const mitigCacheKey = `mitig_${diffId || 5}`;
       if (teamId && Object.keys(mitigData).length > 0) {
         try {
+          const finalMitigData    = { ...mitigData };
+          const finalBossSet      = new Set(bossSet);
+          const finalKilledBosses = new Set(killedBosses);
+          let   finalNewestTime   = newestReportTime;
+
+          const { data: freshRow } = await supabase.from('wcl_scores').select('boss_scores')
+            .eq('team_id', teamId).eq('zone_id', zoneId)
+            .eq('character_name', '_mitig_cache_').eq('server', mitigCacheKey).single();
+          if (freshRow?.boss_scores) {
+            const fresh = JSON.parse(freshRow.boss_scores);
+            if ((fresh.lastReportTime || 0) > lastReportTime) {
+              console.log('[mitigation] fresher cache found at save time (lastReportTime', fresh.lastReportTime, '> our', lastReportTime, ') -- merging instead of overwriting');
+              for (const [player, playerBosses] of Object.entries(fresh.mitigRaw || {})) {
+                if (!finalMitigData[player]) finalMitigData[player] = {};
+                for (const [boss, val] of Object.entries(playerBosses)) {
+                  const existing = finalMitigData[player][boss];
+                  if (!existing || (val.unmitigated || 0) > (existing.unmitigated || 0)) finalMitigData[player][boss] = val;
+                }
+              }
+              (fresh.bossNames || []).forEach(b => finalBossSet.add(b));
+              (fresh.killedBossIds || []).forEach(id => finalKilledBosses.add(id));
+              finalNewestTime = Math.max(finalNewestTime, fresh.lastReportTime || 0);
+            }
+          }
+
+          finalMitigationMap = {};
+          for (const [player, playerBosses] of Object.entries(finalMitigData)) {
+            finalMitigationMap[player] = {};
+            for (const [boss, { mitigated, unmitigated }] of Object.entries(playerBosses)) {
+              if (unmitigated > 0) finalMitigationMap[player][boss] = parseFloat(((mitigated / unmitigated) * 100).toFixed(1));
+            }
+          }
+          finalBossNames = [...finalBossSet];
+
           await supabase.from('wcl_scores').upsert({
-            team_id: teamId, zone_id: zoneId, character_name: '_mitig_cache_', server: `mitig_${diffId||5}`,
-            boss_scores: JSON.stringify({ mitigationMap, mitigRaw: mitigData, bossNames, killedBossIds: [...killedBosses], lastReportTime: newestReportTime, savedAt: Date.now() }),
+            team_id: teamId, zone_id: zoneId, character_name: '_mitig_cache_', server: mitigCacheKey,
+            boss_scores: JSON.stringify({ mitigationMap: finalMitigationMap, mitigRaw: finalMitigData, bossNames: finalBossNames, killedBossIds: [...finalKilledBosses], lastReportTime: finalNewestTime, savedAt: Date.now() }),
             fetched_at: new Date().toISOString(),
           }, { onConflict: 'team_id,zone_id,character_name,server', ignoreDuplicates: false });
-          console.log('[mitigation] cache saved');
+          console.log('[mitigation] cache saved | lastReportTime:', finalNewestTime, '| bosses:', finalBossNames.length);
         } catch(e) { console.error('[mitigation] cache save error:', e.message); }
       }
 
-      return res.status(200).json({ mitigationMap, bossNames });
+      return res.status(200).json({ mitigationMap: finalMitigationMap, bossNames: finalBossNames });
     } catch(err) { console.error('[mitigation] error:', err.message); return res.status(500).json({ error: err.message }); }
   }
 
@@ -727,18 +768,57 @@ module.exports = async (req, res) => {
         console.log('[survival] sample:', first[0], JSON.stringify(first[1]));
       }
 
-      // Save incremental cache to Supabase for next fetch
+      // Save incremental cache to Supabase for next fetch. A slower/rate-limited
+      // request can finish after a concurrent overlapping one already advanced the
+      // cache further -- re-read it fresh right before writing and merge into that
+      // (rather than the possibly-stale snapshot read at the start of this request)
+      // so this can only ever add to what's persisted, never regress it.
+      let finalSurvivorMap = survivorMap;
+      let finalBossNames   = bossNames;
       if (req.body?.teamId && Object.keys(survivorData).length > 0) {
         try {
+          const finalSurvivorData = { ...survivorData };
+          const finalBossSet      = new Set(bossSet);
+          const finalKilledBosses = new Set(killedBosses);
+          let   finalNewestTime   = newestReportTime;
+
+          const { data: freshRow } = await supabase.from('wcl_scores').select('boss_scores')
+            .eq('team_id', req.body.teamId).eq('zone_id', zoneId)
+            .eq('character_name', '_surv_cache_').eq('server', survCacheKey).single();
+          if (freshRow?.boss_scores) {
+            const fresh = JSON.parse(freshRow.boss_scores);
+            if ((fresh.lastReportTime || 0) > lastReportTime) {
+              console.log('[survival] fresher cache found at save time (lastReportTime', fresh.lastReportTime, '> our', lastReportTime, ') -- merging instead of overwriting');
+              for (const [player, playerBosses] of Object.entries(fresh.survivorRaw || {})) {
+                if (!finalSurvivorData[player]) finalSurvivorData[player] = {};
+                for (const [boss, val] of Object.entries(playerBosses)) {
+                  const existing = finalSurvivorData[player][boss];
+                  if (!existing || (val.count || 0) > (existing.count || 0)) finalSurvivorData[player][boss] = val;
+                }
+              }
+              (fresh.bossNames || []).forEach(b => finalBossSet.add(b));
+              (fresh.killedBossIds || []).forEach(id => finalKilledBosses.add(id));
+              finalNewestTime = Math.max(finalNewestTime, fresh.lastReportTime || 0);
+            }
+          }
+
+          finalSurvivorMap = {};
+          for (const [player, playerBosses] of Object.entries(finalSurvivorData)) {
+            finalSurvivorMap[player] = {};
+            for (const [boss, { total, count }] of Object.entries(playerBosses)) {
+              finalSurvivorMap[player][boss] = parseFloat((total / count).toFixed(1));
+            }
+          }
+          finalBossNames = [...finalBossSet];
+
           const cachePayload = JSON.stringify({
-            survivorMap,
-            survivorRaw:    survivorData,         // raw totals for future merging
-            bossNames,
-            killedBossIds:  [...killedBosses],
-            lastReportTime: newestReportTime,
+            survivorMap:    finalSurvivorMap,
+            survivorRaw:    finalSurvivorData,    // raw totals for future merging
+            bossNames:      finalBossNames,
+            killedBossIds:  [...finalKilledBosses],
+            lastReportTime: finalNewestTime,
             savedAt:        Date.now(),
           });
-          const survCacheKey = `surv_${diffId || 5}`;
           await supabase.from('wcl_scores').upsert({
             team_id:        req.body.teamId,
             zone_id:        zoneId,
@@ -747,13 +827,14 @@ module.exports = async (req, res) => {
             boss_scores:    cachePayload,
             fetched_at:     new Date().toISOString(),
           }, { onConflict: 'team_id,zone_id,character_name,server', ignoreDuplicates: false });
-          console.log('[survival] cache saved | lastReportTime:', newestReportTime);
+          console.log('[survival] cache saved | lastReportTime:', finalNewestTime, '| bosses:', finalBossNames.length);
         } catch(e) {
           console.error('[survival] cache save error:', e.message);
         }
       }
 
-      return res.status(200).json({ survivorMap, bossNames });
+      console.log('[survival] complete | players:', Object.keys(finalSurvivorMap).length, '| bosses:', finalBossNames.length);
+      return res.status(200).json({ survivorMap: finalSurvivorMap, bossNames: finalBossNames });
     } catch(err) {
       console.error('[survival] error:', err.message);
       return res.status(500).json({ error: err.message });
