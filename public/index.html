@@ -5193,7 +5193,7 @@ function renderPlannerSwaps() {
     const player = STATE.players.find(p => p.name === name);
     const color  = CLASS_COLORS[player?.class] || '#888';
     const textColor = isLightColor(color) ? '#000000' : '#ffffff';
-    return `<div class="plan-player-pill" style="background:${color}; border:1px solid ${color}; margin-bottom:0; cursor:default; justify-content:center;">
+    return `<div class="plan-player-pill" style="background:${color}; border:1px solid ${color}; margin-bottom:0; cursor:default;">
       <div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div>
       <span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${name}</span>
     </div>`;
