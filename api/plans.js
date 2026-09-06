@@ -1,6 +1,6 @@
 // ============================================================
 //  plans.js — handles raid plan actions
-//  Actions: save, get
+//  Actions: save, get, getPrevious, saveSwaps
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
@@ -168,7 +168,7 @@ module.exports = async (req, res) => {
 
       let query = supabase
         .from('raid_plans')
-        .select(`id, name, published, updated_at, raid_date,
+        .select(`id, name, published, updated_at, raid_date, swaps,
           raid_plan_members ( assigned_role, characters ( id, name, class, primary_role ) )`)
         .eq('team_id', teamId);
 
@@ -182,6 +182,7 @@ module.exports = async (req, res) => {
 
       const { data: plans } = await query;
       const plan = plans?.[0] || null;
+      if (plan) { try { plan.swaps = plan.swaps ? JSON.parse(plan.swaps) : []; } catch(e) { plan.swaps = []; } }
       return res.status(200).json({ plan, isOfficer });
     } catch (err) {
       return res.status(200).json({ plan: null, isOfficer });
@@ -213,6 +214,36 @@ module.exports = async (req, res) => {
       return res.status(200).json({ plan });
     } catch (err) {
       return res.status(200).json({ plan: null });
+    }
+  }
+
+  // ── SAVE SWAPS: update the boss-by-boss OUT/IN swap list for an existing plan ──
+  if (action === 'saveSwaps') {
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
+    const { teamId, raidDate, swaps } = req.body || {};
+    if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
+
+    try {
+      await assertTeamOwnership(teamId);
+
+      const { data: existing } = await supabase
+        .from('raid_plans')
+        .select('id')
+        .eq('team_id', teamId)
+        .eq('raid_date', raidDate)
+        .limit(1);
+      const plan = existing?.[0];
+      if (!plan) return res.status(404).json({ error: 'No raid plan exists for this date yet -- save or publish a roster first.' });
+
+      const { error } = await supabase
+        .from('raid_plans')
+        .update({ swaps: JSON.stringify(swaps || []) })
+        .eq('id', plan.id);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 

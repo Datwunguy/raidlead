@@ -2015,6 +2015,7 @@
             <div style="font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--text-mute); margin-bottom:12px;">Tonight's Roster</div>
             <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:12px;" id="plan-roster-cols"></div>
             <div id="plan-unavailable-wrap" style="margin-top:24px;"></div>
+            <div id="plan-swaps-wrap" style="margin-top:24px;"></div>
           </div>
 
           <!-- COL 2: Counts (small squares vertical) -->
@@ -2320,6 +2321,7 @@ const STATE = {
   attendanceMonth:     new Date(new Date().getFullYear(), new Date().getMonth(), 1), // first-of-month Date being viewed
   attendanceLoaded:    false,
   plannerDate:         null,         // 'YYYY-MM-DD' string for the raid night currently being planned
+  plannerSwaps:        [],           // [{id, boss, outName, inName}] boss-by-boss swaps against the published roster
 };
 
 // ── Global fetch wrapper: automatically adds credentials for all /api/ calls ──
@@ -4916,6 +4918,7 @@ function applyPlanData(planData) {
   plannerSelected  = names;
   flexRoleSelected = flex;
   saveFlexSlots();
+  STATE.plannerSwaps = planData.plan.swaps || [];
   // Restore the raid date this plan was saved for, if present
   if (planData.plan.raid_date) {
     STATE.plannerDate = planData.plan.raid_date;
@@ -4982,6 +4985,7 @@ async function loadPlanForDate(dateStr) {
   STATE.raidPlanMode      = null;
   plannerSelected         = new Set();
   flexRoleSelected        = {};
+  STATE.plannerSwaps      = [];
   saveFlexSlots();
   renderPlannerChecklist();
   renderPlannerRoster();
@@ -5152,6 +5156,132 @@ function renderOutUnavailableSection() {
   });
   col.appendChild(pillsWrap);
   wrap.appendChild(col);
+}
+
+// Boss-by-boss swaps against the published roster (e.g. "Turtles: Dust out, Feided in").
+// OUT options come from the published roster; IN options come from everyone else on the
+// team roster -- both scoped to the base published roster, not to earlier swaps, so each
+// swap stands alone as a record of what changed for that boss.
+function renderPlannerSwaps() {
+  const wrap = document.getElementById('plan-swaps-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+
+  const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+  const swaps = STATE.plannerSwaps || [];
+  if (swaps.length === 0 && !isOfficer) return;
+
+  const col = document.createElement('div');
+  col.id = 'plan-swaps-col';
+  col.innerHTML = `
+    <div class="plan-role-label" style="border-bottom: 1px solid var(--gold-dim); color:var(--gold);">
+      SWAPS${swaps.length > 0 ? ` <span style="color:var(--gold); opacity:0.7; font-weight:600; font-size:11px; margin-left:4px;">(${swaps.length})</span>` : ''}
+    </div>
+  `;
+
+  if (swaps.length > 0) {
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'display:flex; flex-direction:column; gap:6px; margin-top:8px;';
+    swaps.forEach(swap => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:8px 10px;';
+      row.innerHTML = `
+        <div style="flex:1; min-width:0;">
+          <div style="color:var(--text-mute); font-size:10px; text-transform:uppercase; letter-spacing:1px; margin-bottom:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${swap.boss}</div>
+          <div style="display:flex; align-items:center; gap:6px; font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px;">
+            <span style="color:#FF6666;">${swap.outName}</span>
+            <span style="color:var(--text-mute);">&rarr;</span>
+            <span style="color:#1EFF00;">${swap.inName}</span>
+          </div>
+        </div>
+        ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : ''}
+      `;
+      listWrap.appendChild(row);
+    });
+    col.appendChild(listWrap);
+  }
+
+  if (isOfficer) {
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn-secondary';
+    addBtn.style.cssText = 'margin-top:10px; padding:6px 12px; font-size:12px; width:100%;';
+    addBtn.textContent = '+ Add Swap';
+    addBtn.onclick = () => openAddSwapForm(col, addBtn);
+    col.appendChild(addBtn);
+  }
+
+  wrap.appendChild(col);
+}
+
+function openAddSwapForm(col, addBtn) {
+  addBtn.style.display = 'none';
+
+  const outNames = [...plannerSelected].sort((a,b) => a.localeCompare(b));
+  const seenNames = new Set();
+  const uniquePlayers = STATE.players.filter(p => {
+    if (seenNames.has(p.name)) return false;
+    seenNames.add(p.name);
+    return true;
+  });
+  const inNames = uniquePlayers.map(p => p.name).filter(n => !plannerSelected.has(n)).sort((a,b) => a.localeCompare(b));
+
+  const form = document.createElement('div');
+  form.id = 'planner-swap-form';
+  form.style.cssText = 'margin-top:10px; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:12px; display:flex; flex-direction:column; gap:8px;';
+  form.innerHTML = `
+    <input type="text" id="swap-boss-input" placeholder="Boss name (e.g. Turtles)" style="width:100%;">
+    <div style="display:flex; gap:8px;">
+      <select id="swap-out-select" style="flex:1;">
+        <option value="">Out...</option>
+        ${outNames.map(n => `<option value="${n}">${n}</option>`).join('')}
+      </select>
+      <select id="swap-in-select" style="flex:1;">
+        <option value="">In...</option>
+        ${inNames.map(n => `<option value="${n}">${n}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button class="btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="renderPlannerSwaps()">Cancel</button>
+      <button class="btn-primary" style="padding:6px 12px; font-size:12px;" onclick="addPlannerSwap()">Add</button>
+    </div>
+  `;
+  col.appendChild(form);
+  document.getElementById('swap-boss-input').focus();
+}
+
+async function addPlannerSwap() {
+  const boss    = document.getElementById('swap-boss-input')?.value.trim();
+  const outName = document.getElementById('swap-out-select')?.value;
+  const inName  = document.getElementById('swap-in-select')?.value;
+  if (!boss)    { showToast('Enter a boss name', 'error'); return; }
+  if (!outName) { showToast('Select who is sitting out', 'error'); return; }
+  if (!inName)  { showToast('Select who is coming in', 'error'); return; }
+
+  const swap = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), boss, outName, inName };
+  STATE.plannerSwaps = [...(STATE.plannerSwaps || []), swap];
+  renderPlannerSwaps();
+  await saveSwapsToDB();
+}
+
+async function removePlannerSwap(id) {
+  STATE.plannerSwaps = (STATE.plannerSwaps || []).filter(s => s.id !== id);
+  renderPlannerSwaps();
+  await saveSwapsToDB();
+}
+
+async function saveSwapsToDB() {
+  if (!STATE.teamId || !STATE.plannerDate) return;
+  try {
+    const resp = await fetch('/api/plans?action=saveSwaps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, raidDate: STATE.plannerDate, swaps: STATE.plannerSwaps }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to save swaps');
+  } catch(e) {
+    showToast('Failed to save swap: ' + e.message, 'error');
+  }
 }
 
 function renderPlannerChecklist() {
@@ -5402,6 +5532,7 @@ function renderPlannerRoster() {
   });
 
   renderOutUnavailableSection();
+  renderPlannerSwaps();
 }
 
 function enterEditMode() {
