@@ -3922,9 +3922,7 @@ async function fetchScores() {
         // encounterRankings with killType:FastestKills returns all kills sorted fastest first
         // The LAST entry (highest index) per boss = the first kill chronologically (slowest = earliest)
         // Actually we want lowest startTime — sort and take first
-        const firstKillMap       = {};
-        const firstKillRawMap    = {};
-        const firstKillRawNumMap = {};
+        const firstKillMap = {};
         bossIds.forEach((id, i) => {
           const bossName = STATE.bossOrder?.[i];
           if (!bossName) return;
@@ -3938,8 +3936,6 @@ async function fetchScores() {
           const first  = sorted[0];
           if (first?.rankPercent != null) {
             firstKillMap[bossName] = fmt(first.rankPercent);
-            firstKillRawMap[bossName] = rawOf(first);
-            firstKillRawNumMap[bossName] = rawNumOf(first);
           }
         });
 
@@ -3947,12 +3943,8 @@ async function fetchScores() {
         if (results.length === 0) {
           console.log('[FirstKill] bossOrder:', STATE.bossOrder);
           console.log('[FirstKill] firstKillMap:', JSON.stringify(firstKillMap));
-          const rawSample = charData.boss0;
-          const enc0 = parsejson(rawSample);
-          console.log('[FirstKill] raw boss0 keys:', enc0 ? Object.keys(enc0).join(',') : 'null');
-          console.log('[FirstKill] raw boss0 rank[0]:', JSON.stringify((enc0.ranks || enc0.rankings || enc0.data || [])[0]));
           // Raw DPS/HPS verification -- check these logged keys for the actual field name
-          // if firstKillRawMap/rawMap/oppoRawMap come back empty after deploying.
+          // if rawMap/oppoRawMap come back empty after deploying.
           console.log('[WCL ranking keys]', rankings[0] ? Object.keys(rankings[0]).join(',') : 'no rankings', '| sample:', JSON.stringify(rankings[0]));
         }
 
@@ -3969,8 +3961,6 @@ async function fetchScores() {
           oppoRawMap:   Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawOf(r)])),
           rawNumMap:      Object.fromEntries(rankings.map(r => [r.encounter?.name, rawNumOf(r)])),
           oppoRawNumMap:  Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawNumOf(r)])),
-          firstKillRawMap,
-          firstKillRawNumMap,
           firstKillMap,
           rankings:     rankings.map(r => fmt(r.rankPercent)),
           error:        null,
@@ -4197,15 +4187,12 @@ function renderScoresTable(roleFilter) {
         const summaryCols = `
           <td class="score-cell" style="width:52px; background:${fkAvgColor}; color:${fkAvgColor ? '#000' : 'var(--text-mute)'}; font-weight:700; font-size:13px; text-align:center;">${fkAvg !== 'N/A' ? fkAvg : '—'}</td>
           <td class="sep-col"></td>`;
-        // Build boss cols from firstKillMap
+        // Build boss cols from firstKillMap -- no raw DPS/HPS toggle for this view (see setScoreView)
         const bossCols = bosses.map(bossName => {
           const val = p.firstKillMap?.[bossName] || 'N/A';
-          const raw = p.firstKillRawMap?.[bossName];
-          const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
-          const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-          const fg = STATE.scoreShowRaw ? 'var(--text-dim)' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
-          const fw = STATE.scoreShowRaw ? 400 : 700;
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:${fw}; font-size:13px; text-align:center;">${showVal}</td>`;
+          const bg = val !== 'N/A' ? parseColor(parseFloat(val)) : '';
+          const fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
+          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}</td>`;
         }).join('');
         // Return early with firstkill-specific row
         html += `<tr>
@@ -4237,13 +4224,10 @@ function renderScoresTable(roleFilter) {
         <td class="score-cell" style="width:52px; min-width:52px; max-width:52px; background:${col2Bg}; color:${col2Fg}; font-weight:700; font-size:13px; text-align:center;">${col2Val}</td>
         <td class="sep-col"></td>`;
 
-      // Per-boss columns: performance/oppoparse = best parse, firstkill = first kill parse
+      // Per-boss columns: performance/oppoparse = best parse (firstkill returns earlier above)
       const bossCols = bosses.map(bossName => {
         let val, raw;
-        if (view === 'firstkill') {
-          val = p.firstKillMap?.[bossName] || 'N/A';
-          raw = p.firstKillRawMap?.[bossName];
-        } else if (view === 'oppoparse') {
+        if (view === 'oppoparse') {
           val = p.oppoRankingMap?.[bossName] || 'N/A';
           raw = p.oppoRawMap?.[bossName];
         } else {
@@ -4416,7 +4400,7 @@ async function fetchSurvivalData(reset) {
 
   // Show loading spinner
   const wrap = document.getElementById('scores-table-wrap');
-  if (wrap) wrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Fetching survival data from guild reports...<br><small style="opacity:0.6; text-transform:none; letter-spacing:normal;">This may take 20-30 seconds</small></div></div>';
+  if (wrap) wrap.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Fetching survival data from guild reports...<br><small style="opacity:0.6; text-transform:none; letter-spacing:normal;">This may take multiple fetches</small></div></div>';
 
   // Note: STATE.config.difficulty is the guild's general raid difficulty setting and
   // is NOT what filters survival data -- that's STATE.scoreDifficulty (the LFR/Normal/
@@ -4564,9 +4548,10 @@ function setScoreView(view, btn) {
   const diffWrap = document.getElementById('difficulty-filter-wrap');
   if (diffWrap) diffWrap.style.display = 'flex'; // show for all views
 
-  // Raw DPS/HPS toggle only makes sense for parse-based views
+  // Raw DPS/HPS toggle: Performance/Oppo-Parse only -- First Kill's underlying WCL data
+  // (per-kill encounterRankings entries) doesn't carry a usable raw amount field.
   const metricToggleWrap = document.getElementById('score-metric-toggle-wrap');
-  const showsRawToggle = ['performance', 'oppoparse', 'firstkill'].includes(view);
+  const showsRawToggle = ['performance', 'oppoparse'].includes(view);
   if (metricToggleWrap) metricToggleWrap.style.display = showsRawToggle ? 'flex' : 'none';
   if (!showsRawToggle) STATE.scoreShowRaw = false;
 
@@ -4624,9 +4609,8 @@ function getScoreSortValue(player, view, column) {
   // Otherwise: column is a boss name
   // When the Raw DPS/HPS toggle is on, sort by the actual raw amount instead of parse % --
   // the displayed cell shows the raw number, so sorting should match what's on screen.
-  if (STATE.scoreShowRaw && ['performance','oppoparse','firstkill'].includes(view)) {
+  if (STATE.scoreShowRaw && ['performance','oppoparse'].includes(view)) {
     if (view === 'oppoparse') return player.oppoRawNumMap?.[column];
-    if (view === 'firstkill') return player.firstKillRawNumMap?.[column];
     return player.rawNumMap?.[column];
   }
   if (view === 'oppoparse')  return parseFloat(player.oppoRankingMap?.[column]);
