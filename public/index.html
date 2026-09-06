@@ -1227,6 +1227,9 @@
     color: var(--text-mute);
     line-height: 1.6;
   }
+  .legal-links { margin-top: 10px; }
+  .legal-links a { color: var(--text-mute); text-decoration: none; }
+  .legal-links a:hover { color: var(--text-dim); text-decoration: underline; }
 
   /* ── ACCOUNT MENU ── */
   .account-menu {
@@ -1535,6 +1538,7 @@
       <div class="login-footer">
         Your Battle.net password is never shared with RaidLead.<br>
         We only receive your BattleTag to identify your account.
+        <div class="legal-links"><a href="/terms.html">Terms of Service</a> · <a href="/privacy.html">Privacy Policy</a></div>
       </div>
     </div>
   </div>
@@ -2303,10 +2307,13 @@ const STATE = {
   scoreRoleFilter:   'all',         // 'all' | 'tank' | 'heal' | 'dps'
   scoreSortCol:      'best',        // 'best' | 'median' | a boss name -- always sorted highest-to-lowest
   scoreShowRaw:      false,         // false = show parse %, true = show raw DPS/HPS (per-boss cells only)
+  scoresDifficulty:  null,          // difficulty STATE.scores was fetched/loaded for
   survivorMap:       {},            // per-player per-boss survival % from guild reports
   survivorFetched:   false,         // whether survival data has been fetched
+  survivorMapDifficulty:   null,    // difficulty STATE.survivorMap was fetched/loaded for
   mitigationMap:     {},            // per-player per-boss mitigation % from guild reports
   mitigationFetched: false,          // whether mitigation data has been fetched
+  mitigationMapDifficulty: null,    // difficulty STATE.mitigationMap was fetched/loaded for
   claimedCharacter:  null,           // the character this logged-in account has claimed
   attendanceExtraDays: [],           // one-off raid nights, array of 'YYYY-MM-DD' strings
   attendanceMarks:     [],           // [{character_name, raid_date, status}]
@@ -2659,18 +2666,9 @@ function setScoreDifficulty(diff, btn) {
   btn.classList.add('active');
 
   if (STATE.scoreView === 'mitigation') {
-    STATE.mitigationMap     = {};
-    STATE.mitigationFetched = false;
-    const loaded = loadCachedMitigation();
-    if (!loaded) {
-      document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">%</div><h3>No ' + diff.toUpperCase() + ' Mitigation Data</h3><p>Click "Refresh Scores" to fetch mitigation data.</p></div>';
-    }
-    return;
-  }
-
-  if (STATE.scoreView === 'mitigation') {
-    STATE.mitigationMap     = {};
-    STATE.mitigationFetched = false;
+    STATE.mitigationMap           = {};
+    STATE.mitigationFetched       = false;
+    STATE.mitigationMapDifficulty = diff;
     const loaded = loadCachedMitigation();
     if (!loaded) {
       document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No ' + diff.toUpperCase() + ' Mitigation Data</h3><p>Click "Refresh Scores" to fetch mitigation data.</p></div>';
@@ -2680,8 +2678,9 @@ function setScoreDifficulty(diff, btn) {
 
   if (STATE.scoreView === 'survival') {
     // Reset survival data when difficulty changes and try to load cached version
-    STATE.survivorMap     = {};
-    STATE.survivorFetched = false;
+    STATE.survivorMap           = {};
+    STATE.survivorFetched       = false;
+    STATE.survivorMapDifficulty = diff;
     const loaded = loadCachedSurvival();
     if (!loaded) {
       document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No ' + diff.toUpperCase() + ' Survival Data</h3><p>Click "Refresh Scores" to fetch survival data.</p></div>';
@@ -2689,8 +2688,9 @@ function setScoreDifficulty(diff, btn) {
     return;
   }
 
-  STATE.scores    = [];
-  STATE.bossNames = [];
+  STATE.scores           = [];
+  STATE.bossNames        = [];
+  STATE.scoresDifficulty = diff;
   const loaded = loadCachedScores();
   if (!loaded) {
     document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><h3>No ' + diff.toUpperCase() + ' Scores</h3><p>Click "Fetch Scores" to load ' + diff.toUpperCase() + ' data from Warcraft Logs.</p></div>';
@@ -3242,8 +3242,9 @@ function renderAttendanceCalendar() {
     const isExtraNight = (STATE.attendanceExtraDays || []).includes(dateStr);
     const unavailable = myUnavailableDates.has(dateStr);
 
-    // Count of teammates marked unavailable on this date (visible to everyone, useful context)
-    const unavailCount = (STATE.attendanceMarks || []).filter(m => m.raid_date === dateStr && m.status === 'unavailable').length;
+    // Names of teammates marked unavailable on this date (visible to everyone, useful context)
+    const unavailNames = (STATE.attendanceMarks || []).filter(m => m.raid_date === dateStr && m.status === 'unavailable').map(m => m.character_name);
+    const unavailCount = unavailNames.length;
 
     let classes = 'attendance-day';
     if (raidDay) classes += ' raid-day';
@@ -3252,7 +3253,7 @@ function renderAttendanceCalendar() {
 
     const clickAttr = raidDay && myChar ? `onclick="toggleMyAttendance('${dateStr}')"` : '';
     const tag = unavailable ? 'Unavailable' : (raidDay ? 'Raid Night' : '');
-    const countBadge = (raidDay && unavailCount > 0) ? `<div class="attendance-day-count">${unavailCount} out</div>` : '';
+    const countBadge = (raidDay && unavailCount > 0) ? `<div class="attendance-day-count" title="Out: ${unavailNames.join(', ')}">${unavailCount} out</div>` : '';
     // Officers can remove one-off extra raid nights directly from the calendar
     const removeBtn = (isExtraNight && isOfficerView)
       ? `<div class="attendance-day-remove" title="Remove this raid night" onclick="event.stopPropagation(); removeRaidNightFromCalendar('${dateStr}')">&times;</div>`
@@ -3972,10 +3973,9 @@ async function fetchScores() {
       }
     }
 
-    STATE.scores    = results;
-    STATE.bossNames = bossNames;
-    STATE.scores    = results;
-    STATE.bossNames = bossNames;
+    STATE.scores           = results;
+    STATE.bossNames        = bossNames;
+    STATE.scoresDifficulty = STATE.scoreDifficulty;
     saveScores(results, bossNames, STATE.zoneId);
     renderScoresTable('all');
     updateScoresFetchBtn(Date.now());
@@ -4341,8 +4341,9 @@ async function fetchMitigationData(reset) {
         }
       }
     }
-    STATE.mitigationMap     = mitigationMap || {};
-    STATE.mitigationFetched = true;
+    STATE.mitigationMap           = mitigationMap || {};
+    STATE.mitigationFetched       = true;
+    STATE.mitigationMapDifficulty = STATE.scoreDifficulty;
     const mitKey = 'raidlead_mitigation_' + zoneId + '_' + (STATE.scoreDifficulty || 'mythic');
     try { localStorage.setItem(mitKey, JSON.stringify({ mitigationMap, bossNames, savedAt: Date.now() })); } catch(e) {}
     renderScoresTable('all');
@@ -4364,11 +4365,15 @@ function loadCachedMitigation() {
   if (STATE.teamId) {
     fetch('/api/roster?action=getMitigationCache&teamId=' + STATE.teamId + '&zoneId=' + (STATE.zoneId||'') + '&diffId=' + diffId)
       .then(r => r.json()).then(data => {
+        // The difficulty tab may have changed while this request was in flight --
+        // don't clobber whatever the user is looking at now with a stale response.
+        if (STATE.scoreDifficulty !== diff) return;
         if (data.mitigationMap && Object.keys(data.mitigationMap).length > 0) {
           const localTs = (() => { try { return JSON.parse(localStorage.getItem(key)||'{}').savedAt||0; } catch(e){ return 0; }})();
           if ((data.savedAt||0) >= localTs) {
-            STATE.mitigationMap     = data.mitigationMap;
-            STATE.mitigationFetched = true;
+            STATE.mitigationMap           = data.mitigationMap;
+            STATE.mitigationFetched       = true;
+            STATE.mitigationMapDifficulty = diff;
             try { localStorage.setItem(key, JSON.stringify({ mitigationMap: data.mitigationMap, bossNames: data.bossNames, savedAt: data.savedAt })); } catch(e) {}
             renderScoresTable('all');
           }
@@ -4378,8 +4383,9 @@ function loadCachedMitigation() {
   try {
     const cached = JSON.parse(localStorage.getItem(key) || 'null');
     if (cached?.mitigationMap && Object.keys(cached.mitigationMap).length > 0) {
-      STATE.mitigationMap     = cached.mitigationMap;
-      STATE.mitigationFetched = true;
+      STATE.mitigationMap           = cached.mitigationMap;
+      STATE.mitigationFetched       = true;
+      STATE.mitigationMapDifficulty = diff;
       renderScoresTable('all');
       return true;
     }
@@ -4468,8 +4474,9 @@ async function fetchSurvivalData(reset) {
       }
     }
 
-    STATE.survivorMap     = survivorMap || {};
-    STATE.survivorFetched = true;
+    STATE.survivorMap           = survivorMap || {};
+    STATE.survivorFetched       = true;
+    STATE.survivorMapDifficulty = STATE.scoreDifficulty;
 
     // Cache to localStorage
     const survivalCacheKey = 'raidlead_survival_' + zoneId + '_' + STATE.scoreDifficulty;
@@ -4514,11 +4521,15 @@ function loadCachedSurvival() {
   if (STATE.teamId) {
     fetch(`/api/roster?action=getSurvivalCache&teamId=${STATE.teamId}&zoneId=${STATE.zoneId || ''}&diffId=${diffId}`)
       .then(r => r.json()).then(data => {
+        // The difficulty tab may have changed while this request was in flight --
+        // don't clobber whatever the user is looking at now with a stale response.
+        if (STATE.scoreDifficulty !== diff) return;
         if (data.survivorMap && Object.keys(data.survivorMap).length > 0) {
           const localTs = (() => { try { return JSON.parse(localStorage.getItem(key) || '{}').savedAt || 0; } catch(e) { return 0; } })();
           if ((data.savedAt || 0) >= localTs) {
-            STATE.survivorMap     = data.survivorMap;
-            STATE.survivorFetched = true;
+            STATE.survivorMap           = data.survivorMap;
+            STATE.survivorFetched       = true;
+            STATE.survivorMapDifficulty = diff;
             try { localStorage.setItem(key, JSON.stringify({ survivorMap: data.survivorMap, bossNames: data.bossNames, savedAt: data.savedAt })); } catch(e) {}
             renderScoresTable('all');
           }
@@ -4530,8 +4541,9 @@ function loadCachedSurvival() {
   try {
     const cached = JSON.parse(localStorage.getItem(key) || 'null');
     if (cached?.survivorMap && Object.keys(cached.survivorMap).length > 0) {
-      STATE.survivorMap     = cached.survivorMap;
-      STATE.survivorFetched = true;
+      STATE.survivorMap           = cached.survivorMap;
+      STATE.survivorFetched       = true;
+      STATE.survivorMapDifficulty = diff;
       renderScoresTable('all');
       return true;
     }
@@ -4559,8 +4571,27 @@ function setScoreView(view, btn) {
   const rebuildBtn = document.getElementById('score-rebuild-btn');
   if (rebuildBtn) rebuildBtn.style.display = (view === 'survival' || view === 'mitigation') ? 'inline-block' : 'none';
 
-  if (view === 'survival' && !STATE.survivorFetched) loadCachedSurvival();
-  if (view === 'mitigation' && !STATE.mitigationFetched) loadCachedMitigation();
+  // Each view's in-memory data is tagged with the difficulty it was loaded for. The
+  // difficulty tab is shared across all views, so switching views after changing
+  // difficulty elsewhere (e.g. Mythic Survival -> Performance -> Heroic -> back to
+  // Survival) must not leave the old view showing stale data under the new tab.
+  if (view === 'survival') {
+    if (STATE.survivorMapDifficulty !== STATE.scoreDifficulty) {
+      STATE.survivorMap = {};
+      STATE.survivorFetched = false;
+    }
+    if (!STATE.survivorFetched) loadCachedSurvival();
+  } else if (view === 'mitigation') {
+    if (STATE.mitigationMapDifficulty !== STATE.scoreDifficulty) {
+      STATE.mitigationMap = {};
+      STATE.mitigationFetched = false;
+    }
+    if (!STATE.mitigationFetched) loadCachedMitigation();
+  } else if (STATE.scoresDifficulty !== STATE.scoreDifficulty) {
+    STATE.scores    = [];
+    STATE.bossNames = [];
+    loadCachedScores();
+  }
   renderScoresTable('all');
 }
 
@@ -4720,6 +4751,9 @@ document.getElementById('profile-modal').addEventListener('click', function(e) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function loadCachedScores() {
+  // Capture the difficulty this call is loading for -- STATE.scoreDifficulty could
+  // change before the async Supabase fetch below resolves.
+  const requestedDifficulty = STATE.scoreDifficulty || 'mythic';
   const localFetchedAt = (() => {
     try {
       const cached = localStorage.getItem(scoresKey());
@@ -4730,9 +4764,12 @@ function loadCachedScores() {
 
   // Always check Supabase for newer data (cross-device sync)
   if (STATE.teamId) {
-    fetch(`/api/roster?action=getScores&teamId=${STATE.teamId}&zoneId=${STATE.zoneId || ''}&difficulty=${STATE.scoreDifficulty || 'mythic'}`)
+    fetch(`/api/roster?action=getScores&teamId=${STATE.teamId}&zoneId=${STATE.zoneId || ''}&difficulty=${requestedDifficulty}`)
       .then(r => r.json()).then(data => {
         if (!data.scores?.length) return;
+        // The difficulty tab may have changed while this request was in flight --
+        // don't clobber whatever the user is looking at now with a stale response.
+        if (STATE.scoreDifficulty !== requestedDifficulty) return;
         const hasRankingMap   = data.scores.some(s => s.rankingMap);
         const hasFirstKillMap = data.scores.some(s => s.firstKillMap);
         const hasOppoMap      = data.scores.some(s => s.oppoBestAvg !== undefined);
@@ -4742,8 +4779,9 @@ function loadCachedScores() {
         }
         // Only update if Supabase is newer than local cache
         if ((data.fetchedAt || 0) >= localFetchedAt) {
-          STATE.scores    = data.scores;
-          STATE.bossNames = data.bossNames || [];
+          STATE.scores           = data.scores;
+          STATE.bossNames        = data.bossNames || [];
+          STATE.scoresDifficulty = requestedDifficulty;
           try {
             localStorage.setItem(scoresKey(), JSON.stringify({
               scores: data.scores, bossNames: data.bossNames,
@@ -4767,8 +4805,9 @@ function loadCachedScores() {
       const hasFirstKillMap = parsed.scores?.some(s => s.firstKillMap);
       const hasOppoMap      = parsed.scores?.some(s => s.oppoBestAvg !== undefined);
       if (parsed.scores?.length > 0 && hasRankingMap && hasFirstKillMap && hasOppoMap && (!parsed.zoneId || parsed.zoneId === STATE.zoneId)) {
-        STATE.scores    = parsed.scores;
-        STATE.bossNames = parsed.bossNames || [];
+        STATE.scores           = parsed.scores;
+        STATE.bossNames        = parsed.bossNames || [];
+        STATE.scoresDifficulty = requestedDifficulty;
         renderScoresTable('all');
         updateScoresTimestamp(parsed.fetchedAt);
         const btn = document.getElementById('fetch-scores-btn');
