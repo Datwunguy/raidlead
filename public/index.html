@@ -1995,7 +1995,7 @@
         <input type="date" id="planner-date-input" style="display:none;" onchange="setPlannerDate(this.value)">
         <div id="planner-edit-banner" style="display:none; background:rgba(200,168,75,0.08); border:1px solid var(--gold-dim); border-radius:6px; padding:10px 16px; margin-bottom:16px; font-size:13px; color:var(--gold);">
           ✎ Edit Mode — changes are only visible to officers until published.
-          <button onclick="exitEditMode()" style="float:right; background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:13px;">Cancel</button>
+          <button onclick="cancelPlannerChanges()" style="float:right; background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:13px;">Cancel</button>
         </div>
 
         <!-- 4 column layout: roster | counts | buffs | checklist -->
@@ -4870,6 +4870,8 @@ async function loadPlanForDate(dateStr) {
     if (importBtn) importBtn.style.display = 'none';
     const clearBtn = document.getElementById('planner-clear-btn');
     if (clearBtn) clearBtn.style.display = 'none';
+    const editBanner = document.getElementById('planner-edit-banner');
+    if (editBanner) editBanner.style.display = 'none';
   } else {
     STATE.raidPlanPublished = false;
     STATE.raidPlanMode      = null;
@@ -4889,9 +4891,9 @@ async function loadPlanForDate(dateStr) {
     // means discard the in-progress selection -- same effect as Clear.
     const clearBtn = document.getElementById('planner-clear-btn');
     if (clearBtn) clearBtn.style.display = 'inline-flex';
+    const editBanner = document.getElementById('planner-edit-banner');
+    if (editBanner) editBanner.style.display = 'block';
   }
-  const editBanner = document.getElementById('edit-mode-banner');
-  if (editBanner) editBanner.style.display = 'none';
 }
 
 // Build a sorted list of all known raid dates (recurring + extras) on/around today
@@ -5276,6 +5278,17 @@ function enterEditMode() {
   document.getElementById('planner-import-btn').style.display  = 'inline-flex';
   document.getElementById('planner-clear-btn').style.display   = 'inline-flex';
   showToast('Edit mode active — changes are drafts until published', '');
+}
+
+// The banner's Cancel button is shared between two different situations:
+// editing an already-published plan (revert to what's published) vs. a fresh
+// draft that's never been published (nothing to revert to -- just clear it).
+function cancelPlannerChanges() {
+  if (STATE.raidPlanMode === 'edit') {
+    exitEditMode();
+  } else {
+    clearRaidRoster();
+  }
 }
 
 function exitEditMode() {
