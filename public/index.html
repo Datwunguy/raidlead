@@ -2295,6 +2295,9 @@ const STATE = {
   compareDifficulty: 'mythic',     // difficulty for the Compare tab
   compareDate:       null,         // start date (ms timestamp) for benchmark window
   scoreView:         'performance', // performance | firstkill | survival | oppoparse | mitigation
+  scoreRoleFilter:   'all',         // 'all' | 'tank' | 'heal' | 'dps'
+  scoreSortCol:      'best',        // 'best' | 'median' | a boss name
+  scoreSortDir:      'desc',        // 'desc' | 'asc'
   survivorMap:       {},            // per-player per-boss survival % from guild reports
   survivorFetched:   false,         // whether survival data has been fetched
   mitigationMap:     {},            // per-player per-boss mitigation % from guild reports
@@ -3873,6 +3876,18 @@ async function fetchScores() {
         }
 
         const fmt = v => v != null ? parseFloat(v).toFixed(1) : 'N/A';
+        // Raw DPS/HPS number for a ranking entry, if WCL includes it (field name
+        // unconfirmed -- verify via the [WCL ranking keys] log below after deploying;
+        // if it's actually called something else, this will just come back as null
+        // everywhere rather than breaking anything).
+        const fmtAmount = n => {
+          n = parseFloat(n);
+          if (isNaN(n)) return null;
+          if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+          if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+          return n.toFixed(0);
+        };
+        const rawOf = r => r?.amount != null ? fmtAmount(r.amount) : null;
 
         // Death %
         const deaths     = zr.deaths     || 0;
@@ -3883,7 +3898,8 @@ async function fetchScores() {
         // encounterRankings with killType:FastestKills returns all kills sorted fastest first
         // The LAST entry (highest index) per boss = the first kill chronologically (slowest = earliest)
         // Actually we want lowest startTime — sort and take first
-        const firstKillMap = {};
+        const firstKillMap    = {};
+        const firstKillRawMap = {};
         bossIds.forEach((id, i) => {
           const bossName = STATE.bossOrder?.[i];
           if (!bossName) return;
@@ -3897,6 +3913,7 @@ async function fetchScores() {
           const first  = sorted[0];
           if (first?.rankPercent != null) {
             firstKillMap[bossName] = fmt(first.rankPercent);
+            firstKillRawMap[bossName] = rawOf(first);
           }
         });
 
@@ -3908,6 +3925,9 @@ async function fetchScores() {
           const enc0 = parsejson(rawSample);
           console.log('[FirstKill] raw boss0 keys:', enc0 ? Object.keys(enc0).join(',') : 'null');
           console.log('[FirstKill] raw boss0 rank[0]:', JSON.stringify((enc0.ranks || enc0.rankings || enc0.data || [])[0]));
+          // Raw DPS/HPS verification -- check these logged keys for the actual field name
+          // if firstKillRawMap/rawMap/oppoRawMap come back empty after deploying.
+          console.log('[WCL ranking keys]', rankings[0] ? Object.keys(rankings[0]).join(',') : 'no rankings', '| sample:', JSON.stringify(rankings[0]));
         }
 
         results.push({
@@ -3919,6 +3939,9 @@ async function fetchScores() {
           deathPct,
           rankingMap:   Object.fromEntries(rankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
           oppoRankingMap: Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
+          rawMap:       Object.fromEntries(rankings.map(r => [r.encounter?.name, rawOf(r)])),
+          oppoRawMap:   Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawOf(r)])),
+          firstKillRawMap,
           firstKillMap,
           rankings:     rankings.map(r => fmt(r.rankPercent)),
           error:        null,
@@ -3978,6 +4001,11 @@ async function fetchScores() {
   btn.textContent = '↻ Refresh Scores';
 }
 
+// Small second line under a boss cell's percentile showing the raw DPS/HPS number, if known.
+function rawSubLine(raw) {
+  return raw ? `<div style="font-size:9px; font-weight:500; opacity:0.75; line-height:1.2;">${raw}</div>` : '';
+}
+
 function renderScoresTable(roleFilter) {
   const wrap   = document.getElementById('scores-table-wrap');
   const bosses = STATE.bossNames;
@@ -4007,55 +4035,19 @@ function renderScoresTable(roleFilter) {
     { keys: ['melee','ranged','dps'],   label: 'DPS'     },
   ];
 
-  // Sort functions per view
-  const sortFn = {
-    performance: (a, b) => {
-      const av = parseFloat(a.bestAvg), bv = parseFloat(b.bestAvg);
-      if (isNaN(av) && isNaN(bv)) return 0;
-      if (isNaN(av)) return 1; if (isNaN(bv)) return -1;
-      return bv - av;
-    },
-    oppoparse: (a, b) => {
-      const av = parseFloat(a.oppoBestAvg), bv = parseFloat(b.oppoBestAvg);
-      if (isNaN(av) && isNaN(bv)) return 0;
-      if (isNaN(av)) return 1; if (isNaN(bv)) return -1;
-      return bv - av;
-    },
-    survival: (a, b) => {
-      // Higher avg survival % = better = sort descending
-      const avgSurv = p => {
-        const vals = Object.values(STATE.survivorMap?.[p.name] || {})
-          .map(v => parseFloat(v)).filter(v => !isNaN(v));
-        return vals.length > 0 ? vals.reduce((x,y)=>x+y,0)/vals.length : NaN;
-      };
-      const av = avgSurv(a), bv = avgSurv(b);
-      if (isNaN(av) && isNaN(bv)) return 0;
-      if (isNaN(av)) return 1; if (isNaN(bv)) return -1;
-      return bv - av; // descending
-    },
-    firstkill: (a, b) => {
-      // Sort by average first-kill parse
-      const fkAvg = p => {
-        const vals = Object.values(p.firstKillMap || {}).map(v => parseFloat(v)).filter(v => !isNaN(v));
-        return vals.length > 0 ? vals.reduce((x,y) => x+y, 0) / vals.length : NaN;
-      };
-      const av = fkAvg(a), bv = fkAvg(b);
-      if (isNaN(av) && isNaN(bv)) return 0;
-      if (isNaN(av)) return 1; if (isNaN(bv)) return -1;
-      return bv - av;
-    },
-    mitigation: (a, b) => {
-      const avgMit = p => {
-        const vals = Object.values(STATE.mitigationMap?.[p.name] || {})
-          .map(v => parseFloat(v)).filter(v => !isNaN(v));
-        return vals.length > 0 ? vals.reduce((x,y)=>x+y,0)/vals.length : NaN;
-      };
-      const av = avgMit(a), bv = avgMit(b);
-      if (isNaN(av) && isNaN(bv)) return 0;
-      if (isNaN(av)) return 1; if (isNaN(bv)) return -1;
-      return bv - av;
-    },
-  }[view];
+  // Sort by whichever column header was last clicked (defaults to 'best', descending —
+  // matching the previous hardcoded per-view behavior).
+  const sortCol = STATE.scoreSortCol || 'best';
+  const sortDir = STATE.scoreSortDir === 'asc' ? 1 : -1;
+  const sortFn = (a, b) => {
+    const av = getScoreSortValue(a, view, sortCol);
+    const bv = getScoreSortValue(b, view, sortCol);
+    if (isNaN(av) && isNaN(bv)) return 0;
+    if (isNaN(av)) return 1;  // NaN always sorts to the bottom regardless of direction
+    if (isNaN(bv)) return -1;
+    return (bv - av) * sortDir;
+  };
+  const sortArrow = col => STATE.scoreSortCol === col ? (STATE.scoreSortDir === 'asc' ? ' ▲' : ' ▼') : '';
 
   // All views use same layout: summary cols + per-boss cols
   // Performance: Best | Median | per-boss best
@@ -4067,13 +4059,13 @@ function renderScoresTable(roleFilter) {
   const showMedian = view === 'performance' || view === 'oppoparse';
   const col1Label  = view === 'survival' ? 'Avg Surv%' : view === 'mitigation' ? 'Avg Mitig%' : 'Average';
   const headerCols = showMedian ? `
-    <th style="width:52px; min-width:52px; max-width:52px; text-align:center;">Best</th><th class="sep-col"></th>
-    <th style="width:52px; min-width:52px; max-width:52px; text-align:center;">Median</th><th class="sep-col"></th>`
-  : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center;">${col1Label}</th><th class="sep-col"></th>`;
+    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="setScoreSort('best')" title="Sort by ${col1Label === 'Average' ? 'Best' : col1Label}">Best${sortArrow('best')}</th><th class="sep-col"></th>
+    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="setScoreSort('median')" title="Sort by Median">Median${sortArrow('median')}</th><th class="sep-col"></th>`
+  : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="setScoreSort('best')" title="Sort by ${col1Label}">${col1Label}${sortArrow('best')}</th><th class="sep-col"></th>`;
 
   const bossHeaders = bosses.map(b =>
-    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center;" title="${b}">
-      <span style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px;">${b.substring(0,5)}</span>
+    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${b}" onclick="setScoreSort('${b.replace(/'/g,"\\'")}')">
+      <span style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px;">${b.substring(0,5)}${sortArrow(b)}</span>
     </th>`
   ).join('');
 
@@ -4185,9 +4177,10 @@ function renderScoresTable(roleFilter) {
         // Build boss cols from firstKillMap
         const bossCols = bosses.map(bossName => {
           const val = p.firstKillMap?.[bossName] || 'N/A';
+          const raw = p.firstKillRawMap?.[bossName];
           const bg  = val !== 'N/A' ? parseColor(parseFloat(val)) : '';
           const fg  = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}</td>`;
+          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}${rawSubLine(raw)}</td>`;
         }).join('');
         // Return early with firstkill-specific row
         html += `<tr>
@@ -4221,17 +4214,20 @@ function renderScoresTable(roleFilter) {
 
       // Per-boss columns: performance/oppoparse = best parse, firstkill = first kill parse
       const bossCols = bosses.map(bossName => {
-        let val, bg, fg;
+        let val, bg, fg, raw;
         if (view === 'firstkill') {
           val = p.firstKillMap?.[bossName] || 'N/A';
+          raw = p.firstKillRawMap?.[bossName];
         } else if (view === 'oppoparse') {
           val = p.oppoRankingMap?.[bossName] || 'N/A';
+          raw = p.oppoRawMap?.[bossName];
         } else {
           val = p.rankingMap?.[bossName] || 'N/A';
+          raw = p.rawMap?.[bossName];
         }
         bg = val !== 'N/A' ? parseColor(parseFloat(val)) : '';
         fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
-        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}</td>`;
+        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}${rawSubLine(raw)}</td>`;
       }).join('');
 
       if (view !== 'firstkill') {
@@ -4510,6 +4506,9 @@ function loadCachedSurvival() {
 
 function setScoreView(view, btn) {
   STATE.scoreView = view;
+  STATE.scoreRoleFilter = 'all';
+  STATE.scoreSortCol = 'best';
+  STATE.scoreSortDir = 'desc';
   document.querySelectorAll('#score-view-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   const diffWrap = document.getElementById('difficulty-filter-wrap');
@@ -4522,7 +4521,45 @@ function setScoreView(view, btn) {
 function filterScores(role, btn) {
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  STATE.scoreRoleFilter = role;
   renderScoresTable(role);
+}
+
+// Click a column header to sort by it -- clicking the same column again flips direction.
+function setScoreSort(column) {
+  if (STATE.scoreSortCol === column) {
+    STATE.scoreSortDir = STATE.scoreSortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    STATE.scoreSortCol = column;
+    STATE.scoreSortDir = 'desc';
+  }
+  renderScoresTable(STATE.scoreRoleFilter || 'all');
+}
+
+// Returns the numeric value used to sort a given player by a given column, for the
+// current score view. `column` is either 'best', 'median', or a boss name.
+function getScoreSortValue(player, view, column) {
+  const avgOf = obj => {
+    const vals = Object.values(obj || {}).map(v => parseFloat(v)).filter(v => !isNaN(v));
+    return vals.length > 0 ? vals.reduce((a,b) => a+b, 0) / vals.length : NaN;
+  };
+  if (column === 'best') {
+    if (view === 'oppoparse') return parseFloat(player.oppoBestAvg);
+    if (view === 'firstkill') return avgOf(player.firstKillMap);
+    if (view === 'survival')  return avgOf(STATE.survivorMap?.[player.name]);
+    if (view === 'mitigation') return avgOf(STATE.mitigationMap?.[player.name]);
+    return parseFloat(player.bestAvg);
+  }
+  if (column === 'median') {
+    if (view === 'oppoparse') return parseFloat(player.oppoMedianAvg);
+    return parseFloat(player.medianAvg);
+  }
+  // Otherwise: column is a boss name
+  if (view === 'oppoparse')  return parseFloat(player.oppoRankingMap?.[column]);
+  if (view === 'firstkill')  return parseFloat(player.firstKillMap?.[column]);
+  if (view === 'survival')   return parseFloat(STATE.survivorMap?.[player.name]?.[column]);
+  if (view === 'mitigation') return parseFloat(STATE.mitigationMap?.[player.name]?.[column]);
+  return parseFloat(player.rankingMap?.[column]);
 }
 
 // ─────────────────────────────────────────────

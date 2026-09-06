@@ -54,6 +54,38 @@ function normaliseTs(ts) {
   return ts < 9999999999 ? ts * 1000 : ts;
 }
 
+// Fetches ALL reports for a guild+zone by paginating through WCL's reports connection.
+// A single page is capped at 50 by WCL, and a guild can easily have logged more than
+// that for one zone/tier -- callers that need the true earliest report (to compute
+// accurate first-kill boundaries for survival/mitigation) must page through the full
+// list rather than only ever seeing the most recent 50.
+async function fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam, maxPages = 40 }) {
+  let allReports  = [];
+  let page        = 1;
+  let hitMaxPages = false;
+  while (page <= maxPages) {
+    const resp = await wclQuery(`query {
+      reportData { reports(
+        guildName: "${guildName}" guildServerSlug: "${serverSlug}"
+        guildServerRegion: "${region}" zoneID: ${zoneId} limit: 50 page: ${page} ${tagParam}
+      ) { data { code startTime fights(killType: All) { id encounterID name difficulty startTime endTime kill } } has_more_pages } }
+    }`);
+    if (resp?.errors) { console.error('[fetchAllZoneReports] page', page, 'error:', resp.errors[0]?.message); break; }
+    const pageInfo    = resp?.data?.reportData?.reports;
+    const pageReports = pageInfo?.data || [];
+    if (page === 1) {
+      console.log('[fetchAllZoneReports] page1 keys:', pageInfo ? Object.keys(pageInfo).join(',') : 'null', '| has_more_pages:', pageInfo?.has_more_pages);
+    }
+    if (pageReports.length === 0) break;
+    allReports = allReports.concat(pageReports);
+    if (!pageInfo?.has_more_pages) break;
+    if (page === maxPages) hitMaxPages = true;
+    page++;
+  }
+  console.log('[fetchAllZoneReports]', guildName, 'zone', zoneId, '-- total reports:', allReports.length, 'across', page, 'page(s)', hitMaxPages ? '(hit max page cap)' : '');
+  return { reports: allReports, hitMaxPages };
+}
+
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
@@ -219,16 +251,17 @@ module.exports = async (req, res) => {
     console.log('[mitigation] guildTagID:', tagId, '| diffId:', diffId);
 
     try {
-      const reportsResp = await wclQuery(`query {
-        reportData { reports(
-          guildName: "${guildName}" guildServerSlug: "${serverSlug}"
-          guildServerRegion: "${region}" zoneID: ${zoneId} limit: 50 ${tagParam}
-        ) { data { code startTime fights(killType: All) { id encounterID name difficulty startTime endTime kill } } } }
-      }`);
-      if (reportsResp?.errors) { console.error('[mitigation] reports error:', reportsResp.errors[0]?.message); return res.status(200).json({ mitigationMap: {}, bossNames: [] }); }
-      const allReports = reportsResp?.data?.reportData?.reports?.data || [];
+      let allReports, mitigHitMaxPages;
+      try {
+        const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam });
+        allReports = result.reports;
+        mitigHitMaxPages = result.hitMaxPages;
+      } catch(e) {
+        console.error('[mitigation] fetchAllZoneReports threw:', e.message);
+        return res.status(200).json({ mitigationMap: {}, bossNames: [], error: e.message });
+      }
       allReports.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
-      console.log('[mitigation] reports:', allReports.length);
+      console.log('[mitigation] reports:', allReports.length, mitigHitMaxPages ? '(hit max page cap)' : '');
       console.log('[mitigation] first 3 startTimes:', allReports.slice(0,3).map(r => r.code + ':' + r.startTime).join(', '));
       console.log('[mitigation] last 3 startTimes:', allReports.slice(-3).map(r => r.code + ':' + r.startTime).join(', '));
 
@@ -504,41 +537,18 @@ module.exports = async (req, res) => {
     console.log('[survival] guildTagID:', tagId, '| diffId:', diffId);
 
     try {
-      // Step 1: Get all reports for this zone + team tag in one call
+      // Step 1: Get ALL reports for this zone + team tag (paginated -- see fetchAllZoneReports)
       // The difficulty filter on fights is done below; reports API doesn't filter by difficulty
-      const reportsQuery = `query {
-        reportData {
-          reports(
-            guildName: "${guildName}"
-            guildServerSlug: "${serverSlug}"
-            guildServerRegion: "${region}"
-            zoneID: ${zoneId}
-            limit: 50
-            ${tagParam}
-          ) {
-            data {
-              code startTime
-              fights(killType: All) {
-                id encounterID name difficulty startTime endTime kill
-              }
-            }
-          }
-        }
-      }`;
-      let reportsResp;
+      let allReports, survHitMaxPages;
       try {
-        reportsResp = await wclQuery(reportsQuery);
+        const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam });
+        allReports = result.reports;
+        survHitMaxPages = result.hitMaxPages;
       } catch(e) {
-        console.error('[survival] wclQuery threw:', e.message);
+        console.error('[survival] fetchAllZoneReports threw:', e.message);
         return res.status(200).json({ survivorMap: {}, bossNames: [], error: e.message });
       }
-      console.log('[survival] raw reports resp keys:', reportsResp ? Object.keys(reportsResp).join(',') : 'null');
-      if (reportsResp?.errors) {
-        console.error('[survival] reports error:', JSON.stringify(reportsResp.errors[0]));
-        return res.status(200).json({ survivorMap: {}, bossNames: [] });
-      }
-      const allReports = reportsResp?.data?.reportData?.reports?.data || [];
-      console.log('[survival] reports found:', allReports.length);
+      console.log('[survival] reports found:', allReports.length, survHitMaxPages ? '(hit max page cap)' : '');
       if (allReports.length === 0) return res.status(200).json({ survivorMap: {}, bossNames: [] });
 
       // Sort oldest first
