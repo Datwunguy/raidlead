@@ -226,6 +226,7 @@ module.exports = async (req, res) => {
     const diffId = req.query.diffId || req.body?.diffId || 5;
     if (!teamId) return res.status(200).json({ mitigationMap: {}, bossNames: [] });
     try {
+      await assertTeamOwnership(teamId);
       const { data } = await supabase
         .from('wcl_scores').select('boss_scores, fetched_at')
         .eq('team_id', teamId).eq('zone_id', zoneId)
@@ -251,6 +252,7 @@ module.exports = async (req, res) => {
     console.log('[mitigation] guildTagID:', tagId, '| diffId:', diffId);
 
     try {
+      await assertTeamOwnership(teamId);
       let allReports, mitigHitMaxPages;
       try {
         const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam });
@@ -451,7 +453,7 @@ module.exports = async (req, res) => {
       }
 
       return res.status(200).json({ mitigationMap: finalMitigationMap, bossNames: finalBossNames });
-    } catch(err) { console.error('[mitigation] error:', err.message); return res.status(500).json({ error: err.message }); }
+    } catch(err) { console.error('[mitigation] error:', err.message); return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   // ── DIAGNOSTIC: probe DamageTaken table structure for mitigation ──
@@ -551,6 +553,7 @@ module.exports = async (req, res) => {
     const diffId = req.query.diffId || req.body?.diffId || 5;
     if (!teamId) return res.status(200).json({ survivorMap: {}, bossNames: [] });
     try {
+      await assertTeamOwnership(teamId);
       const survCacheKey = `surv_${diffId}`;
       const { data } = await supabase
         .from('wcl_scores')
@@ -588,6 +591,7 @@ module.exports = async (req, res) => {
     console.log('[survival] guildTagID:', tagId, '| diffId:', diffId);
 
     try {
+      await assertTeamOwnership(req.body?.teamId);
       // Step 1: Get ALL reports for this zone + team tag (paginated -- see fetchAllZoneReports)
       // The difficulty filter on fights is done below; reports API doesn't filter by difficulty
       let allReports, survHitMaxPages;
@@ -856,7 +860,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ survivorMap: finalSurvivorMap, bossNames: finalBossNames });
     } catch(err) {
       console.error('[survival] error:', err.message);
-      return res.status(500).json({ error: err.message });
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 

@@ -27,6 +27,19 @@ module.exports = async (req, res) => {
   const isOwner   = myMembership.role === 'owner';
   const myGuildId = myMembership.guild_id;
 
+  // Helper: verify a teamId belongs to the caller's guild -- prevents an officer of
+  // one guild from acting on another guild's team by supplying its teamId directly.
+  async function assertTeamOwnership(teamId) {
+    if (!teamId) throw Object.assign(new Error('teamId required'), { status: 400 });
+    const { data: team } = await supabase
+      .from('teams')
+      .select('id')
+      .eq('id', teamId)
+      .eq('guild_id', myGuildId)
+      .single();
+    if (!team) throw Object.assign(new Error('Team does not belong to your guild'), { status: 403 });
+  }
+
   // ── GET: return all members ──
   if (action === 'get' || req.method === 'GET') {
     try {
@@ -99,6 +112,16 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'That doesn\'t look like a Discord user ID (should be a long number -- right-click their name in Discord with Developer Mode on and choose "Copy User ID").' });
     }
     try {
+      // Verify targetAccountId is actually a member of the caller's own guild --
+      // without this, an officer of any guild could relink any account platform-wide.
+      const { data: targetMembership } = await supabase
+        .from('guild_members')
+        .select('account_id')
+        .eq('account_id', targetAccountId)
+        .eq('guild_id', myGuildId)
+        .maybeSingle();
+      if (!targetMembership) return res.status(403).json({ error: 'That account is not a member of your guild' });
+
       const { error } = await supabase.from('accounts').update({ discord_id: value }).eq('id', targetAccountId);
       if (error) {
         if (error.code === '23505') return res.status(409).json({ error: 'That Discord account is already linked to a different RaidLead account.' });
@@ -111,8 +134,9 @@ module.exports = async (req, res) => {
   // ── GENERATE DISCORD LINK CODE: self-service linking, used when an officer hasn't set it ──
   if (action === 'generateDiscordLinkCode') {
     try {
+      const { randomInt } = require('crypto');
       const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-      const code = Array.from({ length: 6 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('');
+      const code = Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
 
       const { error } = await supabase.from('accounts').update({
@@ -231,40 +255,6 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
-  // ── GET ATTENDANCE: raid extra nights + all marks for the team ──
-  // ── DIAGNOSTIC: test attendance read/write directly ──
-  if (action === 'diagAttendance') {
-    const teamId = req.query.teamId || req.body?.teamId;
-    try {
-      // Test write
-      const testDate = '2099-01-01';
-      const { data: insertData, error: insertErr } = await supabase
-        .from('attendance_marks')
-        .insert({ team_id: teamId, character_name: 'TEST', raid_date: testDate, status: 'unavailable' })
-        .select();
-      
-      // Test read
-      const { data: readData, error: readErr } = await supabase
-        .from('attendance_marks')
-        .select('*')
-        .eq('team_id', teamId)
-        .limit(10);
-
-      // Cleanup
-      await supabase.from('attendance_marks').delete()
-        .eq('team_id', teamId).eq('character_name', 'TEST').eq('raid_date', testDate);
-
-      return res.status(200).json({
-        supabaseUrl: process.env.SUPABASE_URL,
-        keyPrefix: (process.env.SUPABASE_SERVICE_KEY || '').slice(0, 30),
-        insertData, insertErr: insertErr?.message,
-        readCount: readData?.length,
-        readErr: readErr?.message,
-        readSample: readData?.slice(0, 3),
-      });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
-  }
-
   if (action === 'getAttendance') {
     const teamId = req.body?.teamId || req.query.teamId;
     if (!teamId) return res.status(400).json({ error: 'teamId required' });
@@ -298,6 +288,10 @@ module.exports = async (req, res) => {
   if (action === 'markAttendance') {
     const { teamId, characterName, raidDate, unavailable } = req.body;
     if (!teamId || !characterName || !raidDate) return res.status(400).json({ error: 'teamId, characterName, raidDate required' });
+
+    try {
+      await assertTeamOwnership(teamId);
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
 
     // A regular member can only mark the character THEY claimed; officers may mark any character
     if (!isOfficer) {
@@ -350,6 +344,7 @@ module.exports = async (req, res) => {
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
     try {
+      await assertTeamOwnership(teamId);
       const { data, error } = await supabase.from('raid_extra_days').upsert({
         team_id: teamId, raid_date: raidDate, created_by: session.id,
       }, { onConflict: 'team_id,raid_date' }).select();
@@ -358,7 +353,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ success: true });
     } catch (err) {
       console.error('[addRaidNight] error:', err.message, { teamId, raidDate });
-      return res.status(500).json({ error: err.message });
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 
@@ -368,12 +363,13 @@ module.exports = async (req, res) => {
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
     try {
+      await assertTeamOwnership(teamId);
       const { error } = await supabase.from('raid_extra_days').delete().eq('team_id', teamId).eq('raid_date', raidDate);
       if (error) throw error;
       return res.status(200).json({ success: true });
     } catch (err) {
       console.error('[removeRaidNight] error:', err.message, { teamId, raidDate });
-      return res.status(500).json({ error: err.message });
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 

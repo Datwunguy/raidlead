@@ -156,8 +156,9 @@ module.exports = async (req, res) => {
       }
 
       // Skip visually ambiguous characters (0/O, 1/I/L)
+      const { randomInt } = require('crypto');
       const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-      const genCode = () => Array.from({ length: 6 }, () => ALPHABET[Math.floor(Math.random() * ALPHABET.length)]).join('');
+      const genCode = () => Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
 
       let code = null;
       for (let attempt = 0; attempt < 5 && !code; attempt++) {

@@ -81,10 +81,13 @@ module.exports = async (req, res) => {
       if (!battletag || !bnetId) return res.redirect(302, '/?auth_error=no_battletag');
 
       const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+      // The Battle.net access token is only ever needed once, right here, to read the
+      // BattleTag below -- it's intentionally never persisted (nothing in the app reads
+      // it back, so storing it would just be unused, needlessly-retained credential data).
       const { data: account, error: dbError } = await supabase
         .from('accounts')
         .upsert(
-          { bnet_id: bnetId, battletag, bnet_token: access_token, last_login: new Date().toISOString() },
+          { bnet_id: bnetId, battletag, last_login: new Date().toISOString() },
           { onConflict: 'bnet_id', ignoreDuplicates: false }
         )
         .select()

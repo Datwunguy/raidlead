@@ -4942,6 +4942,14 @@ function applyPlanData(planData) {
   }
 }
 
+// Escapes text for safe insertion into innerHTML as visible content (does NOT make
+// a value safe inside an onclick="..." attribute -- only use for text nodes/content).
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 // Helper — detect if a hex color is light (needs dark text)
 function isLightColor(hex) {
   const r = parseInt(hex.slice(1,3),16);
@@ -5195,7 +5203,7 @@ function renderPlannerSwaps() {
     const textColor = isLightColor(color) ? '#000000' : '#ffffff';
     return `<div class="plan-player-pill" style="background:${color}; border:1px solid ${color}; margin-bottom:0; cursor:default;">
       <div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div>
-      <span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${name}</span>
+      <span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${escapeHtml(name)}</span>
     </div>`;
   };
 
@@ -5207,7 +5215,7 @@ function renderPlannerSwaps() {
       card.style.cssText = 'background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:10px 12px 12px;';
       card.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-          <div style="color:var(--gold); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase;">${swap.boss}</div>
+          <div style="color:var(--gold); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase;">${escapeHtml(swap.boss)}</div>
           ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : ''}
         </div>
         <div style="display:grid; grid-template-columns:1fr 20px 1fr; align-items:center; gap:6px;">
@@ -7151,7 +7159,7 @@ function renderBossCard(boss, killed, bench, hitMaxPages, startLabel, region, di
         <div style="padding:10px 14px; margin-bottom:12px; background:rgba(30,255,0,0.05);
                     border:1px solid rgba(30,255,0,0.2); border-radius:4px;
                     font-family:'Cinzel',serif; font-size:13px; color:#1EFF00; letter-spacing:1px;">
-          ⚔ ${STATE.config?.guild || 'Your Guild'} has defeated ${boss.name}!
+          ⚔ ${escapeHtml(STATE.config?.guild || 'Your Guild')} has defeated ${escapeHtml(boss.name)}!
         </div>` : ''}
         <div style="font-size:11px; letter-spacing:1px; color:var(--text-dim); font-weight:600; text-transform:uppercase; margin-bottom:10px;">
           ${region} Guilds — Since ${startLabel}
