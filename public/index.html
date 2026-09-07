@@ -1584,10 +1584,6 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="inp-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
-            <div id="settings-wcl-team-row" style="display:none;">
-              <label style="margin-top:12px;">WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
-              <input type="text" id="inp-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
-            </div>
           </div>
         </div>
         <div class="form-row">
@@ -1638,6 +1634,10 @@
               <div id="settings-team-row" style="display:none; flex:1; min-width:200px;">
                 <input type="text" id="inp-team" placeholder="e.g. Heroic Team" style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:16px; padding:8px 14px; outline:none; width:100%;" />
               </div>
+            </div>
+            <div id="settings-wcl-team-row" style="display:none; margin-top:14px;">
+              <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
+              <input type="text" id="inp-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
             </div>
           </div>
         </div>
@@ -1761,6 +1761,10 @@
                 <input type="text" id="gs-team" placeholder="e.g. Mythic Team" style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:500; padding:8px 14px; outline:none; width:100%;" />
               </div>
             </div>
+            <div id="gs-wcl-team-row" style="display:none; margin-top:14px;">
+              <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
+              <input type="text" id="gs-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
+            </div>
           </div>
         </div>
         <div class="form-row">
@@ -1773,10 +1777,6 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="gs-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
-            <div id="gs-wcl-team-row" style="display:none;">
-              <label style="margin-top:12px;">WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
-              <input type="text" id="gs-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
-            </div>
           </div>
         </div>
         <div class="form-row">
