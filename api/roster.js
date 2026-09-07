@@ -6,37 +6,47 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
+const { decrypt } = require('./lib/crypto');
 
-// ── WCL token cache (best-effort within a warm Lambda; cold starts re-fetch) ──
-let cachedWclToken    = null;
-let cachedWclTokenExp = 0;
+// Thrown when a request needs WCL access but the caller's guild hasn't connected its
+// own Warcraft Logs API client yet -- callers check err.wclNotConfigured to show a
+// distinct "connect your credentials" state instead of a generic error.
+class WclNotConfiguredError extends Error {
+  constructor() {
+    super("Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.");
+    this.wclNotConfigured = true;
+  }
+}
 
-async function getWclToken() {
-  if (cachedWclToken && cachedWclTokenExp > Date.now() + 60000) return cachedWclToken;
+// ── WCL token cache, keyed by client ID -- every guild brings its own WCL API client,
+// so each guild's usage draws only on its own quota, never a shared app-wide one. ──
+const wclTokenCache = new Map(); // clientId -> { token, exp }
 
-  const clientId     = process.env.WCL_CLIENT_ID;
-  const clientSecret = process.env.WCL_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error('WCL credentials are not configured');
+async function getWclToken(creds) {
+  if (!creds?.clientId || !creds?.clientSecret) throw new WclNotConfiguredError();
+
+  const cached = wclTokenCache.get(creds.clientId);
+  if (cached && cached.exp > Date.now() + 60000) return cached.token;
 
   const resp = await fetch('https://www.warcraftlogs.com/oauth/token', {
     method:  'POST',
     headers: {
-      'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+      'Authorization': 'Basic ' + Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64'),
       'Content-Type':  'application/x-www-form-urlencoded',
     },
     body: 'grant_type=client_credentials',
   });
 
   const data = await resp.json();
-  if (!resp.ok || !data.access_token) throw new Error('Failed to get WCL token');
+  if (!resp.ok || !data.access_token) throw new Error("Failed to get a WCL token -- check that your guild's WCL Client ID/Secret in Guild Settings are correct");
 
-  cachedWclToken    = data.access_token;
-  cachedWclTokenExp = Date.now() + ((data.expires_in || 3600) * 1000);
-  return cachedWclToken;
+  const exp = Date.now() + ((data.expires_in || 3600) * 1000);
+  wclTokenCache.set(creds.clientId, { token: data.access_token, exp });
+  return data.access_token;
 }
 
-async function wclQuery(query) {
-  const token = await getWclToken();
+async function wclQuery(query, creds) {
+  const token = await getWclToken(creds);
   const resp  = await fetch('https://www.warcraftlogs.com/api/v2/client', {
     method:  'POST',
     headers: {
@@ -59,7 +69,7 @@ function normaliseTs(ts) {
 // that for one zone/tier -- callers that need the true earliest report (to compute
 // accurate first-kill boundaries for survival/mitigation) must page through the full
 // list rather than only ever seeing the most recent 50.
-async function fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam, maxPages = 40 }) {
+async function fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam, maxPages = 40, creds }) {
   let allReports  = [];
   let page        = 1;
   let hitMaxPages = false;
@@ -69,7 +79,7 @@ async function fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagP
         guildName: "${guildName}" guildServerSlug: "${serverSlug}"
         guildServerRegion: "${region}" zoneID: ${zoneId} limit: 50 page: ${page} ${tagParam}
       ) { data { code startTime fights(killType: All) { id encounterID name difficulty startTime endTime kill } } has_more_pages } }
-    }`);
+    }`, creds);
     if (resp?.errors) { console.error('[fetchAllZoneReports] page', page, 'error:', resp.errors[0]?.message); break; }
     const pageInfo    = resp?.data?.reportData?.reports;
     const pageReports = pageInfo?.data || [];
@@ -117,10 +127,31 @@ module.exports = async (req, res) => {
     if (!team) throw Object.assign(new Error('Team does not belong to your guild'), { status: 403 });
   }
 
+  // Helper: resolve the caller's own guild's WCL API credentials (decrypted). Returns
+  // null if the guild hasn't set any up -- there is no shared/app-wide fallback, so one
+  // guild's usage can never draw on or be capped by another's WCL rate limit.
+  async function resolveWclCredentials() {
+    if (!myGuildId) return null;
+    const { data: guildRow } = await supabase
+      .from('guilds')
+      .select('wcl_client_id, wcl_client_secret_enc')
+      .eq('id', myGuildId)
+      .single();
+    if (!guildRow?.wcl_client_id || !guildRow?.wcl_client_secret_enc) return null;
+    try {
+      return { clientId: guildRow.wcl_client_id, clientSecret: decrypt(guildRow.wcl_client_secret_enc) };
+    } catch (e) {
+      console.error('[wcl] failed to decrypt credentials for guild', myGuildId, e.message);
+      return null;
+    }
+  }
+
   // ── WCL ZONES (accessible to all authenticated members) ──
   if (action === 'wclZones' || action === 'zones') {
     try {
-      const data = await wclQuery(`query { worldData { zones { id name frozen } } }`);
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(200).json({ data: { worldData: { zones: [] } }, wclNotConfigured: true });
+      const data = await wclQuery(`query { worldData { zones { id name frozen } } }`, creds);
       return res.status(200).json(data);
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
@@ -133,6 +164,8 @@ module.exports = async (req, res) => {
     const { guildName, serverSlug, region, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
 
     try {
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
       if (!bossIds || bossIds.length === 0) return res.status(400).json({ error: 'bossIds required' });
 
       // ── Batch all bosses in chunks of 5 using GraphQL aliases ──
@@ -168,7 +201,7 @@ module.exports = async (req, res) => {
 
           while (page <= MAX_PAGES) {
             const q = `query { worldData { encounter(id: ${id}) { fightRankings(${baseArgs} page: ${page}) } } }`;
-            const r = await wclQuery(q);
+            const r = await wclQuery(q, creds);
             if (r?.errors) { console.log('[progression] boss', id, 'p'+page+' error:', r.errors[0]?.message); break; }
 
             const rawFR = r?.data?.worldData?.encounter?.fightRankings;
@@ -253,9 +286,11 @@ module.exports = async (req, res) => {
 
     try {
       await assertTeamOwnership(teamId);
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(200).json({ mitigationMap: {}, bossNames: [], wclNotConfigured: true, error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings." });
       let allReports, mitigHitMaxPages;
       try {
-        const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam });
+        const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam, creds });
         allReports = result.reports;
         mitigHitMaxPages = result.hitMaxPages;
       } catch(e) {
@@ -310,7 +345,7 @@ module.exports = async (req, res) => {
         if ((report.startTime||0) > newestReportTime) newestReportTime = report.startTime;
 
         // Get actor id -> name map for this report
-        const masterResp = await wclQuery(`query { reportData { report(code: "${report.code}") { masterData { actors(type: "Player") { id name } } } } }`);
+        const masterResp = await wclQuery(`query { reportData { report(code: "${report.code}") { masterData { actors(type: "Player") { id name } } } } }`, creds);
         const actors = masterResp?.data?.reportData?.report?.masterData?.actors || [];
         const actorMap = {};
         actors.forEach(a => { actorMap[a.id] = a.name; });
@@ -342,7 +377,7 @@ module.exports = async (req, res) => {
               // Fetch raw damage-taken events for this fight (has mitigated + unmitigatedAmount per hit)
               const resp = await wclQuery(`query { reportData { report(code: "${report.code}") {
                 events(startTime: ${fight.startTime} endTime: ${fight.endTime} fightIDs: [${fight.id}] dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
-              } } }`);
+              } } }`, creds);
               let events = resp?.data?.reportData?.report?.events?.data || [];
               let nextTs = resp?.data?.reportData?.report?.events?.nextPageTimestamp;
 
@@ -351,7 +386,7 @@ module.exports = async (req, res) => {
               while (nextTs && guard < 10) {
                 const pageResp = await wclQuery(`query { reportData { report(code: "${report.code}") {
                   events(startTime: ${nextTs} endTime: ${fight.endTime} fightIDs: [${fight.id}] dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
-                } } }`);
+                } } }`, creds);
                 const pageEvents = pageResp?.data?.reportData?.report?.events?.data || [];
                 events = events.concat(pageEvents);
                 nextTs = pageResp?.data?.reportData?.report?.events?.nextPageTimestamp;
@@ -461,6 +496,9 @@ module.exports = async (req, res) => {
     if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { reportCode, encounterID, targetName } = req.body || {};
     try {
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
+
       // Get ALL fights for this encounter in the report
       const fightsResp = await wclQuery(`query {
         reportData {
@@ -468,14 +506,14 @@ module.exports = async (req, res) => {
             fights(killType: All) { id encounterID name startTime endTime kill }
           }
         }
-      }`);
+      }`, creds);
       const allFights = fightsResp?.data?.reportData?.report?.fights || [];
       const targetFights = encounterID
         ? allFights.filter(f => f.encounterID === parseInt(encounterID))
         : allFights;
       console.log('[diagMitigation] fights matched:', targetFights.length, 'of', allFights.length);
 
-      const masterResp = await wclQuery(`query { reportData { report(code: "${reportCode}") { masterData { actors(type: "Player") { id name } } } } }`);
+      const masterResp = await wclQuery(`query { reportData { report(code: "${reportCode}") { masterData { actors(type: "Player") { id name } } } } }`, creds);
       const actors = masterResp?.data?.reportData?.report?.masterData?.actors || [];
       const actorMap = {};
       actors.forEach(a => { actorMap[a.id] = a.name; });
@@ -489,7 +527,7 @@ module.exports = async (req, res) => {
         while (guard < 20) {
           const resp = await wclQuery(`query { reportData { report(code: "${reportCode}") {
             events(startTime: ${nextTs}, endTime: ${fight.endTime}, fightIDs: [${fight.id}], dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
-          } } }`);
+          } } }`, creds);
           const page = resp?.data?.reportData?.report?.events?.data || [];
           events = events.concat(page);
           nextTs = resp?.data?.reportData?.report?.events?.nextPageTimestamp;
@@ -524,6 +562,8 @@ module.exports = async (req, res) => {
     if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { reportCode, fightId, startTime, endTime } = req.body || {};
     try {
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
       const q = `query {
         reportData {
           report(code: "${reportCode}") {
@@ -531,7 +571,7 @@ module.exports = async (req, res) => {
           }
         }
       }`;
-      const resp = await wclQuery(q);
+      const resp = await wclQuery(q, creds);
       const table  = resp?.data?.reportData?.report?.table;
       const parsed = typeof table === 'string' ? JSON.parse(table) : table;
       const data   = parsed?.data || parsed;
@@ -592,11 +632,13 @@ module.exports = async (req, res) => {
 
     try {
       await assertTeamOwnership(req.body?.teamId);
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(200).json({ survivorMap: {}, bossNames: [], wclNotConfigured: true, error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings." });
       // Step 1: Get ALL reports for this zone + team tag (paginated -- see fetchAllZoneReports)
       // The difficulty filter on fights is done below; reports API doesn't filter by difficulty
       let allReports, survHitMaxPages;
       try {
-        const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam });
+        const result = await fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagParam, creds });
         allReports = result.reports;
         survHitMaxPages = result.hitMaxPages;
       } catch(e) {
@@ -725,7 +767,7 @@ module.exports = async (req, res) => {
             }`;
 
             try {
-              const summaryResp = await wclQuery(summaryQ);
+              const summaryResp = await wclQuery(summaryQ, creds);
               const table       = summaryResp?.data?.reportData?.report?.table;
               const parsed      = typeof table === 'string' ? JSON.parse(table) : table;
               const data        = parsed?.data || parsed;
@@ -870,7 +912,9 @@ module.exports = async (req, res) => {
     const { query } = req.body || {};
     if (!query) return res.status(400).json({ error: 'query required' });
     try {
-      const data = await wclQuery(query);
+      const creds = await resolveWclCredentials();
+      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
+      const data = await wclQuery(query, creds);
       return res.status(200).json(data);
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }

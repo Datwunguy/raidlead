@@ -24,7 +24,7 @@ module.exports = async (req, res) => {
       // surfacing what was actually wrong.
       const { data: memberships, error: membershipErr } = await supabase
         .from('guild_members')
-        .select(`role, guild_id, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, teams ( id, name ) )`)
+        .select(`role, guild_id, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, wcl_client_id, wcl_client_secret_enc, teams ( id, name ) )`)
         .eq('account_id', session.id);
 
       if (membershipErr) {
@@ -56,9 +56,15 @@ module.exports = async (req, res) => {
         claimedChar = data;
       }
 
+      // Never send the encrypted secret blob to the client -- just whether one's set.
+      const guild = { ...membership.guilds };
+      const hasWclCredentials = !!guild.wcl_client_secret_enc;
+      delete guild.wcl_client_secret_enc;
+      guild.hasWclCredentials = hasWclCredentials;
+
       return res.status(200).json({
         role: membership.role,
-        guild: membership.guilds,
+        guild,
         team: membership.guilds?.teams?.[0] || null,
         claimedCharacter: claimedChar?.name || null,
       });
@@ -235,6 +241,52 @@ module.exports = async (req, res) => {
       }
 
       return res.status(200).json({ success: true, discordGuildId: value });
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── SET WCL CREDENTIALS: guild's own Warcraft Logs API client (officers+) ──
+  // Each guild brings its own WCL v2 API client (id + secret, created at
+  // warcraftlogs.com/api/clients/) so guilds' WCL usage is isolated from each
+  // other -- one guild's fetches can never draw on or be capped by another's quota.
+  // The secret is encrypted before it's stored; only the client ID (not sensitive)
+  // and a hasWclCredentials boolean are ever sent back to the browser.
+  if (action === 'setWclCredentials') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    try {
+      const { data: myMembership } = await supabase
+        .from('guild_members')
+        .select('role, guild_id')
+        .eq('account_id', session.id)
+        .single();
+      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
+        return res.status(403).json({ error: 'Officers only' });
+      }
+
+      const { wclClientId, wclClientSecret } = req.body;
+      const clientId = (wclClientId || '').trim() || null;
+      const clientSecret = (wclClientSecret || '').trim() || null;
+
+      // Both blank clears the saved credentials
+      if (!clientId && !clientSecret) {
+        const { error } = await supabase.from('guilds').update({
+          wcl_client_id: null, wcl_client_secret_enc: null,
+        }).eq('id', myMembership.guild_id);
+        if (error) throw error;
+        return res.status(200).json({ success: true, cleared: true });
+      }
+
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: 'Both Client ID and Client Secret are required' });
+      }
+
+      const { encrypt } = require('./lib/crypto');
+      const { error } = await supabase.from('guilds').update({
+        wcl_client_id:         clientId,
+        wcl_client_secret_enc: encrypt(clientSecret),
+      }).eq('id', myMembership.guild_id);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 

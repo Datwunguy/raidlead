@@ -11,17 +11,14 @@ module.exports = async (req, res) => {
   const action = req.query.action || req.body?.action;
 
   // ── LOGIN: redirect to Battle.net ──
+  // Battle.net login is a single global service at oauth.battle.net -- there's no
+  // per-region authorize/token/userinfo host to pick (that only applies to the
+  // separate WoW game-data APIs, e.g. realm/character lookups). China (battlenet.com.cn)
+  // is the one real exception -- it's run by NetEase as an entirely separate system --
+  // but that's out of scope unless we actually need CN accounts to log in.
   if (action === 'login') {
     const clientId    = process.env.BNET_CLIENT_ID;
     const redirectUri = process.env.BNET_REDIRECT_URI;
-    const region      = req.query.region || 'us';
-    const regionUrls  = {
-      us: 'https://us.battle.net/oauth/authorize',
-      eu: 'https://eu.battle.net/oauth/authorize',
-      kr: 'https://kr.battle.net/oauth/authorize',
-      tw: 'https://tw.battle.net/oauth/authorize',
-      cn: 'https://www.battlenet.com.cn/oauth/authorize',
-    };
 
     // Generate a cryptographically random state value (CSRF protection)
     const { randomBytes } = require('crypto');
@@ -35,7 +32,7 @@ module.exports = async (req, res) => {
     });
 
     res.setHeader('Set-Cookie', `bnet_state=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
-    return res.redirect(302, `${regionUrls[region] || regionUrls.us}?${params.toString()}`);
+    return res.redirect(302, `https://oauth.battle.net/authorize?${params.toString()}`);
   }
 
   // ── CALLBACK: handle Battle.net redirect ──
@@ -55,7 +52,7 @@ module.exports = async (req, res) => {
     res.setHeader('Set-Cookie', 'bnet_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
 
     try {
-      const tokenRes = await fetch('https://us.battle.net/oauth/token', {
+      const tokenRes = await fetch('https://oauth.battle.net/token', {
         method:  'POST',
         headers: {
           'Content-Type':  'application/x-www-form-urlencoded',
@@ -70,7 +67,7 @@ module.exports = async (req, res) => {
       if (!tokenRes.ok) return res.redirect(302, '/?auth_error=token_failed');
 
       const { access_token } = await tokenRes.json();
-      const userRes = await fetch('https://us.battle.net/oauth/userinfo', {
+      const userRes = await fetch('https://oauth.battle.net/userinfo', {
         headers: { 'Authorization': `Bearer ${access_token}` },
       });
       if (!userRes.ok) return res.redirect(302, '/?auth_error=userinfo_failed');

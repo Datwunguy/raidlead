@@ -1589,6 +1589,36 @@
         </div>
         <div class="form-row">
           <div class="form-group full">
+            <label>Warcraft Logs API Credentials <span style="color:var(--text-mute);font-weight:400;">(required for WCL Scores — each guild uses its own, so nobody's usage is affected by another guild's)</span></label>
+            <div id="wcl-creds-status" style="font-size:13px; color:var(--text-dim); margin-bottom:10px;"></div>
+            <div class="form-row" style="margin-bottom:0;">
+              <div class="form-group">
+                <label>Client ID</label>
+                <input type="text" id="inp-wcl-client-id" placeholder="e.g. a1b2c3d4-5678-..." autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label>Client Secret</label>
+                <input type="password" id="inp-wcl-client-secret" placeholder="Paste your WCL Client Secret" autocomplete="off" />
+              </div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+              <button class="btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="saveWclCredentials()">Save</button>
+            </div>
+            <div id="wcl-creds-msg" class="status-msg" style="margin-top:6px;"></div>
+
+            <details style="margin-top:14px;">
+              <summary style="cursor:pointer; font-size:12px; color:var(--text-mute); text-transform:none; letter-spacing:0; font-weight:600;">How do I get these?</summary>
+              <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
+                <li>Log into <a href="https://www.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer" style="color:var(--gold-dim);">warcraftlogs.com/api/clients</a> with your Warcraft Logs account.</li>
+                <li>Click "Create Client".</li>
+                <li>Name it anything (e.g. "RaidLead") — the Redirect URL can be left blank, it isn't used.</li>
+                <li>Copy the Client ID and Client Secret it gives you and paste them in above.</li>
+              </ol>
+            </details>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group full">
             <label>Multiple Teams?</label>
             <div style="display:flex; align-items:center; gap:20px; margin-top:8px; flex-wrap:wrap;">
               <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:16px; font-weight:500; text-transform:none; letter-spacing:0; color:var(--text);">
@@ -2573,6 +2603,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       zoneId:     g.zone_id   || null,
       zoneName:   g.zone_name || '',
       raidDays:   g.raid_days || [],
+      hasWclCredentials: g.hasWclCredentials || false,
+      wclClientId: g.wcl_client_id || null,
     };
     STATE.config           = config;
     STATE.zoneId           = config.zoneId;
@@ -2731,6 +2763,8 @@ function showSetup() {
     set('inp-wcl-team',  s.wclTeamId);
     set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
+    set('inp-wcl-client-id', s.wclClientId);
+    renderWclCredsStatus();
     setRaidDaysOn('inp-raid-days', s.raidDays);
 
     // Pre-populate team name if set
@@ -2805,7 +2839,9 @@ async function loadGuild() {
   const zoneMatch = wclUrl ? wclUrl.match(/zone=(\d+)/) : null;
   const zoneId    = zoneMatch ? parseInt(zoneMatch[1]) : (STATE.zoneId || null);
 
-  STATE.config = { guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays };
+  // Merge onto the existing config rather than replacing it outright -- fields this
+  // form doesn't own (hasWclCredentials/wclClientId, zoneName, etc.) must survive a save.
+  STATE.config = { ...STATE.config, guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays };
   STATE.zoneId = zoneId;
 
   setStatus('Saving...', 'loading');
@@ -3364,6 +3400,46 @@ function renderDiscordConnectStatus() {
   el.innerHTML = STATE.discordGuildId
     ? `<span style="color:#5865F2;">🔗 Connected</span> <span style="color:var(--text-mute);">(Server ID: ${STATE.discordGuildId})</span>`
     : '<span style="color:var(--text-mute);">Not connected yet.</span>';
+}
+
+function renderWclCredsStatus() {
+  const el = document.getElementById('wcl-creds-status');
+  if (!el) return;
+  el.innerHTML = STATE.config?.hasWclCredentials
+    ? `<span style="color:#1EFF00;">✓ Connected</span> <span style="color:var(--text-mute);">(Client ID: ${escapeHtml(STATE.config.wclClientId || '')})</span>`
+    : '<span style="color:#ff6b6b;">Not connected — WCL Scores won\'t work until this is set up.</span>';
+}
+
+async function saveWclCredentials() {
+  const wclClientId     = document.getElementById('inp-wcl-client-id').value.trim();
+  const wclClientSecret = document.getElementById('inp-wcl-client-secret').value.trim();
+  const msg = document.getElementById('wcl-creds-msg');
+
+  if (!wclClientId && !wclClientSecret && STATE.config?.hasWclCredentials) {
+    if (!confirm('Clear the saved WCL credentials? WCL Scores will stop working for this guild until new ones are added.')) return;
+  }
+
+  msg.textContent = 'Saving...';
+  msg.className   = 'status-msg loading';
+  try {
+    const resp = await fetch('/api/guild?action=setWclCredentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wclClientId, wclClientSecret }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to save WCL credentials');
+
+    STATE.config.hasWclCredentials = !data.cleared;
+    STATE.config.wclClientId       = data.cleared ? null : wclClientId;
+    document.getElementById('inp-wcl-client-secret').value = '';
+    renderWclCredsStatus();
+    msg.textContent = data.cleared ? 'Cleared.' : 'Saved!';
+    msg.className   = 'status-msg success';
+  } catch(e) {
+    msg.textContent = e.message;
+    msg.className   = 'status-msg error';
+  }
 }
 
 // Builds the Discord bot-authorization URL. Whoever opens this needs "Manage Server"
@@ -4026,6 +4102,19 @@ function renderScoresTable(roleFilter) {
   const wrap   = document.getElementById('scores-table-wrap');
   const bosses = STATE.bossNames;
   const view   = STATE.scoreView || 'performance';
+
+  if (!STATE.config?.hasWclCredentials) {
+    const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+    wrap.innerHTML = `<div class="empty-state">
+      <div class="empty-state-icon">🔒</div>
+      <h3>Warcraft Logs Not Connected</h3>
+      <p>${isOfficer
+        ? 'Your guild needs its own Warcraft Logs API credentials before WCL Scores will work.'
+        : "Your guild hasn't connected Warcraft Logs API credentials yet — ask an officer to set this up."}</p>
+      ${isOfficer ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
+    </div>`;
+    return;
+  }
 
   if (view === 'survival' && !STATE.survivorFetched) {
     wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No Survival Data</h3><p>Click "Refresh Scores" to fetch survival data from guild reports.</p></div>';
@@ -5828,6 +5917,8 @@ async function completeGuildJoin(guildName, server, joinCode) {
     zoneId:     g.zone_id      || null,
     zoneName:   g.zone_name    || '',
     raidDays:   g.raid_days    || [],
+    hasWclCredentials: g.hasWclCredentials || false,
+    wclClientId: g.wcl_client_id || null,
   };
   STATE.config           = config;
   STATE.zoneId           = config.zoneId;
