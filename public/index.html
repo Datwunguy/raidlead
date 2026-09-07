@@ -3791,23 +3791,53 @@ function renderProgress(data) {
   subtitle.textContent = `Guilds that have defeated each boss on ${data.difficulty.toUpperCase()}, region: ${(data.region || '').toUpperCase()}`;
 
   const maxGuilds = Math.max(1, ...data.bosses.map(b => b.guildsDefeated));
+  const killedCount = data.yourGuild ? data.yourGuild.killed : 0;
 
   content.innerHTML = '';
+
+  // ── Your Guild summary ──
+  const yourCard = document.createElement('div');
+  yourCard.style.cssText = `
+    background: var(--bg2); border: 1px solid var(--gold-dim); border-radius: 6px;
+    padding: 14px 16px; margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  `;
+  if (data.yourGuild) {
+    yourCard.innerHTML = `
+      <div>
+        <div style="font-size:10px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Your Guild</div>
+        <div style="font-size:13px; color:var(--text-mute); margin-top:2px;">Per Raider.io's last crawl of your guild</div>
+      </div>
+      <div style="font-size:22px; font-weight:700; color:var(--gold);">${data.yourGuild.killed}/${data.yourGuild.totalBosses} <span style="font-size:13px; font-weight:600; color:var(--text-mute); text-transform:uppercase;">${data.difficulty}</span></div>
+    `;
+  } else {
+    yourCard.innerHTML = `
+      <div>
+        <div style="font-size:10px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Your Guild</div>
+        <div style="font-size:13px; color:var(--text-mute); margin-top:2px;">Raider.io hasn't recorded a kill for your guild in this raid yet.</div>
+      </div>
+    `;
+  }
+  content.appendChild(yourCard);
+
   const list = document.createElement('div');
   list.style.cssText = 'display:flex; flex-direction:column; gap:10px;';
 
   data.bosses.forEach((boss, i) => {
     const pct = Math.round((boss.guildsDefeated / maxGuilds) * 100);
+    const youKilled = i < killedCount;
     const row = document.createElement('div');
     row.style.cssText = `
-      background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg2); border: 1px solid ${youKilled ? 'var(--gold-dim)' : 'var(--border)'}; border-radius: 6px;
       padding: 12px 16px; display: flex; align-items: center; gap: 14px;
     `;
     row.innerHTML = `
       <div style="font-size:11px; color:var(--text-mute); width:16px; flex-shrink:0;">${i + 1}</div>
       ${boss.iconUrl ? `<img src="${boss.iconUrl}" alt="" style="width:36px; height:36px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">` : ''}
       <div style="flex:1; min-width:0;">
-        <div style="font-weight:600; color:var(--text); margin-bottom:6px;">${boss.name}</div>
+        <div style="font-weight:600; color:var(--text); margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+          ${boss.name}
+          ${youKilled ? `<span title="Your guild has killed this boss" style="color:var(--gold); font-size:13px;">✓</span>` : ''}
+        </div>
         <div style="background:var(--bg3); border-radius:3px; height:8px; overflow:hidden;">
           <div style="background:var(--gold-dim); height:100%; width:${pct}%;"></div>
         </div>
