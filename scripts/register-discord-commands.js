@@ -43,7 +43,7 @@ const commands = [
       },
       {
         name: 'team',
-        description: 'Which team (only needed if this server has more than one team and it\'s ambiguous)',
+        description: 'Which team (only necessary if this character is on more than one team)',
         type: 3, // STRING
         required: false,
       },

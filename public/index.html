@@ -1584,8 +1584,10 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="inp-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
-            <label style="margin-top:12px;">WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional — for guilds with multiple teams. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
-            <input type="text" id="inp-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
+            <div id="settings-wcl-team-row" style="display:none;">
+              <label style="margin-top:12px;">WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
+              <input type="text" id="inp-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
+            </div>
           </div>
         </div>
         <div class="form-row">
@@ -1621,12 +1623,13 @@
         </div>
         <div class="form-row" id="multi-team-row">
           <div class="form-group full">
-            <label>Multiple Teams?</label>
+            <label id="multi-team-label">Multiple Teams?</label>
+            <label id="settings-team-label" style="display:none;">Team Name</label>
             <div style="display:flex; align-items:center; gap:20px; margin-top:8px; flex-wrap:wrap;">
-              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:16px; font-weight:500; text-transform:none; letter-spacing:0; color:var(--text);">
+              <label id="multi-team-yes-label" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:16px; font-weight:500; text-transform:none; letter-spacing:0; color:var(--text);">
                 <input type="radio" name="inp-multi-team" value="yes" onchange="toggleSettingsTeam(this)" style="width:16px; height:16px; accent-color:var(--gold);"> Yes
               </label>
-              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:16px; font-weight:500; text-transform:none; letter-spacing:0; color:var(--text);">
+              <label id="multi-team-no-label" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:16px; font-weight:500; text-transform:none; letter-spacing:0; color:var(--text);">
                 <input type="radio" name="inp-multi-team" value="no" onchange="toggleSettingsTeam(this)" checked style="width:16px; height:16px; accent-color:var(--gold);"> No
               </label>
               <span id="settings-team-note" style="font-size:13px; font-family:'Rajdhani',sans-serif; color:var(--text-mute); font-style:italic;">
@@ -1770,8 +1773,10 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="gs-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
-            <label style="margin-top:12px;">WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional — for guilds with multiple teams. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
-            <input type="text" id="gs-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
+            <div id="gs-wcl-team-row" style="display:none;">
+              <label style="margin-top:12px;">WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
+              <input type="text" id="gs-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
+            </div>
           </div>
         </div>
         <div class="form-row">
@@ -2736,8 +2741,18 @@ function showSetup() {
     document.getElementById('setup-subheading').textContent =
       `Creates a new, independent team under ${STATE.config?.guild || 'this guild'} — its own roster, join code, and WCL setup. You'll be its owner.`;
     document.getElementById('load-btn').textContent = 'Create Team';
-    if (addTeamRow)   addTeamRow.style.display   = 'none';
-    if (multiTeamRow) multiTeamRow.style.display = 'none';
+    if (addTeamRow) addTeamRow.style.display = 'none';
+    // The "Multiple Teams?" question doesn't apply here -- adding a 2nd team already
+    // answers it. Hide the question/radios but keep the row itself visible so its
+    // nested Team Name input (required by submitAddTeam) is reachable.
+    ['multi-team-label', 'multi-team-yes-label', 'multi-team-no-label', 'settings-team-note']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    const settingsTeamLabel = document.getElementById('settings-team-label');
+    if (settingsTeamLabel) settingsTeamLabel.style.display = 'block';
+    const settingsTeamRow = document.getElementById('settings-team-row');
+    if (settingsTeamRow) settingsTeamRow.style.display = 'flex';
+    const addTeamWclRow = document.getElementById('settings-wcl-team-row');
+    if (addTeamWclRow) addTeamWclRow.style.display = 'block';
 
     // Guild identity is shared and fixed here -- pre-fill and lock it
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
@@ -2754,6 +2769,13 @@ function showSetup() {
     setRaidDaysOn('inp-raid-days', []);
     return;
   }
+
+  // Not in Add-a-Team mode -- make sure the question/radios (possibly hidden by a
+  // previous Add-a-Team visit) are back to their normal state.
+  ['multi-team-label', 'multi-team-yes-label', 'multi-team-no-label']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = ''; });
+  const settingsTeamLabelReset = document.getElementById('settings-team-label');
+  if (settingsTeamLabelReset) settingsTeamLabelReset.style.display = 'none';
 
   guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = false; });
   document.getElementById('setup-heading').textContent = 'Configure Your Guild';
@@ -2815,7 +2837,7 @@ function showAddTeamScreen() {
   showSetup();
 }
 
-async function submitAddTeam() {
+async function submitAddTeam(confirmDuplicateWowaudit) {
   const teamName  = document.getElementById('inp-team').value.trim();
   const wowaudit  = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl    = document.getElementById('inp-wcl').value.trim();
@@ -2837,9 +2859,20 @@ async function submitAddTeam() {
     const resp = await fetch('/api/guild?action=addTeam', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays }),
+      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
     const data = await resp.json();
+
+    if (resp.status === 409 && data.error === 'WOWAUDIT_DUPLICATE') {
+      document.getElementById('load-btn').disabled = false;
+      const wantsToContinue = confirm(
+        `${data.message}\n\nClick OK to create this team anyway.\nClick Cancel to stop and double-check.`
+      );
+      if (wantsToContinue) return submitAddTeam(true);
+      setStatus('Team creation stopped -- check the Wowaudit URL.', '');
+      return;
+    }
+
     if (!resp.ok) throw new Error(data.error || 'Failed to create team');
 
     STATE.addTeamMode = false;
@@ -2886,7 +2919,7 @@ function setRaidDaysOn(containerId, days) {
   });
 }
 
-async function loadGuild() {
+async function loadGuild(confirmDuplicateWowaudit) {
   if (STATE.addTeamMode) return submitAddTeam();
   const guild      = document.getElementById('inp-guild').value.trim();
   const server     = document.getElementById('inp-server').value.trim();
@@ -2919,9 +2952,20 @@ async function loadGuild() {
     const resp = await fetch('/api/guild?action=update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays }),
+      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
     const data = await resp.json();
+
+    if (resp.status === 409 && data.error === 'WOWAUDIT_DUPLICATE') {
+      document.getElementById('load-btn').disabled = false;
+      const wantsToContinue = confirm(
+        `${data.message}\n\nClick OK to save anyway.\nClick Cancel to stop and double-check.`
+      );
+      if (wantsToContinue) return loadGuild(true);
+      setStatus('Save stopped -- check the Wowaudit URL.', '');
+      return;
+    }
+
     if (!resp.ok) throw new Error(data.error || 'Failed to save changes');
     // Persist updated config to localStorage so refresh picks it up immediately
     localStorage.setItem('raidlead_config', JSON.stringify(STATE.config));
@@ -6031,18 +6075,21 @@ async function joinGuildByCode() {
 }
 
 function toggleTeamName(radio) {
-  const teamRow  = document.getElementById('team-name-row');
-  const teamNote = document.getElementById('team-name-note');
+  const teamRow    = document.getElementById('team-name-row');
+  const teamNote   = document.getElementById('team-name-note');
+  const wclTeamRow = document.getElementById('gs-wcl-team-row');
   if (radio.value === 'yes') {
     teamRow.style.display  = 'flex';
     teamNote.style.display = 'none';
+    if (wclTeamRow) wclTeamRow.style.display = 'block';
   } else {
     teamRow.style.display  = 'none';
     teamNote.style.display = 'inline';
+    if (wclTeamRow) wclTeamRow.style.display = 'none';
   }
 }
 
-async function createGuild(confirmNewTeam) {
+async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
   const guild      = document.getElementById('gs-guild').value.trim();
   const server     = document.getElementById('gs-server').value.trim();
   const region     = document.getElementById('gs-region').value;
@@ -6073,7 +6120,7 @@ async function createGuild(confirmNewTeam) {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
+      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
 
     let data = {};
@@ -6089,6 +6136,18 @@ async function createGuild(confirmNewTeam) {
       );
       if (wantsNewTeam) return createGuild(true);
       document.getElementById('gs-status').textContent = 'Ask an officer of the existing team for a join code, then use "Join Guild" instead.';
+      document.getElementById('gs-status').className   = 'status-msg';
+      return;
+    }
+
+    // The WowAudit spreadsheet is already tracked by another team -- probably
+    // means this guild/team already exists on RaidLead under a different name.
+    if (resp.status === 409 && data.error === 'WOWAUDIT_DUPLICATE') {
+      const wantsToContinue = confirm(
+        `${data.message}\n\nClick OK to create this team anyway.\nClick Cancel to stop and double-check.`
+      );
+      if (wantsToContinue) return createGuild(confirmNewTeam, true);
+      document.getElementById('gs-status').textContent = 'Guild creation stopped -- check the Wowaudit URL.';
       document.getElementById('gs-status').className   = 'status-msg';
       return;
     }
@@ -6216,14 +6275,17 @@ function copyJoinCode() {
 }
 
 function toggleSettingsTeam(radio) {
-  const teamRow  = document.getElementById('settings-team-row');
-  const teamNote = document.getElementById('settings-team-note');
+  const teamRow    = document.getElementById('settings-team-row');
+  const teamNote   = document.getElementById('settings-team-note');
+  const wclTeamRow = document.getElementById('settings-wcl-team-row');
   if (radio.value === 'yes') {
     teamRow.style.display  = 'flex';
     teamNote.style.display = 'none';
+    if (wclTeamRow) wclTeamRow.style.display = 'block';
   } else {
     teamRow.style.display  = 'none';
     teamNote.style.display = 'inline';
+    if (wclTeamRow) wclTeamRow.style.display = 'none';
   }
 }
 

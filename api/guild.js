@@ -27,6 +27,39 @@ function sanitizeTeam(team) {
   return t;
 }
 
+// Two WowAudit URLs are "the same spreadsheet" if they point at the same Google
+// Sheets doc, regardless of trailing gid/edit-vs-view differences -- so compare
+// the sheet ID when present, and fall back to a normalized exact match otherwise.
+function wowauditKey(url) {
+  if (!url) return null;
+  const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  return url.trim().toLowerCase().replace(/\/+$/, '');
+}
+
+// Looks for another team already tracking this same spreadsheet -- a strong
+// signal someone is accidentally re-creating a team that already exists,
+// rather than typing the URL for a genuinely new team.
+async function findDuplicateWowaudit(supabase, url, excludeTeamId) {
+  const key = wowauditKey(url);
+  if (!key) return null;
+  let query = supabase.from('teams').select('id, name, wowaudit_url, guilds ( name, server )');
+  if (excludeTeamId) query = query.neq('id', excludeTeamId);
+  const { data: rows } = await query;
+  return (rows || []).find(row => wowauditKey(row.wowaudit_url) === key) || null;
+}
+
+function duplicateWowauditResponse(dup) {
+  const where = dup.guilds ? ` (${dup.guilds.name} — ${dup.guilds.server})` : '';
+  return {
+    error: 'WOWAUDIT_DUPLICATE',
+    message: `That spreadsheet is already registered to "${dup.name}"${where}. Continue anyway if that's intentional, or double check the URL.`,
+    existingTeamName: dup.name,
+    existingGuildName: dup.guilds?.name || null,
+    existingGuildServer: dup.guilds?.server || null,
+  };
+}
+
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
@@ -79,7 +112,7 @@ module.exports = async (req, res) => {
   // ── CREATE: create a brand-new guild+team, OR (with confirmNewTeam) a new
   // sibling team under a guild that already exists by name+server ──
   if (action === 'create') {
-    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam } = req.body;
+    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam, confirmDuplicateWowaudit } = req.body;
     if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
 
     try {
@@ -101,6 +134,11 @@ module.exports = async (req, res) => {
           existingGuild,
           teamNames: (siblingTeams || []).map(t => t.name),
         });
+      }
+
+      if (!confirmDuplicateWowaudit) {
+        const dup = await findDuplicateWowaudit(supabase, wowaudit);
+        if (dup) return res.status(409).json(duplicateWowauditResponse(dup));
       }
 
       const guildId = existingGuild
@@ -144,10 +182,15 @@ module.exports = async (req, res) => {
   // confirmNewTeam path above, just reached from a different starting point. ──
   if (action === 'addTeam') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, teamName, wowaudit, wclUrl, zoneId, wclTeamId, difficulty, raidDays } = req.body;
+    const { teamId, teamName, wowaudit, wclUrl, zoneId, wclTeamId, difficulty, raidDays, confirmDuplicateWowaudit } = req.body;
     if (!teamId || !teamName || !wowaudit) return res.status(400).json({ error: 'teamId, teamName, and wowaudit are required' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      if (!confirmDuplicateWowaudit) {
+        const dup = await findDuplicateWowaudit(supabase, wowaudit);
+        if (dup) return res.status(409).json(duplicateWowauditResponse(dup));
+      }
 
       const { data: anchorTeam, error: anchorErr } = await supabase
         .from('teams').select('guild_id').eq('id', teamId).single();
@@ -184,13 +227,18 @@ module.exports = async (req, res) => {
   if (action === 'update') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays } = req.body;
+      const { teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit } = req.body;
       if (!teamId) return res.status(400).json({ error: 'teamId required' });
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
 
       const { data: currentTeam } = await supabase.from('teams').select('guild_id').eq('id', teamId).single();
       if (!currentTeam) return res.status(404).json({ error: 'Team not found' });
+
+      if (!confirmDuplicateWowaudit) {
+        const dup = await findDuplicateWowaudit(supabase, wowaudit, teamId);
+        if (dup) return res.status(409).json(duplicateWowauditResponse(dup));
+      }
 
       if (guild && server) {
         await supabase.from('guilds').update({
