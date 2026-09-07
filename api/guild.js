@@ -16,7 +16,16 @@ const { getMyTeams, assertTeamMembership } = require('./lib/teamAuth');
 
 const TEAM_FIELDS = `id, name, guild_id, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
+  raiderio_url, raiderio_raid_slug,
   guilds ( id, name, server, region )`;
+
+// Pulls the raid slug out of a pasted raider.io rankings URL, e.g.
+// "https://raider.io/the-venomous-abyss/rankings/us/mythic#true" -> "the-venomous-abyss".
+function parseRaiderioSlug(url) {
+  if (!url) return null;
+  const m = url.match(/raider\.io\/([a-z0-9-]+)\/rankings/i);
+  return m ? m[1] : null;
+}
 
 // Strips the encrypted secret before a team row is ever sent to the client.
 function sanitizeTeam(team) {
@@ -112,7 +121,7 @@ module.exports = async (req, res) => {
   // ── CREATE: create a brand-new guild+team, OR (with confirmNewTeam) a new
   // sibling team under a guild that already exists by name+server ──
   if (action === 'create') {
-    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam, confirmDuplicateWowaudit } = req.body;
+    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam, confirmDuplicateWowaudit, raiderioUrl } = req.body;
     if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
 
     try {
@@ -162,6 +171,8 @@ module.exports = async (req, res) => {
           zone_id:      zoneId || null,
           difficulty:   difficulty || 'mythic',
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          raiderio_url:       raiderioUrl || null,
+          raiderio_raid_slug: parseRaiderioSlug(raiderioUrl),
         })
         .select(TEAM_FIELDS)
         .single();
@@ -182,7 +193,7 @@ module.exports = async (req, res) => {
   // confirmNewTeam path above, just reached from a different starting point. ──
   if (action === 'addTeam') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, teamName, wowaudit, wclUrl, zoneId, wclTeamId, difficulty, raidDays, confirmDuplicateWowaudit } = req.body;
+    const { teamId, teamName, wowaudit, wclUrl, zoneId, wclTeamId, difficulty, raidDays, confirmDuplicateWowaudit, raiderioUrl } = req.body;
     if (!teamId || !teamName || !wowaudit) return res.status(400).json({ error: 'teamId, teamName, and wowaudit are required' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
@@ -207,6 +218,8 @@ module.exports = async (req, res) => {
           zone_id:      zoneId || null,
           difficulty:   difficulty || 'mythic',
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          raiderio_url:       raiderioUrl || null,
+          raiderio_raid_slug: parseRaiderioSlug(raiderioUrl),
         })
         .select(TEAM_FIELDS)
         .single();
@@ -227,7 +240,7 @@ module.exports = async (req, res) => {
   if (action === 'update') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit } = req.body;
+      const { teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit, raiderioUrl } = req.body;
       if (!teamId) return res.status(400).json({ error: 'teamId required' });
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
@@ -255,6 +268,8 @@ module.exports = async (req, res) => {
           wcl_team_id:  wclTeamId || null,
           zone_id:      zoneId || null,
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          raiderio_url:       raiderioUrl || null,
+          raiderio_raid_slug: parseRaiderioSlug(raiderioUrl),
         })
         .eq('id', teamId)
         .select(TEAM_FIELDS)

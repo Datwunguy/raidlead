@@ -1491,6 +1491,7 @@
       <button class="nav-btn" onclick="showTab('planner')">Raid Planner</button>
       <button class="nav-btn" onclick="showTab('scores')">WCL Scores</button>
       <button class="nav-btn" onclick="showTab('attendance')">Attendance</button>
+      <button class="nav-btn" onclick="showTab('progress')">Progress</button>
     </nav>
     <div class="header-right">
       <div class="guild-badge" id="guild-badge" style="display:none;">
@@ -1584,6 +1585,12 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="inp-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group full">
+            <label>Raider.io Raid URL <span style="color:var(--text-mute);font-weight:400;">(optional — powers the Progress tab. Paste a rankings link for the current raid, e.g. raider.io/the-venomous-abyss/rankings/us/mythic)</span></label>
+            <input type="text" id="inp-raiderio" placeholder="https://raider.io/the-venomous-abyss/rankings/us/mythic" />
           </div>
         </div>
         <div class="form-row">
@@ -1777,6 +1784,12 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="gs-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group full">
+            <label>Raider.io Raid URL <span style="color:var(--text-mute);font-weight:400;">(optional — powers the Progress tab. Paste a rankings link for the current raid, e.g. raider.io/the-venomous-abyss/rankings/us/mythic)</span></label>
+            <input type="text" id="gs-raiderio" placeholder="https://raider.io/the-venomous-abyss/rankings/us/mythic" />
           </div>
         </div>
         <div class="form-row">
@@ -2123,6 +2136,22 @@
         </div>
       </div>
 
+      <!-- PROGRESS TAB -->
+      <div class="tab-content" id="tab-progress">
+        <div class="section-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+          <div class="section-title">Progress<span id="progress-raid-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
+          <div class="role-filter" id="progress-difficulty-filter">
+            <button class="filter-btn" onclick="setProgressDifficulty('normal', this)">Normal</button>
+            <button class="filter-btn" onclick="setProgressDifficulty('heroic', this)">Heroic</button>
+            <button class="filter-btn active" onclick="setProgressDifficulty('mythic', this)">Mythic</button>
+          </div>
+        </div>
+        <div style="font-size:12px; color:var(--text-mute); margin-top:4px;" id="progress-subtitle"></div>
+        <div id="progress-content" style="margin-top:18px;">
+          <div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading Progress...</div></div>
+        </div>
+      </div>
+
       <!-- RAID SCHEDULE MODAL -->
       <div class="modal-overlay" id="raid-schedule-modal">
         <div class="modal" style="max-width:420px;">
@@ -2369,6 +2398,8 @@ const STATE = {
   attendanceLoaded:    false,
   plannerDate:         null,         // 'YYYY-MM-DD' string for the raid night currently being planned
   plannerSwaps:        [],           // [{id, boss, outName, inName}] boss-by-boss swaps against the published roster
+  progressDifficulty:  'mythic',     // 'normal' | 'heroic' | 'mythic' for the Progress tab
+  progressCache:       {},           // per-difficulty cached response from /api/raiderio
 };
 
 // ── Global fetch wrapper: automatically adds credentials for all /api/ calls ──
@@ -2765,6 +2796,7 @@ function showSetup() {
     set('inp-wowaudit', '');
     set('inp-wcl', '');
     set('inp-wcl-team', '');
+    set('inp-raiderio', '');
     set('inp-team', '');
     setRaidDaysOn('inp-raid-days', []);
     return;
@@ -2795,6 +2827,7 @@ function showSetup() {
     set('inp-wowaudit',  s.wowaudit);
     set('inp-wcl',       s.wclUrl);
     set('inp-wcl-team',  s.wclTeamId);
+    set('inp-raiderio',  s.raiderioUrl);
     set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
     set('inp-wcl-client-id', s.wclClientId);
@@ -2842,6 +2875,7 @@ async function submitAddTeam(confirmDuplicateWowaudit) {
   const wowaudit  = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl    = document.getElementById('inp-wcl').value.trim();
   const wclTeamId = document.getElementById('inp-wcl-team').value.trim() || null;
+  const raiderioUrl = document.getElementById('inp-raiderio').value.trim() || null;
   const raidDays  = getRaidDaysFrom('inp-raid-days');
 
   if (!teamName || !wowaudit) {
@@ -2859,7 +2893,7 @@ async function submitAddTeam(confirmDuplicateWowaudit) {
     const resp = await fetch('/api/guild?action=addTeam', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays, raiderioUrl, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
     const data = await resp.json();
 
@@ -2928,6 +2962,7 @@ async function loadGuild(confirmDuplicateWowaudit) {
   const wowaudit   = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl     = document.getElementById('inp-wcl').value.trim();
   const wclTeamId  = document.getElementById('inp-wcl-team').value.trim() || null;
+  const raiderioUrl = document.getElementById('inp-raiderio').value.trim() || null;
   const multiTeam  = document.querySelector('input[name="inp-multi-team"]:checked')?.value === 'yes';
   const teamName   = (multiTeam ? document.getElementById('inp-team')?.value.trim() : '') || 'Main Team';
   const raidDays   = getRaidDaysFrom('inp-raid-days');
@@ -2941,7 +2976,7 @@ async function loadGuild(confirmDuplicateWowaudit) {
 
   // Merge onto the existing config rather than replacing it outright -- fields this
   // form doesn't own (hasWclCredentials/wclClientId, zoneName, etc.) must survive a save.
-  STATE.config = { ...STATE.config, guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays };
+  STATE.config = { ...STATE.config, guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, raiderioUrl };
   STATE.zoneId = zoneId;
 
   setStatus('Saving...', 'loading');
@@ -2952,7 +2987,7 @@ async function loadGuild(confirmDuplicateWowaudit) {
     const resp = await fetch('/api/guild?action=update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, raiderioUrl, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
     const data = await resp.json();
 
@@ -3681,6 +3716,111 @@ function showTab(name) {
       banner.style.display = 'block';
     }
   }
+
+  if (name === 'progress') {
+    loadProgressTab();
+  }
+}
+
+// ─────────────────────────────────────────────
+//  PROGRESS TAB — world-wide boss kill counts via Raider.io, by
+//  difficulty and the team's configured region.
+// ─────────────────────────────────────────────
+function setProgressDifficulty(diff, btn) {
+  STATE.progressDifficulty = diff;
+  document.querySelectorAll('#progress-difficulty-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadProgressTab();
+}
+
+async function loadProgressTab() {
+  const content = document.getElementById('progress-content');
+  const subtitle = document.getElementById('progress-subtitle');
+
+  if (!STATE.config?.raiderioRaidSlug) {
+    document.getElementById('progress-raid-name').textContent = '';
+    subtitle.textContent = '';
+    content.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">🗺</div>
+        <h3>Progress isn't set up yet</h3>
+        <p>Add a Raider.io raid URL in Guild Settings to see world-wide boss kill counts for your region.</p>
+        <button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>
+      </div>`;
+    return;
+  }
+
+  const diff = STATE.progressDifficulty;
+  const cached = STATE.progressCache[diff];
+  if (cached) {
+    renderProgress(cached);
+    return;
+  }
+
+  content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading Progress...</div></div>';
+
+  try {
+    const resp = await fetch(`/api/raiderio?action=progress&teamId=${encodeURIComponent(STATE.teamId)}&difficulty=${diff}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to load progress data');
+    STATE.progressCache[diff] = data;
+    renderProgress(data);
+  } catch (e) {
+    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load progress</h3><p>${e.message}</p></div>`;
+  }
+}
+
+function renderProgress(data) {
+  const content = document.getElementById('progress-content');
+  const subtitle = document.getElementById('progress-subtitle');
+
+  if (!data.configured) {
+    document.getElementById('progress-raid-name').textContent = '';
+    subtitle.textContent = '';
+    content.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">🗺</div>
+        <h3>Progress isn't set up yet</h3>
+        <p>Add a Raider.io raid URL in Guild Settings to see world-wide boss kill counts for your region.</p>
+        <button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>
+      </div>`;
+    return;
+  }
+
+  document.getElementById('progress-raid-name').textContent = data.raidName ? '– ' + data.raidName : '';
+  subtitle.textContent = `Guilds that have defeated each boss on ${data.difficulty.toUpperCase()}, region: ${(data.region || '').toUpperCase()}`;
+
+  const maxGuilds = Math.max(1, ...data.bosses.map(b => b.guildsDefeated));
+
+  content.innerHTML = '';
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex; flex-direction:column; gap:10px;';
+
+  data.bosses.forEach((boss, i) => {
+    const pct = Math.round((boss.guildsDefeated / maxGuilds) * 100);
+    const row = document.createElement('div');
+    row.style.cssText = `
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+    `;
+    row.innerHTML = `
+      <div style="font-size:11px; color:var(--text-mute); width:16px; flex-shrink:0;">${i + 1}</div>
+      ${boss.iconUrl ? `<img src="${boss.iconUrl}" alt="" style="width:36px; height:36px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">` : ''}
+      <div style="flex:1; min-width:0;">
+        <div style="font-weight:600; color:var(--text); margin-bottom:6px;">${boss.name}</div>
+        <div style="background:var(--bg3); border-radius:3px; height:8px; overflow:hidden;">
+          <div style="background:var(--gold-dim); height:100%; width:${pct}%;"></div>
+        </div>
+      </div>
+      <div style="font-size:16px; font-weight:700; color:var(--gold); flex-shrink:0; text-align:right; min-width:90px;">
+        ${boss.guildsDefeated.toLocaleString()}
+        <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">guilds</div>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+
+  content.appendChild(list);
 }
 
 // ─────────────────────────────────────────────
@@ -3835,6 +3975,88 @@ function renderRoster() {
 
   classSection.appendChild(classGrid);
   rosterEl.appendChild(classSection);
+
+  // ── Armor type breakdown section ──
+  const ARMOR_TYPES = {
+    cloth:   { classes: ['mage', 'priest', 'warlock'],                   color: '#69CCF0' },
+    leather: { classes: ['druid', 'rogue', 'monk', 'demon hunter'],      color: '#FF7C0A' },
+    mail:    { classes: ['hunter', 'shaman', 'evoker'],                  color: '#AAD372' },
+    plate:   { classes: ['warrior', 'paladin', 'death knight'],          color: '#C79C6E' },
+  };
+  const CLASS_TO_ARMOR = {};
+  Object.entries(ARMOR_TYPES).forEach(([armor, info]) => {
+    info.classes.forEach(cls => { CLASS_TO_ARMOR[cls] = armor; });
+  });
+
+  const armorSection = document.createElement('div');
+  armorSection.style.cssText = 'margin-top: 32px;';
+  const armorDivider = document.createElement('div');
+  armorDivider.style.cssText = `
+    font-size: 11px; font-weight: 700; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--text-mute);
+    margin-bottom: 16px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  `;
+  armorDivider.textContent = 'BY ARMOR TYPE';
+  armorSection.appendChild(armorDivider);
+
+  const byArmor = {};
+  players.forEach(p => {
+    const armor = CLASS_TO_ARMOR[p.class];
+    if (!armor) return;
+    if (!byArmor[armor]) byArmor[armor] = [];
+    byArmor[armor].push(p);
+  });
+
+  const armorGrid = document.createElement('div');
+  armorGrid.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px;';
+
+  ['cloth', 'leather', 'mail', 'plate'].forEach(armor => {
+    if (!byArmor[armor] || byArmor[armor].length === 0) return;
+    const color      = ARMOR_TYPES[armor].color;
+    const armorCard  = document.createElement('div');
+    armorCard.style.cssText = `
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-left: 3px solid ${color};
+      border-radius: 6px;
+      padding: 12px 14px;
+    `;
+
+    const armorHeader = document.createElement('div');
+    armorHeader.style.cssText = `
+      font-size: 10px; font-weight: 700; letter-spacing: 2px;
+      text-transform: uppercase; color: ${color};
+      margin-bottom: 8px; padding-bottom: 6px;
+      border-bottom: 1px solid ${color}33;
+    `;
+    armorHeader.textContent = armor.toUpperCase() + ' (' + byArmor[armor].length + ')';
+    armorCard.appendChild(armorHeader);
+
+    const nameWrap = document.createElement('div');
+    nameWrap.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px;';
+    byArmor[armor].sort((a,b) => a.name.localeCompare(b.name)).forEach(player => {
+      const clsColor = CLASS_COLORS[player.class] || '#888';
+      const pill = document.createElement('span');
+      pill.style.cssText = `
+        font-size: 13px; font-weight: 600; color: ${clsColor};
+        cursor: pointer; padding: 2px 6px;
+        background: ${clsColor}15; border-radius: 3px;
+        border: 1px solid ${clsColor}33;
+        transition: all 0.15s;
+      `;
+      pill.textContent = player.name;
+      pill.onclick = () => openProfile(player);
+      pill.onmouseover = () => pill.style.background = clsColor + '30';
+      pill.onmouseout  = () => pill.style.background = clsColor + '15';
+      nameWrap.appendChild(pill);
+    });
+    armorCard.appendChild(nameWrap);
+    armorGrid.appendChild(armorCard);
+  });
+
+  armorSection.appendChild(armorGrid);
+  rosterEl.appendChild(armorSection);
 
   // Other/unknown role players
   const known = roles.flatMap(r => r.key);
@@ -6100,6 +6322,7 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
   const wowaudit   = document.getElementById('gs-wowaudit').value.trim();
   const wclUrl     = document.getElementById('gs-wcl').value.trim();
   const wclTeamId  = document.getElementById('gs-wcl-team').value.trim() || null;
+  const raiderioUrl = document.getElementById('gs-raiderio').value.trim() || null;
   const raidDays   = getRaidDaysFrom('gs-raid-days');
 
   if (!guild || !server || !wowaudit) {
@@ -6120,7 +6343,7 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, raiderioUrl, confirmNewTeam: !!confirmNewTeam, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
 
     let data = {};
@@ -6864,6 +7087,8 @@ function applyGuildData(guildData) {
     zoneId:      t.zone_id || null,
     zoneName:    t.zone_name || '',
     raidDays:    t.raid_days || [],
+    raiderioUrl:      t.raiderio_url || '',
+    raiderioRaidSlug: t.raiderio_raid_slug || null,
     hasWclCredentials: t.hasWclCredentials || false,
     wclClientId: t.wcl_client_id || null,
   };
@@ -6873,6 +7098,7 @@ function applyGuildData(guildData) {
   STATE.guildId          = t.guild_id;
   STATE.teamId           = t.id;
   STATE.teamName         = t.name;
+  STATE.progressCache    = {}; // may be a different team/region/raid than what was cached
   STATE.claimedCharacter = guildData.claimedCharacter || null;
   STATE.joinCode         = t.join_code || null;
   STATE.discordGuildId   = t.discord_guild_id || null;
