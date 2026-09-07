@@ -1,9 +1,31 @@
 // ============================================================
-//  guild.js — handles guild actions
-//  Actions: get, create
+//  guild.js — handles guild + team actions
+//  Actions: get, create, addTeam, update, generateJoinCode,
+//           beginDiscordConnect, setDiscordGuildId, setWclCredentials,
+//           setRaidSchedule, transferOwner
+//
+//  A "guild" (name/server/region) is a lightweight shared identity that one
+//  or more "teams" attach to. Everything a team actually needs to operate
+//  (roster source, WCL config, Discord link, join code) lives on the team
+//  row, not the guild row -- teams under the same guild are independent:
+//  no team's owner needs another team's permission for anything.
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
+const { getMyTeams, assertTeamMembership } = require('./lib/teamAuth');
+
+const TEAM_FIELDS = `id, name, guild_id, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name,
+  difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
+  guilds ( id, name, server, region )`;
+
+// Strips the encrypted secret before a team row is ever sent to the client.
+function sanitizeTeam(team) {
+  if (!team) return team;
+  const t = { ...team };
+  t.hasWclCredentials = !!t.wcl_client_secret_enc;
+  delete t.wcl_client_secret_enc;
+  return t;
+}
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -14,152 +36,193 @@ module.exports = async (req, res) => {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-  // ── GET: return guild + role for current user ──
+  // ── GET: list every team this account belongs to; if a teamId is given (or
+  // there's only one team), also return that team's full config ──
   if (action === 'get' || req.method === 'GET') {
     try {
-      // Fetched as an array rather than .single() -- .single() throws the same
-      // generic error for "0 rows" and "more than 1 row", which previously made a
-      // genuine data problem (an account belonging to more than one guild) look
-      // identical to "not a member of any guild" and silently 404'd instead of
-      // surfacing what was actually wrong.
-      const { data: memberships, error: membershipErr } = await supabase
-        .from('guild_members')
-        .select(`role, guild_id, guilds ( id, name, server, region, difficulty, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name, raid_days, join_code, discord_guild_id, wcl_client_id, wcl_client_secret_enc, teams ( id, name ) )`)
-        .eq('account_id', session.id);
-
-      if (membershipErr) {
-        console.error('[guild.get] membership lookup error:', membershipErr.message);
-        return res.status(500).json({ error: membershipErr.message });
-      }
-      if (!memberships || memberships.length === 0) {
-        return res.status(404).json({ error: 'No guild found', code: 'NO_GUILD' });
-      }
-      if (memberships.length > 1) {
-        console.warn('[guild.get] account belongs to more than one guild -- using the first returned:', session.id, memberships.map(m => m.guild_id));
-      }
-      const membership = memberships[0];
-
-      const teamId = membership.guilds?.teams?.[0]?.id || null;
-
-      // Check whether this account has claimed a character ON THIS TEAM — used to gate
-      // access until claimed. Scoped to teamId so a character claimed in another guild
-      // doesn't falsely satisfy the gate for a newly-joined guild.
-      let claimedChar = null;
-      if (teamId) {
-        const { data } = await supabase
-          .from('characters')
-          .select('name')
-          .eq('account_id', session.id)
-          .eq('team_id', teamId)
-          .limit(1)
-          .maybeSingle();
-        claimedChar = data;
+      const myTeams = await getMyTeams(supabase, session.id);
+      if (myTeams.length === 0) {
+        return res.status(404).json({ error: 'No team found', code: 'NO_GUILD', teams: [] });
       }
 
-      // Never send the encrypted secret blob to the client -- just whether one's set.
-      const guild = { ...membership.guilds };
-      const hasWclCredentials = !!guild.wcl_client_secret_enc;
-      delete guild.wcl_client_secret_enc;
-      guild.hasWclCredentials = hasWclCredentials;
+      const requestedTeamId = req.query.teamId || req.body?.teamId || null;
+      const activeTeamId = requestedTeamId || (myTeams.length === 1 ? myTeams[0].teamId : null);
+
+      let team = null, role = null, claimedCharacter = null;
+      if (activeTeamId) {
+        const membership = myTeams.find(t => t.teamId === activeTeamId);
+        if (!membership) return res.status(403).json({ error: 'You are not a member of that team' });
+        role = membership.role;
+
+        const { data: teamRow, error: teamErr } = await supabase
+          .from('teams').select(TEAM_FIELDS).eq('id', activeTeamId).single();
+        if (teamErr) throw teamErr;
+        team = sanitizeTeam(teamRow);
+
+        const { data: charRow } = await supabase
+          .from('characters').select('name')
+          .eq('account_id', session.id).eq('team_id', activeTeamId)
+          .limit(1).maybeSingle();
+        claimedCharacter = charRow?.name || null;
+      }
 
       return res.status(200).json({
-        role: membership.role,
-        guild,
-        team: membership.guilds?.teams?.[0] || null,
-        claimedCharacter: claimedChar?.name || null,
+        teams: myTeams, // [{ teamId, teamName, role, guildId, guildName, guildServer }]
+        activeTeamId,
+        role,
+        team,
+        claimedCharacter,
       });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
-  // ── CREATE: create guild + team + owner membership ──
+  // ── CREATE: create a brand-new guild+team, OR (with confirmNewTeam) a new
+  // sibling team under a guild that already exists by name+server ──
   if (action === 'create') {
-    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays } = req.body;
+    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam } = req.body;
     if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
+
     try {
-      const { data: guildData, error: ge } = await supabase
+      const normServer = server.trim().toLowerCase();
+
+      const { data: existingGuild } = await supabase
         .from('guilds')
-        .insert({ name: guild, server: server.toLowerCase(), region: region || 'us', difficulty: difficulty || 'mythic', wowaudit_url: wowaudit, wcl_url: wclUrl || null, zone_id: zoneId || null, wcl_team_id: wclTeamId || null, raid_days: Array.isArray(raidDays) ? raidDays : [], created_by: session.id })
-        .select()
-        .single();
-      if (ge) throw new Error(ge.message);
+        .select('id, name, server, region')
+        .ilike('name', guild.trim())
+        .ilike('server', normServer)
+        .maybeSingle();
+
+      if (existingGuild && !confirmNewTeam) {
+        const { data: siblingTeams } = await supabase
+          .from('teams').select('name').eq('guild_id', existingGuild.id);
+        return res.status(409).json({
+          error: 'GUILD_EXISTS',
+          message: `"${existingGuild.name}" on ${existingGuild.server} already exists. Are you starting a second team, or do you need to join an existing one?`,
+          existingGuild,
+          teamNames: (siblingTeams || []).map(t => t.name),
+        });
+      }
+
+      const guildId = existingGuild
+        ? existingGuild.id
+        : (await (async () => {
+            const { data: g, error: ge } = await supabase.from('guilds')
+              .insert({ name: guild.trim(), server: normServer, region: region || 'us', created_by: session.id })
+              .select('id').single();
+            if (ge) throw new Error(ge.message);
+            return g.id;
+          })());
 
       const { data: teamData, error: te } = await supabase
         .from('teams')
-        .insert({ guild_id: guildData.id, name: teamName || 'Main Team' })
-        .select()
+        .insert({
+          guild_id:     guildId,
+          name:         teamName || 'Main Team',
+          wowaudit_url: wowaudit,
+          wcl_url:      wclUrl || null,
+          wcl_team_id:  wclTeamId || null,
+          zone_id:      zoneId || null,
+          difficulty:   difficulty || 'mythic',
+          raid_days:    Array.isArray(raidDays) ? raidDays : [],
+        })
+        .select(TEAM_FIELDS)
         .single();
       if (te) throw new Error(te.message);
 
       const { error: me } = await supabase
-        .from('guild_members')
-        .insert({ guild_id: guildData.id, account_id: session.id, role: 'owner' });
+        .from('team_members')
+        .insert({ team_id: teamData.id, account_id: session.id, role: 'owner' });
       if (me) throw new Error(me.message);
 
-      return res.status(200).json({ guild: guildData, team: teamData });
+      return res.status(200).json({ team: sanitizeTeam(teamData) });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
-  // ── UPDATE: update guild settings (officers+) ──
+  // ── ADD TEAM: shortcut for an existing team's owner/officer to spin up a
+  // sibling team under the same guild, from inside their own settings.
+  // Doesn't require anything from a sibling team's owner -- same as the
+  // confirmNewTeam path above, just reached from a different starting point. ──
+  if (action === 'addTeam') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const { teamId, teamName, wowaudit, wclUrl, zoneId, wclTeamId, difficulty, raidDays } = req.body;
+    if (!teamId || !teamName || !wowaudit) return res.status(400).json({ error: 'teamId, teamName, and wowaudit are required' });
+    try {
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      const { data: anchorTeam, error: anchorErr } = await supabase
+        .from('teams').select('guild_id').eq('id', teamId).single();
+      if (anchorErr || !anchorTeam) throw new Error('Could not find the guild for that team');
+
+      const { data: teamData, error: te } = await supabase
+        .from('teams')
+        .insert({
+          guild_id:     anchorTeam.guild_id,
+          name:         teamName,
+          wowaudit_url: wowaudit,
+          wcl_url:      wclUrl || null,
+          wcl_team_id:  wclTeamId || null,
+          zone_id:      zoneId || null,
+          difficulty:   difficulty || 'mythic',
+          raid_days:    Array.isArray(raidDays) ? raidDays : [],
+        })
+        .select(TEAM_FIELDS)
+        .single();
+      if (te) throw new Error(te.message);
+
+      const { error: tme } = await supabase
+        .from('team_members')
+        .insert({ team_id: teamData.id, account_id: session.id, role: 'owner' });
+      if (tme) throw new Error(tme.message);
+
+      return res.status(200).json({ team: sanitizeTeam(teamData) });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── UPDATE: update a team's settings, and (since it's shared) the guild's
+  // name/server/region too if provided -- any officer of any sibling team can
+  // do this, consistent with there being no elevated cross-team tier ──
   if (action === 'update') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) return res.status(403).json({ error: 'Officers only' });
-
-      const { guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays } = req.body;
+      const { teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays } = req.body;
+      if (!teamId) return res.status(400).json({ error: 'teamId required' });
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
 
+      const { data: currentTeam } = await supabase.from('teams').select('guild_id').eq('id', teamId).single();
+      if (!currentTeam) return res.status(404).json({ error: 'Team not found' });
+
+      if (guild && server) {
+        await supabase.from('guilds').update({
+          name: guild.trim(), server: server.trim().toLowerCase(), region: region || 'us',
+        }).eq('id', currentTeam.guild_id);
+      }
+
       const { data, error } = await supabase
-        .from('guilds')
+        .from('teams')
         .update({
-          name:         guild,
-          server:       server.toLowerCase(),
-          region:       region || 'us',
+          name:         teamName || undefined,
           wowaudit_url: wowaudit,
-          wcl_url:      wclUrl  || null,
+          wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
-          zone_id:      zoneId  || null,
+          zone_id:      zoneId || null,
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
         })
-        .eq('id', myMembership.guild_id)
-        .select()
+        .eq('id', teamId)
+        .select(TEAM_FIELDS)
         .single();
       if (error) throw new Error(error.message);
 
-      // Update team name if provided
-      if (teamName) {
-        const { data: team } = await supabase
-          .from('teams')
-          .select('id')
-          .eq('guild_id', myMembership.guild_id)
-          .order('created_at', { ascending: true })
-          .limit(1)
-          .single();
-        if (team) {
-          await supabase.from('teams').update({ name: teamName }).eq('id', team.id);
-        }
-      }
-
-      return res.status(200).json({ guild: data });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+      return res.status(200).json({ team: sanitizeTeam(data) });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── GENERATE JOIN CODE: short, DB-backed code members can type in to join (officers+) ──
+  // ── GENERATE JOIN CODE: short, DB-backed code others use to join THIS team (officers+) ──
   if (action === 'generateJoinCode') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
-        return res.status(403).json({ error: 'Officers only' });
-      }
+      const { teamId } = req.body;
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
       // Skip visually ambiguous characters (0/O, 1/I/L)
       const { randomInt } = require('crypto');
@@ -169,34 +232,29 @@ module.exports = async (req, res) => {
       let code = null;
       for (let attempt = 0; attempt < 5 && !code; attempt++) {
         const candidate = genCode();
-        const { data: clash } = await supabase.from('guilds').select('id').eq('join_code', candidate).maybeSingle();
+        const { data: clash } = await supabase.from('teams').select('id').eq('join_code', candidate).maybeSingle();
         if (!clash) code = candidate;
       }
       if (!code) return res.status(500).json({ error: 'Could not generate a unique join code — try again' });
 
-      const { error } = await supabase.from('guilds').update({ join_code: code }).eq('id', myMembership.guild_id);
+      const { error } = await supabase.from('teams').update({ join_code: code }).eq('id', teamId);
       if (error) throw error;
 
       return res.status(200).json({ success: true, joinCode: code });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── BEGIN DISCORD CONNECT: kick off the "Connect to Discord" OAuth flow (officers+) ──
-  // Returns a state token + the Discord Application ID so the client can build the
-  // bot-authorization URL. Whoever actually completes that URL (which requires "Manage
-  // Server" on the target Discord server) doesn't need a RaidLead login at all -- the
-  // callback resolves the guild purely from this state token, not from a session.
+  // ── BEGIN DISCORD CONNECT: kick off the "Connect to Discord" OAuth flow for
+  // THIS team (officers+). Any number of teams -- of the same or different
+  // guilds -- can independently connect the same Discord server; there's no
+  // uniqueness constraint on discord_guild_id anymore. Whoever completes the
+  // resulting URL (needs "Manage Server" on the target Discord) doesn't need a
+  // RaidLead login -- the callback resolves the team purely from this state token. ──
   if (action === 'beginDiscordConnect') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
-        return res.status(403).json({ error: 'Officers only' });
-      }
+      const { teamId } = req.body;
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
       const appId = process.env.DISCORD_APPLICATION_ID;
       if (!appId) return res.status(500).json({ error: 'Discord integration is not configured yet (missing DISCORD_APPLICATION_ID).' });
@@ -205,72 +263,54 @@ module.exports = async (req, res) => {
       const state = randomBytes(16).toString('hex');
       const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-      const { error } = await supabase.from('guilds').update({
+      const { error } = await supabase.from('teams').update({
         discord_connect_state: state,
         discord_connect_state_expires_at: expiresAt,
-      }).eq('id', myMembership.guild_id);
+      }).eq('id', teamId);
       if (error) throw error;
 
       return res.status(200).json({ success: true, state, discordApplicationId: appId });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── SET DISCORD GUILD ID: link a Discord server to this RaidLead guild (officers+) ──
+  // ── SET DISCORD GUILD ID: link a Discord server to THIS team manually (officers+) ──
   if (action === 'setDiscordGuildId') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
-        return res.status(403).json({ error: 'Officers only' });
-      }
+      const { teamId, discordGuildId } = req.body;
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
-      const { discordGuildId } = req.body;
       const value = (discordGuildId || '').trim() || null;
       if (value && !/^\d{5,25}$/.test(value)) {
         return res.status(400).json({ error: 'That doesn\'t look like a Discord Server ID (should be a long number).' });
       }
 
-      const { error } = await supabase.from('guilds').update({ discord_guild_id: value }).eq('id', myMembership.guild_id);
-      if (error) {
-        if (error.code === '23505') return res.status(409).json({ error: 'That Discord server is already linked to a different RaidLead guild.' });
-        throw error;
-      }
+      const { error } = await supabase.from('teams').update({ discord_guild_id: value }).eq('id', teamId);
+      if (error) throw error;
 
       return res.status(200).json({ success: true, discordGuildId: value });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── SET WCL CREDENTIALS: guild's own Warcraft Logs API client (officers+) ──
-  // Each guild brings its own WCL v2 API client (id + secret, created at
-  // warcraftlogs.com/api/clients/) so guilds' WCL usage is isolated from each
-  // other -- one guild's fetches can never draw on or be capped by another's quota.
-  // The secret is encrypted before it's stored; only the client ID (not sensitive)
-  // and a hasWclCredentials boolean are ever sent back to the browser.
+  // ── SET WCL CREDENTIALS: this team's own Warcraft Logs API client (officers+) ──
+  // Each team brings its own WCL v2 API client (id + secret, created at
+  // warcraftlogs.com/api/clients/) so teams' WCL usage is fully isolated from
+  // each other -- one team's fetches can never draw on or be capped by another's
+  // quota. The secret is encrypted before it's stored; only the client ID (not
+  // sensitive) and a hasWclCredentials boolean are ever sent back to the browser.
   if (action === 'setWclCredentials') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
-        return res.status(403).json({ error: 'Officers only' });
-      }
+      const { teamId, wclClientId, wclClientSecret } = req.body;
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
-      const { wclClientId, wclClientSecret } = req.body;
       const clientId = (wclClientId || '').trim() || null;
       const clientSecret = (wclClientSecret || '').trim() || null;
 
-      // Both blank clears the saved credentials
       if (!clientId && !clientSecret) {
-        const { error } = await supabase.from('guilds').update({
+        const { error } = await supabase.from('teams').update({
           wcl_client_id: null, wcl_client_secret_enc: null,
-        }).eq('id', myMembership.guild_id);
+        }).eq('id', teamId);
         if (error) throw error;
         return res.status(200).json({ success: true, cleared: true });
       }
@@ -280,61 +320,49 @@ module.exports = async (req, res) => {
       }
 
       const { encrypt } = require('./lib/crypto');
-      const { error } = await supabase.from('guilds').update({
+      const { error } = await supabase.from('teams').update({
         wcl_client_id:         clientId,
         wcl_client_secret_enc: encrypt(clientSecret),
-      }).eq('id', myMembership.guild_id);
+      }).eq('id', teamId);
       if (error) throw error;
 
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── TRANSFER OWNERSHIP: owner hands off to another member ──
-  // ── SET RAID SCHEDULE: update the weekly recurring raid days (officers+) ──
+  // ── SET RAID SCHEDULE: update THIS team's weekly recurring raid days (officers+) ──
   if (action === 'setRaidSchedule') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) {
-        return res.status(403).json({ error: 'Officers only' });
-      }
-
-      const { raidDays } = req.body;
+      const { teamId, raidDays } = req.body;
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!Array.isArray(raidDays)) return res.status(400).json({ error: 'raidDays must be an array' });
 
-      const { error } = await supabase
-        .from('guilds')
-        .update({ raid_days: raidDays })
-        .eq('id', myMembership.guild_id);
+      const { error } = await supabase.from('teams').update({ raid_days: raidDays }).eq('id', teamId);
       if (error) throw error;
 
       return res.status(200).json({ success: true, raidDays });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
+  // ── TRANSFER OWNERSHIP: this team's owner hands off to another member of THIS team ──
   if (action === 'transferOwner') {
-    const { targetAccountId } = req.body;
-    if (!targetAccountId) return res.status(400).json({ error: 'targetAccountId required' });
-
     try {
-      const { data: myMembership } = await supabase
-        .from('guild_members')
-        .select('role, guild_id')
-        .eq('account_id', session.id)
-        .single();
-      if (!myMembership || myMembership.role !== 'owner') return res.status(403).json({ error: 'Owners only' });
+      const { teamId, targetAccountId } = req.body;
+      if (!targetAccountId) return res.status(400).json({ error: 'targetAccountId required' });
       if (targetAccountId === session.id) return res.status(400).json({ error: 'Cannot transfer ownership to yourself' });
 
-      // Promote target to owner, demote current owner to officer
-      await supabase.from('guild_members').update({ role: 'owner' }).eq('account_id', targetAccountId).eq('guild_id', myMembership.guild_id);
-      await supabase.from('guild_members').update({ role: 'officer' }).eq('account_id', session.id).eq('guild_id', myMembership.guild_id);
+      const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      if (myRole !== 'owner') return res.status(403).json({ error: 'Owners only' });
+
+      const { data: targetMembership } = await supabase
+        .from('team_members').select('id').eq('account_id', targetAccountId).eq('team_id', teamId).maybeSingle();
+      if (!targetMembership) return res.status(400).json({ error: 'That account is not a member of this team' });
+
+      await supabase.from('team_members').update({ role: 'owner' }).eq('account_id', targetAccountId).eq('team_id', teamId);
+      await supabase.from('team_members').update({ role: 'officer' }).eq('account_id', session.id).eq('team_id', teamId);
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   res.status(400).json({ error: 'Invalid action' });

@@ -1497,6 +1497,7 @@
         <span>⚔</span>
         <span><strong id="badge-guild">—</strong> — <span id="badge-server">—</span></span>
       </div>
+      <span id="team-switcher-wrap" style="display:none; margin-right:8px;"></span>
       <button id="share-btn" class="header-pill-btn" style="display:none;" onclick="showInviteModal()"><span class="pill-full-text">Invite</span><span class="pill-short-text">Inv</span></button>
       <div class="account-menu" id="account-menu" style="display:none;">
         <button class="account-btn" onclick="toggleAccountMenu()">
@@ -1547,8 +1548,8 @@
   <div id="setup-screen">
     <div class="setup-card">
       <div class="setup-header">
-        <h1>Configure Your Guild</h1>
-        <p>Enter your guild details and data source URLs to get started. You only need to do this once.</p>
+        <h1 id="setup-heading">Configure Your Guild</h1>
+        <p id="setup-subheading">Enter your guild details and data source URLs to get started. You only need to do this once.</p>
       </div>
       <div class="setup-body">
         <div class="form-row">
@@ -1618,7 +1619,7 @@
             <div id="wcl-creds-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
           </div>
         </div>
-        <div class="form-row">
+        <div class="form-row" id="multi-team-row">
           <div class="form-group full">
             <label>Multiple Teams?</label>
             <div style="display:flex; align-items:center; gap:20px; margin-top:8px; flex-wrap:wrap;">
@@ -1634,6 +1635,14 @@
               <div id="settings-team-row" style="display:none; flex:1; min-width:200px;">
                 <input type="text" id="inp-team" placeholder="e.g. Heroic Team" style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:16px; padding:8px 14px; outline:none; width:100%;" />
               </div>
+            </div>
+          </div>
+        </div>
+        <div class="form-row" id="add-team-row" style="display:none;">
+          <div class="form-group full">
+            <button type="button" class="btn-secondary" onclick="showAddTeamScreen()">+ Add a Team</button>
+            <div style="font-size:12px; color:var(--text-mute); margin-top:6px;">
+              Creates a new, fully independent team under this same guild — its own roster, join code, and WCL setup. Doesn't require anything from this team; you'll be the new one's owner.
             </div>
           </div>
         </div>
@@ -2328,6 +2337,8 @@ const STATE = {
   detectedZone: null,
   guildId:      null,
   teamId:       null,
+  teams:        [],     // every team this account belongs to: [{teamId, teamName, role, guildId, guildName, guildServer}]
+  addTeamMode:  false,  // true while the Settings screen is being used to add a sibling team
   myRole:       null,   // 'owner' | 'officer' | 'member' | 'viewer'
   raidPlanMode:      'view',      // 'view' | 'edit'
   raidPlanPublished: false,       // true when plan is published
@@ -2541,7 +2552,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         saveConfig(config);
         localStorage.removeItem('raidlead_pending_invite');
 
-        // Register in Supabase guild_members
+        // Register in team_members
+        let joinedTeamId = null;
         try {
           const joinResp = await fetch('/api/auth?action=join-guild', {
             method: 'POST',
@@ -2555,21 +2567,15 @@ window.addEventListener('DOMContentLoaded', async () => {
             }),
           });
           const joinData = await joinResp.json();
+          joinedTeamId = joinData.teamId || null;
           if (joinData.role) applyRolePermissions(joinData.role);
         } catch(e) { console.warn('Could not join guild in DB:', e); }
 
         try { await loadRosterFromWowaudit(); } catch(e) {}
 
-        // Fetch fresh guild data to populate teamId and claimedCharacter
-        const freshData = await fetchGuildFromDB();
-        if (freshData) {
-          STATE.teamId           = freshData.team?.id   || null;
-          STATE.teamName         = freshData.team?.name || null;
-          STATE.claimedCharacter = freshData.claimedCharacter || null;
-          STATE.joinCode         = freshData.guild?.join_code || null;
-          STATE.discordGuildId   = freshData.guild?.discord_guild_id || null;
-          if (freshData.team?.id) localStorage.setItem('raidlead_team_id', freshData.team.id);
-        }
+        // Fetch fresh team data to populate teamId and claimedCharacter
+        const freshData = await fetchGuildFromDB(joinedTeamId);
+        if (freshData) applyGuildData(freshData);
 
         // Gate: new members must claim a character before accessing the dashboard
         if (!STATE.claimedCharacter) {
@@ -2586,42 +2592,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     localStorage.removeItem('raidlead_pending_invite');
   }
 
-  // Supabase is always the source of truth — fetch guild once, fall back to
-  // localStorage for offline/share-link flows, show setup if nothing found.
+  // Supabase is always the source of truth — fetch the active team once, fall
+  // back to localStorage for offline/share-link flows, show setup if nothing found.
   let guildData = null;
-  try { guildData = await fetchGuildFromDB(); } catch(e) {}
+  try { guildData = await fetchActiveGuildData(); } catch(e) {}
 
-  if (guildData && guildData.guild) {
-    const g      = guildData.guild;
-    const config = {
-      guild:      g.name,
-      server:     g.server,
-      region:     g.region,
-      difficulty: g.difficulty,
-      wowaudit:   g.wowaudit_url,
-      wclUrl:     g.wcl_url   || '',
-      wclTeamId:  g.wcl_team_id || null,
-      zoneId:     g.zone_id   || null,
-      zoneName:   g.zone_name || '',
-      raidDays:   g.raid_days || [],
-      hasWclCredentials: g.hasWclCredentials || false,
-      wclClientId: g.wcl_client_id || null,
-    };
-    STATE.config           = config;
-    STATE.zoneId           = config.zoneId;
-    STATE.zoneName         = config.zoneName;
-    STATE.guildId          = g.id;
-    STATE.teamId           = guildData.team?.id   || null;
-    STATE.teamName         = guildData.team?.name || null;
-    STATE.claimedCharacter = guildData.claimedCharacter || null;
-    STATE.joinCode         = g.join_code || null;
-    STATE.discordGuildId   = g.discord_guild_id || null;
-    const role     = guildData.role || 'member';
-    saveConfig(config);
-    localStorage.setItem('raidlead_my_role',  role);
-    if (guildData.team?.id) localStorage.setItem('raidlead_team_id',  guildData.team.id);
-    if (g.id)               localStorage.setItem('raidlead_guild_id', g.id);
-    applyRolePermissions(role);
+  if (guildData && guildData.team) {
+    applyGuildData(guildData);
     await loadRosterFromWowaudit();
 
     // Gate: block access until this account has claimed a character
@@ -2747,9 +2724,43 @@ function showSetup() {
   if (_shareBtnSetup) _shareBtnSetup.style.display = 'none';
 
   document.getElementById('cancel-btn').style.display = STATE.config ? 'block' : 'none';
-  document.getElementById('load-btn').textContent = STATE.config ? 'Save Changes' : 'Load Guild';
   document.getElementById('load-btn').disabled = false;
   setStatus('', '');
+
+  const addTeamRow   = document.getElementById('add-team-row');
+  const multiTeamRow = document.getElementById('multi-team-row');
+  const guildIdFieldIds = ['inp-guild', 'inp-server', 'inp-region'];
+
+  if (STATE.addTeamMode) {
+    document.getElementById('setup-heading').textContent = 'Add a Team';
+    document.getElementById('setup-subheading').textContent =
+      `Creates a new, independent team under ${STATE.config?.guild || 'this guild'} — its own roster, join code, and WCL setup. You'll be its owner.`;
+    document.getElementById('load-btn').textContent = 'Create Team';
+    if (addTeamRow)   addTeamRow.style.display   = 'none';
+    if (multiTeamRow) multiTeamRow.style.display = 'none';
+
+    // Guild identity is shared and fixed here -- pre-fill and lock it
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+    set('inp-guild',  STATE.config?.guild);
+    set('inp-server', STATE.config?.server);
+    set('inp-region', STATE.config?.region);
+    guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
+
+    // Team-specific fields start blank -- this is a brand new team
+    set('inp-wowaudit', '');
+    set('inp-wcl', '');
+    set('inp-wcl-team', '');
+    set('inp-team', '');
+    setRaidDaysOn('inp-raid-days', []);
+    return;
+  }
+
+  guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = false; });
+  document.getElementById('setup-heading').textContent = 'Configure Your Guild';
+  document.getElementById('setup-subheading').textContent = 'Enter your guild details and data source URLs to get started. You only need to do this once.';
+  document.getElementById('load-btn').textContent = STATE.config ? 'Save Changes' : 'Load Guild';
+  if (addTeamRow)   addTeamRow.style.display   = STATE.config ? 'grid' : 'none';
+  if (multiTeamRow) multiTeamRow.style.display = '';
 
   // Pre-populate with current config
   if (STATE.config) {
@@ -2782,12 +2793,66 @@ function showSetup() {
 }
 
 function cancelSetup() {
+  STATE.addTeamMode = false;
+  ['inp-guild', 'inp-server', 'inp-region'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = false;
+  });
   document.getElementById('setup-screen').style.display  = 'none';
   document.getElementById('dashboard').style.display     = 'block';
   document.getElementById('main-nav').style.display      = 'flex';
   document.getElementById('guild-badge').style.display   = 'flex';
   applyRolePermissions(localStorage.getItem('raidlead_my_role') || 'member');
 
+}
+
+// Switches the Settings screen into "add a sibling team" mode (locked guild
+// identity, blank team-specific fields) -- reachable from an existing team's
+// own settings, as a shortcut equivalent to hitting "already exists" during
+// Create Guild and choosing to make a new team.
+function showAddTeamScreen() {
+  STATE.addTeamMode = true;
+  showSetup();
+}
+
+async function submitAddTeam() {
+  const teamName  = document.getElementById('inp-team').value.trim();
+  const wowaudit  = document.getElementById('inp-wowaudit').value.trim();
+  const wclUrl    = document.getElementById('inp-wcl').value.trim();
+  const wclTeamId = document.getElementById('inp-wcl-team').value.trim() || null;
+  const raidDays  = getRaidDaysFrom('inp-raid-days');
+
+  if (!teamName || !wowaudit) {
+    setStatus('Please fill in Team Name and Wowaudit URL.', 'error');
+    return;
+  }
+
+  const zoneMatch = wclUrl ? wclUrl.match(/zone=(\d+)/) : null;
+  const zoneId    = zoneMatch ? parseInt(zoneMatch[1]) : null;
+
+  setStatus('Creating team...', 'loading');
+  document.getElementById('load-btn').disabled = true;
+
+  try {
+    const resp = await fetch('/api/guild?action=addTeam', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to create team');
+
+    STATE.addTeamMode = false;
+    ['inp-guild', 'inp-server', 'inp-region'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.disabled = false;
+    });
+    showToast(`Team "${teamName}" created! Switching to it now.`, 'success');
+    await switchActiveTeam(data.team.id);
+  } catch(e) {
+    setStatus('Error: ' + e.message, 'error');
+    document.getElementById('load-btn').disabled = false;
+  }
 }
 
 // Wire up raid-day-chip click toggles for any chip container on the page
@@ -2822,6 +2887,7 @@ function setRaidDaysOn(containerId, days) {
 }
 
 async function loadGuild() {
+  if (STATE.addTeamMode) return submitAddTeam();
   const guild      = document.getElementById('inp-guild').value.trim();
   const server     = document.getElementById('inp-server').value.trim();
   const region     = document.getElementById('inp-region').value;
@@ -2849,23 +2915,17 @@ async function loadGuild() {
   document.getElementById('load-btn').disabled = true;
 
   try {
-    // If the user already has a guild, update it in the DB.
-    // The backend resolves the guild from the session cookie — no client-supplied ID needed.
-    if (STATE.config) {
-      const resp = await fetch('/api/guild?action=update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'Failed to save changes');
-      // Persist updated config to localStorage so refresh picks it up immediately
-      localStorage.setItem('raidlead_config', JSON.stringify(STATE.config));
-      // Update team name in STATE immediately
-      if (teamName !== 'Main Team') {
-        STATE.teamName = teamName;
-      }
-    }
+    // Update this team's (and, since it's shared, the guild's) settings.
+    const resp = await fetch('/api/guild?action=update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to save changes');
+    // Persist updated config to localStorage so refresh picks it up immediately
+    localStorage.setItem('raidlead_config', JSON.stringify(STATE.config));
+    STATE.teamName = data.team?.name || teamName;
     await loadRosterFromWowaudit();
     saveConfig(STATE.config);
     showDashboard();
@@ -3135,18 +3195,11 @@ function showDashboard() {
   }
 
   // Fetch guild/role/teamId from Supabase
-  fetchGuildFromDB().then(async data => {
-    if (data) {
-      STATE.guildId  = data.guild?.id   || null;
-      STATE.teamId   = data.team?.id   || null;
-      STATE.teamName = data.team?.name || null;
+  fetchActiveGuildData().then(async data => {
+    if (data && data.team) {
+      applyGuildData(data);
       updateRosterTitle();
-      const role    = data.role || 'member';
-      localStorage.setItem('raidlead_my_role',  role);
-      if (data.team?.id)  localStorage.setItem('raidlead_team_id',  data.team.id);
       if (STATE.config?.wclTeamId) localStorage.setItem('raidlead_wcl_team_id', STATE.config.wclTeamId);
-      if (data.guild?.id) localStorage.setItem('raidlead_guild_id', data.guild.id);
-      applyRolePermissions(role);
       syncRosterToDB();
       if (STATE.teamId) {
         loadFlexData();
@@ -3357,7 +3410,7 @@ async function saveRaidSchedule() {
     const resp = await fetch('/api/guild?action=setRaidSchedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raidDays }),
+      body: JSON.stringify({ teamId: STATE.teamId, raidDays }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to save schedule');
@@ -3380,7 +3433,7 @@ async function saveDiscordGuildId() {
     const resp = await fetch('/api/guild?action=setDiscordGuildId', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ discordGuildId }),
+      body: JSON.stringify({ teamId: STATE.teamId, discordGuildId }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to save');
@@ -3426,7 +3479,7 @@ async function saveWclCredentials() {
     const resp = await fetch('/api/guild?action=setWclCredentials', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wclClientId, wclClientSecret }),
+      body: JSON.stringify({ teamId: STATE.teamId, wclClientId, wclClientSecret }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to save WCL credentials');
@@ -3450,7 +3503,7 @@ async function buildDiscordConnectUrl() {
   const resp = await fetch('/api/guild?action=beginDiscordConnect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ teamId: STATE.teamId }),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Failed to start Discord connection');
@@ -3842,7 +3895,7 @@ async function wclQuery(query, options = {}) {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ teamId: STATE.teamId, query }),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'WCL request failed');
@@ -4364,7 +4417,7 @@ window.diagSurvival = async function(reportCode, fightId, startTime, endTime) {
   const resp = await fetch('/api/roster?action=diagSurvival', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reportCode, fightId, startTime, endTime }),
+    body: JSON.stringify({ teamId: STATE.teamId, reportCode, fightId, startTime, endTime }),
   });
   const data = await resp.json();
   console.log('[diagSurvival] result:', JSON.stringify(data, null, 2));
@@ -4376,7 +4429,7 @@ window.diagMitigation = async function(reportCode, encounterID, targetName) {
   const resp = await fetch('/api/roster?action=diagMitigation', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reportCode, encounterID, targetName }),
+    body: JSON.stringify({ teamId: STATE.teamId, reportCode, encounterID, targetName }),
   });
   const data = await resp.json();
   console.log('[diagMitigation] result:', JSON.stringify(data, null, 2));
@@ -5908,48 +5961,18 @@ async function completeGuildJoin(guildName, server, joinCode) {
   const joinData = await joinResp.json();
   if (!joinResp.ok) throw new Error(joinData.error || 'Failed to join guild');
 
-  const freshData = await fetchGuildFromDB();
-  if (!freshData || !freshData.guild) throw new Error('Joined, but could not load guild data. Try refreshing the page.');
-
-  const g = freshData.guild;
-  const config = {
-    guild:      g.name,
-    server:     g.server,
-    region:     g.region,
-    difficulty: g.difficulty,
-    wowaudit:   g.wowaudit_url,
-    wclUrl:     g.wcl_url      || '',
-    wclTeamId:  g.wcl_team_id  || null,
-    zoneId:     g.zone_id      || null,
-    zoneName:   g.zone_name    || '',
-    raidDays:   g.raid_days    || [],
-    hasWclCredentials: g.hasWclCredentials || false,
-    wclClientId: g.wcl_client_id || null,
-  };
-  STATE.config           = config;
-  STATE.zoneId           = config.zoneId;
-  STATE.zoneName         = config.zoneName;
-  STATE.guildId          = g.id;
-  STATE.teamId           = freshData.team?.id   || null;
-  STATE.teamName         = freshData.team?.name || null;
-  STATE.claimedCharacter = freshData.claimedCharacter || null;
-  STATE.joinCode         = g.join_code || null;
-  STATE.discordGuildId   = g.discord_guild_id || null;
-  const role = freshData.role || 'member';
-  saveConfig(config);
-  localStorage.setItem('raidlead_my_role', role);
-  if (freshData.team?.id) localStorage.setItem('raidlead_team_id', freshData.team.id);
-  if (g.id)               localStorage.setItem('raidlead_guild_id', g.id);
-  applyRolePermissions(role);
+  const freshData = await fetchGuildFromDB(joinData.teamId);
+  if (!freshData || !freshData.team) throw new Error('Joined, but could not load team data. Try refreshing the page.');
+  applyGuildData(freshData);
   await loadRosterFromWowaudit();
 
   if (!STATE.claimedCharacter) {
-    showToast('Welcome to ' + g.name + '! Please claim your character to continue.', 'success');
+    showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
     await showClaimGateScreen();
   } else {
     showDashboard();
     loadCachedScores();
-    showToast('Welcome to ' + g.name + '!', 'success');
+    showToast('Welcome to ' + STATE.config.guild + '!', 'success');
   }
 }
 
@@ -6019,7 +6042,7 @@ function toggleTeamName(radio) {
   }
 }
 
-async function createGuild() {
+async function createGuild(confirmNewTeam) {
   const guild      = document.getElementById('gs-guild').value.trim();
   const server     = document.getElementById('gs-server').value.trim();
   const region     = document.getElementById('gs-region').value;
@@ -6050,30 +6073,34 @@ async function createGuild() {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays }),
+      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
     });
 
     let data = {};
     const text = await resp.text();
     try { data = JSON.parse(text); } catch(e) { throw new Error('Server returned invalid response: ' + text.slice(0, 100)); }
+
+    // A guild with this name+server already exists -- ask whether this is a
+    // brand-new second team, or whether they meant to join the existing one(s).
+    if (resp.status === 409 && data.error === 'GUILD_EXISTS') {
+      const teamList = data.teamNames?.length ? data.teamNames.join(', ') : 'an existing team';
+      const wantsNewTeam = confirm(
+        `${data.message}\n\nClick OK to create a NEW team under this guild (you'll be its owner).\nClick Cancel if you meant to join ${teamList} instead -- ask an officer there for a join code.`
+      );
+      if (wantsNewTeam) return createGuild(true);
+      document.getElementById('gs-status').textContent = 'Ask an officer of the existing team for a join code, then use "Join Guild" instead.';
+      document.getElementById('gs-status').className   = 'status-msg';
+      return;
+    }
+
     if (!resp.ok) throw new Error(data.error || 'Failed to create guild');
 
-    STATE.config = { guild, server, region, difficulty, wowaudit, wclUrl, zoneId, zoneName: '', wclTeamId, raidDays };
-    STATE.zoneId = zoneId;
-    saveConfig(STATE.config);
+    // Populate full STATE (including the teams list) now that the team row exists
+    const freshGuildData = await fetchGuildFromDB(data.team?.id);
+    if (!freshGuildData || !freshGuildData.team) throw new Error('Created, but could not load team data. Try refreshing the page.');
+    applyGuildData(freshGuildData);
 
     await loadRosterFromWowaudit();
-
-    // Populate STATE.teamId / claimedCharacter now that the guild + team rows exist
-    const freshGuildData = await fetchGuildFromDB();
-    if (freshGuildData) {
-      STATE.teamId           = freshGuildData.team?.id   || null;
-      STATE.teamName         = freshGuildData.team?.name || null;
-      STATE.claimedCharacter = freshGuildData.claimedCharacter || null;
-      STATE.joinCode         = freshGuildData.guild?.join_code || null;
-      STATE.discordGuildId   = freshGuildData.guild?.discord_guild_id || null;
-      if (freshGuildData.team?.id) localStorage.setItem('raidlead_team_id', freshGuildData.team.id);
-    }
 
     // The brand-new owner hasn't claimed a character yet either — route through the gate
     if (!STATE.claimedCharacter) {
@@ -6159,7 +6186,7 @@ async function generateJoinCode() {
   msg.style.color   = 'var(--text-mute)';
   msg.textContent   = 'Generating...';
   try {
-    const resp = await fetch('/api/guild?action=generateJoinCode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const resp = await fetch('/api/guild?action=generateJoinCode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ teamId: STATE.teamId }) });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to generate join code');
     STATE.joinCode = data.joinCode;
@@ -6433,7 +6460,7 @@ async function removeMember(accountId) {
     const resp = await fetch('/api/members?action=removeMember', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetAccountId: accountId }),
+      body: JSON.stringify({ teamId: STATE.teamId, targetAccountId: accountId }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to remove member');
@@ -6461,7 +6488,7 @@ async function promptSetMemberDiscordId(accountId, currentDiscordId) {
     const resp = await fetch('/api/members?action=setMemberDiscordId', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetAccountId: accountId, discordId: input.trim() }),
+      body: JSON.stringify({ teamId: STATE.teamId, targetAccountId: accountId, discordId: input.trim() }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to save');
@@ -6739,9 +6766,14 @@ function loadFlexData() {
 //  GUILD & ROLE FETCHING FROM SUPABASE
 // ─────────────────────────────────────────────
 
-async function fetchGuildFromDB() {
+// Fetches the caller's teams. Without teamId: returns every team the account
+// belongs to (STATE.teams) plus, when there's exactly one, its full config
+// inline. With teamId: returns that specific team's full config (the caller
+// must actually belong to it).
+async function fetchGuildFromDB(teamId) {
   try {
-    const resp = await fetch('/api/guild?action=get', {
+    const qs = teamId ? ('&teamId=' + encodeURIComponent(teamId)) : '';
+    const resp = await fetch('/api/guild?action=get' + qs, {
       headers: {}
     });
     if (!resp.ok) return null;
@@ -6751,9 +6783,99 @@ async function fetchGuildFromDB() {
   } catch(e) { return null; }
 }
 
-async function fetchMembersFromDB() {
+// Applies a guild.get response to STATE -- the one place that maps a team's
+// config onto the app's working state, used on initial load, after joining,
+// after creating a guild/team, and when switching the active team.
+function applyGuildData(guildData) {
+  STATE.teams = guildData?.teams || [];
+  const t = guildData?.team;
+  if (!t) return false;
+
+  const config = {
+    guild:       t.guilds?.name || null,
+    server:      t.guilds?.server || null,
+    region:      t.guilds?.region || 'us',
+    difficulty:  t.difficulty || 'mythic',
+    wowaudit:    t.wowaudit_url,
+    wclUrl:      t.wcl_url || '',
+    wclTeamId:   t.wcl_team_id || null,
+    zoneId:      t.zone_id || null,
+    zoneName:    t.zone_name || '',
+    raidDays:    t.raid_days || [],
+    hasWclCredentials: t.hasWclCredentials || false,
+    wclClientId: t.wcl_client_id || null,
+  };
+  STATE.config           = config;
+  STATE.zoneId           = config.zoneId;
+  STATE.zoneName         = config.zoneName;
+  STATE.guildId          = t.guild_id;
+  STATE.teamId           = t.id;
+  STATE.teamName         = t.name;
+  STATE.claimedCharacter = guildData.claimedCharacter || null;
+  STATE.joinCode         = t.join_code || null;
+  STATE.discordGuildId   = t.discord_guild_id || null;
+  STATE.myRole           = guildData.role || 'member';
+
+  saveConfig(config);
   try {
-    const resp = await fetch('/api/members?action=get', {
+    localStorage.setItem('raidlead_my_role', STATE.myRole);
+    localStorage.setItem('raidlead_team_id', t.id);
+    localStorage.setItem('raidlead_guild_id', t.guild_id);
+    localStorage.setItem('raidlead_active_team_id', t.id);
+  } catch(e) {}
+  applyRolePermissions(STATE.myRole);
+  renderTeamSwitcher();
+  return true;
+}
+
+// Loads whichever team should be active: the one remembered from last time if
+// the account still belongs to it, otherwise the first team returned.
+async function fetchActiveGuildData() {
+  let guildData = await fetchGuildFromDB();
+  if (guildData && guildData.teams?.length > 0 && !guildData.team) {
+    let remembered = null;
+    try { remembered = localStorage.getItem('raidlead_active_team_id'); } catch(e) {}
+    const pick = guildData.teams.find(t => t.teamId === remembered)?.teamId || guildData.teams[0].teamId;
+    guildData = await fetchGuildFromDB(pick);
+  }
+  return guildData;
+}
+
+// Switches the active team (from the team switcher) and reloads everything
+// that's scoped to it.
+async function switchActiveTeam(teamId) {
+  if (teamId === STATE.teamId) return;
+  const guildData = await fetchGuildFromDB(teamId);
+  if (!guildData || !guildData.team) { showToast('Could not switch teams', 'error'); return; }
+  applyGuildData(guildData);
+  await loadRosterFromWowaudit();
+  if (!STATE.claimedCharacter) { showClaimGateScreen(); return; }
+  showDashboard();
+  updateRosterTitle();
+  STATE.scores = []; STATE.bossNames = []; STATE.scoresDifficulty = null;
+  STATE.survivorMap = {}; STATE.survivorFetched = false; STATE.survivorMapDifficulty = null;
+  STATE.mitigationMap = {}; STATE.mitigationFetched = false; STATE.mitigationMapDifficulty = null;
+  loadCachedScores();
+  loadAttendanceData();
+  if (typeof loadPlanForDate === 'function' && STATE.plannerDate) loadPlanForDate(STATE.plannerDate);
+}
+
+// Renders the team switcher in the header -- only shown when the account
+// belongs to more than one team, invisible otherwise.
+function renderTeamSwitcher() {
+  const wrap = document.getElementById('team-switcher-wrap');
+  if (!wrap) return;
+  if (!STATE.teams || STATE.teams.length < 2) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+  wrap.style.display = 'inline-block';
+  wrap.innerHTML = `<select onchange="switchActiveTeam(this.value)" style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; color:var(--gold); font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600; padding:6px 10px; cursor:pointer;">
+    ${STATE.teams.map(t => `<option value="${t.teamId}" ${t.teamId === STATE.teamId ? 'selected' : ''}>${escapeHtml(t.guildName || '')} — ${escapeHtml(t.teamName || '')}</option>`).join('')}
+  </select>`;
+}
+
+async function fetchMembersFromDB(teamId) {
+  try {
+    const tid = teamId || STATE.teamId || '';
+    const resp = await fetch('/api/members?action=get&teamId=' + encodeURIComponent(tid), {
       headers: {}
     });
     if (!resp.ok) return { members: [], myRole: null };
@@ -7026,6 +7148,7 @@ async function fetchCompareData() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        teamId: STATE.teamId,
         guildName, serverSlug, region, zoneId, diffId,
         startMs, endMs,
         wclGuildId,

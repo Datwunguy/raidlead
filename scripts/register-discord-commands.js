@@ -41,6 +41,12 @@ const commands = [
         type: 3, // STRING
         required: false,
       },
+      {
+        name: 'team',
+        description: 'Which team (only needed if this server has more than one team and it\'s ambiguous)',
+        type: 3, // STRING
+        required: false,
+      },
     ],
   },
   {

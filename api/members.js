@@ -1,9 +1,12 @@
 // ============================================================
-//  members.js — handles member actions
-//  Actions: get, updateRole, updateDisplayName, claimCharacter, removeMember
+//  members.js — handles member/attendance actions, all team-scoped
+//  Actions: get, updateRole, updateDisplayName, setMemberDiscordId,
+//           generateDiscordLinkCode, claimCharacter, removeMember, diagKey,
+//           getAttendance, markAttendance, addRaidNight, removeRaidNight
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
+const { getMyTeams, assertTeamMembership, isOfficerRole } = require('./lib/teamAuth');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -14,100 +17,73 @@ module.exports = async (req, res) => {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-  // Resolve the caller's guild membership once — used by every action below
-  const { data: myMembership } = await supabase
-    .from('guild_members')
-    .select('role, guild_id')
-    .eq('account_id', session.id)
-    .single();
-
-  if (!myMembership) return res.status(404).json({ error: 'Not a guild member' });
-
-  const isOfficer = ['owner', 'officer'].includes(myMembership.role);
-  const isOwner   = myMembership.role === 'owner';
-  const myGuildId = myMembership.guild_id;
-
-  // Helper: verify a teamId belongs to the caller's guild -- prevents an officer of
-  // one guild from acting on another guild's team by supplying its teamId directly.
-  async function assertTeamOwnership(teamId) {
-    if (!teamId) throw Object.assign(new Error('teamId required'), { status: 400 });
-    const { data: team } = await supabase
-      .from('teams')
-      .select('id')
-      .eq('id', teamId)
-      .eq('guild_id', myGuildId)
-      .single();
-    if (!team) throw Object.assign(new Error('Team does not belong to your guild'), { status: 403 });
-  }
-
-  // ── GET: return all members ──
+  // ── GET: return all members of a specific team ──
   if (action === 'get' || req.method === 'GET') {
+    const teamId = req.query.teamId || req.body?.teamId;
     try {
+      await assertTeamMembership(supabase, session.id, teamId);
+
       const { data: members, error } = await supabase
-        .from('guild_members')
+        .from('team_members')
         .select(`role, account_id, accounts ( id, battletag, display_name, last_login, discord_id )`)
-        .eq('guild_id', myGuildId);
+        .eq('team_id', teamId);
       if (error) throw error;
 
-      const { data: teams } = await supabase.from('teams').select('id').eq('guild_id', myGuildId).limit(1);
-      const teamId = teams?.[0]?.id || null;
-      let characterMap = {};
-      if (teamId) {
-        const accountIds = members.map(m => m.account_id).filter(Boolean);
-        const { data: chars } = await supabase
-          .from('characters')
-          .select('name, class, primary_role, account_id')
-          .eq('team_id', teamId)
-          .not('account_id', 'is', null);
-        (chars || []).forEach(c => { if (!characterMap[c.account_id]) characterMap[c.account_id] = []; characterMap[c.account_id].push(c); });
-      }
+      const { data: chars } = await supabase
+        .from('characters')
+        .select('name, class, primary_role, account_id')
+        .eq('team_id', teamId)
+        .not('account_id', 'is', null);
+      const characterMap = {};
+      (chars || []).forEach(c => { if (!characterMap[c.account_id]) characterMap[c.account_id] = []; characterMap[c.account_id].push(c); });
 
       const enriched = (members || []).map(m => ({ ...m, characters: characterMap[m.account_id] || [] }));
-      return res.status(200).json({ members: enriched, myRole: myMembership.role });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+      const myRole = enriched.find(m => m.account_id === session.id)?.role || null;
+      return res.status(200).json({ members: enriched, myRole });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   // ── UPDATE ROLE ──
   if (action === 'updateRole') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
-
-    const { targetAccountId, role } = req.body;
+    const { teamId, targetAccountId, role } = req.body;
     if (!targetAccountId || !role) return res.status(400).json({ error: 'targetAccountId and role required' });
 
-    // Only owners can hand out the owner role -- promoting to officer is a normal
-    // officer-level action; becoming owner should only ever happen via transferOwner,
-    // which also demotes the current owner atomically so exactly one owner exists.
-    if (role === 'owner' && !isOwner) return res.status(403).json({ error: 'Owners only for this role' });
-
-    // Prevent owner from removing their own owner status without a transfer
-    if (targetAccountId === session.id && isOwner) {
-      return res.status(400).json({ error: 'Use the transfer ownership action to change your own role' });
-    }
-
     try {
+      const myRole = await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      // Only owners can hand out the owner role -- promoting to officer is a normal
+      // officer-level action; becoming owner should only ever happen via transferOwner,
+      // which also demotes the current owner atomically so exactly one owner exists.
+      if (role === 'owner' && myRole !== 'owner') return res.status(403).json({ error: 'Owners only for this role' });
+
+      // Prevent owner from removing their own owner status without a transfer
+      if (targetAccountId === session.id && myRole === 'owner') {
+        return res.status(400).json({ error: 'Use the transfer ownership action to change your own role' });
+      }
+
       // Never let this action change the CURRENT owner's role away from owner --
       // that must go through transferOwner, same reasoning as above.
       const { data: targetMembership } = await supabase
-        .from('guild_members')
+        .from('team_members')
         .select('role')
         .eq('account_id', targetAccountId)
-        .eq('guild_id', myGuildId)
+        .eq('team_id', teamId)
         .maybeSingle();
-      if (!targetMembership) return res.status(404).json({ error: 'That account is not a member of your guild' });
+      if (!targetMembership) return res.status(404).json({ error: 'That account is not a member of this team' });
       if (targetMembership.role === 'owner' && role !== 'owner') {
         return res.status(400).json({ error: "Use the transfer ownership action to change the owner's role" });
       }
 
       await supabase
-        .from('guild_members')
+        .from('team_members')
         .update({ role })
         .eq('account_id', targetAccountId)
-        .eq('guild_id', myGuildId);       // scope to caller's guild
+        .eq('team_id', teamId);
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── UPDATE DISPLAY NAME ──
+  // ── UPDATE DISPLAY NAME (self-service, no team context) ──
   if (action === 'updateDisplayName') {
     const { displayName } = req.body;
     if (!displayName?.trim()) return res.status(400).json({ error: 'Display name required' });
@@ -119,23 +95,24 @@ module.exports = async (req, res) => {
 
   // ── SET MEMBER DISCORD ID: officer manually links a member's Discord account ──
   if (action === 'setMemberDiscordId') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
-    const { targetAccountId, discordId } = req.body;
+    const { teamId, targetAccountId, discordId } = req.body;
     if (!targetAccountId) return res.status(400).json({ error: 'targetAccountId required' });
     const value = (discordId || '').trim() || null;
     if (value && !/^\d{5,25}$/.test(value)) {
       return res.status(400).json({ error: 'That doesn\'t look like a Discord user ID (should be a long number -- right-click their name in Discord with Developer Mode on and choose "Copy User ID").' });
     }
     try {
-      // Verify targetAccountId is actually a member of the caller's own guild --
-      // without this, an officer of any guild could relink any account platform-wide.
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      // Verify targetAccountId is actually a member of THIS team -- without this, an
+      // officer of any team could relink any account platform-wide.
       const { data: targetMembership } = await supabase
-        .from('guild_members')
+        .from('team_members')
         .select('account_id')
         .eq('account_id', targetAccountId)
-        .eq('guild_id', myGuildId)
+        .eq('team_id', teamId)
         .maybeSingle();
-      if (!targetMembership) return res.status(403).json({ error: 'That account is not a member of your guild' });
+      if (!targetMembership) return res.status(403).json({ error: 'That account is not a member of this team' });
 
       const { error } = await supabase.from('accounts').update({ discord_id: value }).eq('id', targetAccountId);
       if (error) {
@@ -143,10 +120,10 @@ module.exports = async (req, res) => {
         throw error;
       }
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── GENERATE DISCORD LINK CODE: self-service linking, used when an officer hasn't set it ──
+  // ── GENERATE DISCORD LINK CODE: self-service linking (no team context) ──
   if (action === 'generateDiscordLinkCode') {
     try {
       const { randomInt } = require('crypto');
@@ -169,19 +146,13 @@ module.exports = async (req, res) => {
     const { characterName, teamId, targetAccountId, characterClass, characterServer, characterRole } = req.body;
     if (!characterName || !teamId) return res.status(400).json({ error: 'characterName and teamId required' });
 
-    // Verify the teamId belongs to the caller's guild — prevents cross-guild claims
-    const { data: team } = await supabase
-      .from('teams')
-      .select('id')
-      .eq('id', teamId)
-      .eq('guild_id', myGuildId)
-      .single();
-    if (!team) return res.status(403).json({ error: 'Team does not belong to your guild' });
-
-    // Officers can claim on behalf of another account; regular members can only claim for themselves
-    const accountId = (isOfficer && targetAccountId) ? targetAccountId : session.id;
-
     try {
+      const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      const isOfficer = isOfficerRole(myRole);
+
+      // Officers can claim on behalf of another account; regular members can only claim for themselves
+      const accountId = (isOfficer && targetAccountId) ? targetAccountId : session.id;
+
       const { data: updated, error: claimErr } = await supabase
         .from('characters')
         .update({ account_id: accountId })
@@ -210,71 +181,68 @@ module.exports = async (req, res) => {
 
       return res.status(200).json({ success: true, characterName, accountId });
     } catch (err) {
-      console.error('[claimCharacter] error:', err.message, { characterName, teamId, accountId });
-      return res.status(500).json({ error: err.message });
+      console.error('[claimCharacter] error:', err.message, { characterName, teamId });
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 
   // ── REMOVE MEMBER ──
   if (action === 'removeMember') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
-
-    const { targetAccountId } = req.body;
+    const { teamId, targetAccountId } = req.body;
     if (!targetAccountId) return res.status(400).json({ error: 'targetAccountId required' });
 
     // Prevent removing yourself this way — use transferOwner (if owner) or just leave
     if (targetAccountId === session.id) return res.status(400).json({ error: 'You cannot remove yourself this way' });
 
     try {
-      // Nobody can remove the guild owner through this action, regardless of role --
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      // Nobody can remove this team's owner through this action, regardless of role --
       // ownership has to change hands via transferOwner first.
       const { data: targetMembership } = await supabase
-        .from('guild_members')
+        .from('team_members')
         .select('role')
         .eq('account_id', targetAccountId)
-        .eq('guild_id', myGuildId)
+        .eq('team_id', teamId)
         .maybeSingle();
-      if (!targetMembership) return res.status(404).json({ error: 'That account is not a member of your guild' });
+      if (!targetMembership) return res.status(404).json({ error: 'That account is not a member of this team' });
       if (targetMembership.role === 'owner') {
-        return res.status(400).json({ error: 'The guild owner cannot be removed — transfer ownership first' });
+        return res.status(400).json({ error: 'The team owner cannot be removed — transfer ownership first' });
       }
 
-      // Unclaim any characters this member owned on this guild's teams
-      const { data: guildTeams } = await supabase
-        .from('teams').select('id').eq('guild_id', myGuildId);
-      const teamIds = (guildTeams || []).map(t => t.id);
-      if (teamIds.length > 0) {
-        const { error: unclaimErr } = await supabase
-          .from('characters')
-          .update({ account_id: null })
-          .eq('account_id', targetAccountId)
-          .in('team_id', teamIds);
-        if (unclaimErr) throw new Error('unclaim: ' + unclaimErr.message);
-      }
-      // Remove from guild
+      // Unclaim any characters this member owned on this team
+      const { error: unclaimErr } = await supabase
+        .from('characters')
+        .update({ account_id: null })
+        .eq('account_id', targetAccountId)
+        .eq('team_id', teamId);
+      if (unclaimErr) throw new Error('unclaim: ' + unclaimErr.message);
+
+      // Remove from team
       const { data: removed, error: removeErr } = await supabase
-        .from('guild_members')
+        .from('team_members')
         .delete()
         .eq('account_id', targetAccountId)
-        .eq('guild_id', myGuildId)
+        .eq('team_id', teamId)
         .select('account_id');
       if (removeErr) throw new Error('remove: ' + removeErr.message);
       if (!removed || removed.length === 0) {
-        console.warn('[removeMember] delete matched 0 rows — check RLS/service key permissions:', { targetAccountId, myGuildId });
-        throw new Error('remove: no matching guild_members row was deleted (check that account_id/guild_id match, and that the Supabase key has delete permission)');
+        console.warn('[removeMember] delete matched 0 rows — check RLS/service key permissions:', { targetAccountId, teamId });
+        throw new Error('remove: no matching team_members row was deleted (check that account_id/team_id match, and that the Supabase key has delete permission)');
       }
       return res.status(200).json({ success: true });
     } catch (err) {
-      console.error('[removeMember] error:', err.message, { targetAccountId, myGuildId });
-      return res.status(500).json({ error: err.message });
+      console.error('[removeMember] error:', err.message, { targetAccountId, teamId });
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 
   // ── DIAGNOSTIC: which Supabase key role is actually loaded in this deployment ──
   // Decodes only the JWT payload's `role` claim -- never exposes the key itself.
   if (action === 'diagKey') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     try {
+      const myTeams = await getMyTeams(supabase, session.id);
+      if (!myTeams.some(t => isOfficerRole(t.role))) return res.status(403).json({ error: 'Officers only' });
       const key = process.env.SUPABASE_SERVICE_KEY || '';
       const parts = key.split('.');
       if (parts.length !== 3) return res.status(200).json({ error: 'SUPABASE_SERVICE_KEY is not set or is not a JWT', length: key.length });
@@ -285,12 +253,8 @@ module.exports = async (req, res) => {
 
   if (action === 'getAttendance') {
     const teamId = req.body?.teamId || req.query.teamId;
-    if (!teamId) return res.status(400).json({ error: 'teamId required' });
-    console.log('[attendance] getAttendance called, teamId:', teamId, 'myGuildId:', myGuildId);
     try {
-      const { data: team, error: teamErr } = await supabase.from('teams').select('id').eq('id', teamId).eq('guild_id', myGuildId).maybeSingle();
-      console.log('[attendance] team check:', team, teamErr?.message);
-      if (!team) return res.status(403).json({ error: 'Team does not belong to your guild' });
+      await assertTeamMembership(supabase, session.id, teamId);
 
       const { data: extraDays, error: extraErr } = await supabase
         .from('raid_extra_days')
@@ -302,14 +266,13 @@ module.exports = async (req, res) => {
         .from('attendance_marks')
         .select('character_name, raid_date, status')
         .eq('team_id', teamId);
-      console.log('[attendance] getAttendance teamId:', teamId, 'myGuildId:', myGuildId, 'marks count:', marks?.length, 'marks:', JSON.stringify(marks?.slice(0,3)), 'error:', marksErr?.message);
       if (marksErr) throw new Error('attendance_marks: ' + marksErr.message);
 
       return res.status(200).json({
         extraDays: (extraDays || []).map(d => d.raid_date),
         marks:     marks || [],
       });
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   // ── MARK ATTENDANCE: toggle a character's unavailability for a date ──
@@ -317,8 +280,10 @@ module.exports = async (req, res) => {
     const { teamId, characterName, raidDate, unavailable } = req.body;
     if (!teamId || !characterName || !raidDate) return res.status(400).json({ error: 'teamId, characterName, raidDate required' });
 
+    let isOfficer;
     try {
-      await assertTeamOwnership(teamId);
+      const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      isOfficer = isOfficerRole(myRole);
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
 
     // A regular member can only mark the character THEY claimed; officers may mark any character
@@ -341,19 +306,14 @@ module.exports = async (req, res) => {
           .select('id')
           .eq('team_id', teamId).eq('character_name', characterName).eq('raid_date', raidDate)
           .maybeSingle();
-        console.log('[attendance] existing:', existing, 'teamId:', teamId, 'char:', characterName, 'date:', raidDate);
         if (existing) {
-          const { error: updateErr, data: updateData } = await supabase.from('attendance_marks')
+          const { error: updateErr } = await supabase.from('attendance_marks')
             .update({ status: 'unavailable' })
-            .eq('team_id', teamId).eq('character_name', characterName).eq('raid_date', raidDate)
-            .select();
-          console.log('[attendance] update result:', updateData, updateErr);
+            .eq('team_id', teamId).eq('character_name', characterName).eq('raid_date', raidDate);
           if (updateErr) throw new Error('update: ' + updateErr.message);
         } else {
-          const { error: insertErr, data: insertData } = await supabase.from('attendance_marks')
-            .insert({ team_id: teamId, character_name: characterName, raid_date: raidDate, status: 'unavailable' })
-            .select();
-          console.log('[attendance] insert result:', insertData, insertErr);
+          const { error: insertErr } = await supabase.from('attendance_marks')
+            .insert({ team_id: teamId, character_name: characterName, raid_date: raidDate, status: 'unavailable' });
           if (insertErr) throw new Error('insert: ' + insertErr.message);
         }
       } else {
@@ -368,16 +328,14 @@ module.exports = async (req, res) => {
 
   // ── ADD RAID NIGHT: one-off extra raid date (officers only) ──
   if (action === 'addRaidNight') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
     try {
-      await assertTeamOwnership(teamId);
-      const { data, error } = await supabase.from('raid_extra_days').upsert({
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+      const { error } = await supabase.from('raid_extra_days').upsert({
         team_id: teamId, raid_date: raidDate, created_by: session.id,
-      }, { onConflict: 'team_id,raid_date' }).select();
+      }, { onConflict: 'team_id,raid_date' });
       if (error) throw error;
-      console.log('[addRaidNight] upserted:', data);
       return res.status(200).json({ success: true });
     } catch (err) {
       console.error('[addRaidNight] error:', err.message, { teamId, raidDate });
@@ -387,11 +345,10 @@ module.exports = async (req, res) => {
 
   // ── REMOVE RAID NIGHT: remove a one-off extra raid date (officers only) ──
   if (action === 'removeRaidNight') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       const { error } = await supabase.from('raid_extra_days').delete().eq('team_id', teamId).eq('raid_date', raidDate);
       if (error) throw error;
       return res.status(200).json({ success: true });

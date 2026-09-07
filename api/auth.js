@@ -128,7 +128,11 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: 'Server error' }); }
   }
 
-  // ── JOIN-GUILD: create guild_members row ──
+  // ── JOIN-GUILD: create a team_members row for a specific team ──
+  // Joining is by team, not by guild -- a guild with more than one team can
+  // only be joined by code, since a name+server match can't say which team
+  // you mean. A single-team guild can still be found by name+server, same
+  // as before, since there's no ambiguity yet.
   if (action === 'join-guild') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -140,18 +144,18 @@ module.exports = async (req, res) => {
 
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
     try {
-      let guild;
+      let team;
       if (joinCode) {
         const { data, error: codeErr } = await supabase
-          .from('guilds')
-          .select('id')
+          .from('teams')
+          .select('id, name')
           .eq('join_code', joinCode.trim().toUpperCase())
           .maybeSingle();
         if (codeErr) throw codeErr;
         if (!data) return res.status(404).json({ error: 'Invalid join code.' });
-        guild = data;
+        team = data;
       } else {
-        let query = supabase.from('guilds').select('id').ilike('name', guildName.trim());
+        let query = supabase.from('guilds').select('id, name, server').ilike('name', guildName.trim());
         if (server) query = query.ilike('server', server.trim());
         const { data: guilds, error: findErr } = await query;
         if (findErr) throw findErr;
@@ -161,19 +165,31 @@ module.exports = async (req, res) => {
         if (guilds.length > 1) {
           return res.status(409).json({ error: 'Multiple guilds match that name — please also enter the server.' });
         }
-        guild = guilds[0];
+
+        const { data: teams, error: teamsErr } = await supabase
+          .from('teams').select('id, name').eq('guild_id', guilds[0].id);
+        if (teamsErr) throw teamsErr;
+        if (!teams || teams.length === 0) {
+          return res.status(404).json({ error: 'That guild has no teams yet.' });
+        }
+        if (teams.length > 1) {
+          return res.status(409).json({
+            error: `"${guilds[0].name}" has more than one team (${teams.map(t => t.name).join(', ')}) — ask an officer of the one you want to join for its join code.`,
+          });
+        }
+        team = teams[0];
       }
 
       const { data: existing } = await supabase
-        .from('guild_members')
+        .from('team_members')
         .select('id, role')
-        .eq('guild_id', guild.id)
+        .eq('team_id', team.id)
         .eq('account_id', session.id)
-        .single();
-      if (existing) return res.status(200).json({ success: true, role: existing.role, alreadyMember: true });
+        .maybeSingle();
+      if (existing) return res.status(200).json({ success: true, role: existing.role, alreadyMember: true, teamId: team.id });
 
-      await supabase.from('guild_members').insert({ guild_id: guild.id, account_id: session.id, role: 'member' });
-      return res.status(200).json({ success: true, role: 'member', guildId: guild.id });
+      await supabase.from('team_members').insert({ team_id: team.id, account_id: session.id, role: 'member' });
+      return res.status(200).json({ success: true, role: 'member', teamId: team.id });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 

@@ -4,6 +4,7 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
+const { assertTeamMembership } = require('./lib/teamAuth');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -14,34 +15,17 @@ module.exports = async (req, res) => {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-  const { data: membership } = await supabase
-    .from('guild_members')
-    .select('role, guild_id')
-    .eq('account_id', session.id)
-    .single();
-
-  const isOfficer = ['owner', 'officer'].includes(membership?.role);
-  const myGuildId = membership?.guild_id || null;
-
-  // Helper: verify a teamId belongs to the caller's guild
-  async function assertTeamOwnership(teamId) {
-    if (!teamId) throw Object.assign(new Error('teamId required'), { status: 400 });
-    const { data: team } = await supabase
-      .from('teams')
-      .select('id')
-      .eq('id', teamId)
-      .eq('guild_id', myGuildId)
-      .single();
-    if (!team) throw Object.assign(new Error('Team does not belong to your guild'), { status: 403 });
+  // Helper: verify the caller belongs to teamId (optionally requiring officer/owner).
+  async function assertTeamOwnership(teamId, opts) {
+    return assertTeamMembership(supabase, session.id, teamId, opts);
   }
 
-  // ── SAVE: save or publish a raid plan ──
+  // ── SAVE: save or publish a raid plan (officers only) ──
   if (action === 'save') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, selectedPlayers, publish, planName, raidDate } = req.body;
 
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamOwnership(teamId, { requireOfficer: true });
 
       // Find existing plan for this specific raid date (or any plan if no date specified)
       let existingQuery = supabase
@@ -161,10 +145,11 @@ module.exports = async (req, res) => {
   if (action === 'get') {
     const teamId  = req.query.teamId  || req.body?.teamId;
     const raidDate = req.query.raidDate || req.body?.raidDate || null;
-    if (!teamId) return res.status(200).json({ plan: null, isOfficer });
+    if (!teamId) return res.status(200).json({ plan: null, isOfficer: false });
 
     try {
-      await assertTeamOwnership(teamId);
+      const role = await assertTeamOwnership(teamId);
+      const isOfficer = ['owner', 'officer'].includes(role);
 
       let query = supabase
         .from('raid_plans')
@@ -185,19 +170,18 @@ module.exports = async (req, res) => {
       if (plan) { try { plan.swaps = plan.swaps ? JSON.parse(plan.swaps) : []; } catch(e) { plan.swaps = []; } }
       return res.status(200).json({ plan, isOfficer });
     } catch (err) {
-      return res.status(200).json({ plan: null, isOfficer });
+      return res.status(200).json({ plan: null, isOfficer: false });
     }
   }
 
   // ── GET PREVIOUS: most recent saved plan strictly before a given date (officers only) ──
   if (action === 'getPrevious') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const teamId    = req.query.teamId    || req.body?.teamId;
     const beforeDate = req.query.beforeDate || req.body?.beforeDate;
     if (!teamId) return res.status(200).json({ plan: null });
 
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamOwnership(teamId, { requireOfficer: true });
 
       let query = supabase
         .from('raid_plans')
@@ -213,18 +197,18 @@ module.exports = async (req, res) => {
       const plan = plans?.[0] || null;
       return res.status(200).json({ plan });
     } catch (err) {
+      if (err.status) return res.status(err.status).json({ error: err.message });
       return res.status(200).json({ plan: null });
     }
   }
 
   // ── SAVE SWAPS: update the boss-by-boss OUT/IN swap list for an existing plan ──
   if (action === 'saveSwaps') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, raidDate, swaps } = req.body || {};
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
 
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamOwnership(teamId, { requireOfficer: true });
 
       const { data: existing } = await supabase
         .from('raid_plans')

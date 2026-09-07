@@ -83,10 +83,10 @@ function parseDateInput(input) {
   return null;
 }
 
-async function nextUpcomingRaidDate(supabase, guildRow, teamId) {
-  const { data: extraRows } = await supabase.from('raid_extra_days').select('raid_date').eq('team_id', teamId);
+async function nextUpcomingRaidDate(supabase, teamRow) {
+  const { data: extraRows } = await supabase.from('raid_extra_days').select('raid_date').eq('team_id', teamRow.id);
   const extraDays = (extraRows || []).map(r => r.raid_date);
-  const recurringDays = guildRow.raid_days || [];
+  const recurringDays = teamRow.raid_days || [];
   for (let i = 0; i < 60; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
@@ -103,42 +103,73 @@ async function handleAttendanceCommand(supabase, interaction) {
     return ephemeral('This command has to be used in a Discord server, not a DM.');
   }
 
-  const { data: guildRow } = await supabase
-    .from('guilds').select('id, raid_days').eq('discord_guild_id', discordGuildId).maybeSingle();
-  if (!guildRow) {
-    return ephemeral("This Discord server isn't linked to a RaidLead guild yet. Ask an officer to set the Discord Server ID in RaidLead's guild settings.");
+  // Any number of teams can independently link the same Discord server -- e.g. two
+  // teams under one guild sharing a server. Resolve every team linked here, then
+  // figure out which one this specific command is about.
+  const { data: teamRows } = await supabase
+    .from('teams').select('id, name, raid_days').eq('discord_guild_id', discordGuildId);
+  if (!teamRows || teamRows.length === 0) {
+    return ephemeral("This Discord server isn't linked to a RaidLead team yet. Ask an officer to connect it from Guild Settings.");
   }
-
-  const { data: teamRow } = await supabase
-    .from('teams').select('id').eq('guild_id', guildRow.id).order('created_at', { ascending: true }).limit(1).maybeSingle();
-  if (!teamRow) return ephemeral('No team found for this guild yet.');
 
   const options       = interaction.data.options || [];
   const statusOpt     = options.find(o => o.name === 'status')?.value;
   const dateOpt       = options.find(o => o.name === 'date')?.value;
   const characterOpt  = options.find(o => o.name === 'character')?.value;
+  const teamOpt       = options.find(o => o.name === 'team')?.value;
 
-  let character;
+  // Narrow to a named team if given (only meaningful once 2+ teams share this
+  // server); otherwise search across every team linked here.
+  let candidateTeams = teamRows;
+  if (teamOpt) {
+    const normTeam = normalizeName(teamOpt);
+    candidateTeams = teamRows.filter(t => normalizeName(t.name).includes(normTeam));
+    if (candidateTeams.length === 0) {
+      return ephemeral(`No team named "${teamOpt}" is linked to this server. Linked teams: ${teamRows.map(t => t.name).join(', ')}.`);
+    }
+  }
+
+  let character, teamRow;
   if (characterOpt) {
     // Direct character-name mode -- no Discord/RaidLead account linking required.
     // Note: this means anyone in the server can mark any character's attendance.
     // Matched accent-insensitively (Postgres ilike alone won't treat "Tiesto" and
     // "Tiësto" as equal), so players don't need to type special characters.
-    const { data: chars } = await supabase.from('characters').select('name').eq('team_id', teamRow.id);
     const target = normalizeName(characterOpt);
-    const char = (chars || []).find(c => normalizeName(c.name) === target);
-    if (!char) return ephemeral(`Couldn't find a character named "${characterOpt}" on this team's roster.`);
-    character = char;
+    const matches = [];
+    for (const t of candidateTeams) {
+      const { data: chars } = await supabase.from('characters').select('name').eq('team_id', t.id);
+      const char = (chars || []).find(c => normalizeName(c.name) === target);
+      if (char) matches.push({ team: t, character: char });
+    }
+    if (matches.length === 0) {
+      return ephemeral(`Couldn't find a character named "${characterOpt}" on ${candidateTeams.length > 1 ? 'any team linked to this server' : `"${candidateTeams[0].name}"`}.`);
+    }
+    if (matches.length > 1) {
+      return ephemeral(`"${characterOpt}" exists on more than one team here (${matches.map(m => m.team.name).join(', ')}) -- add \`team:\` to say which one you mean.`);
+    }
+    teamRow = matches[0].team;
+    character = matches[0].character;
   } else {
     const { data: account } = await supabase
       .from('accounts').select('id, battletag').eq('discord_id', discordUserId).maybeSingle();
     if (!account) {
       return ephemeral("Your Discord account isn't linked to RaidLead yet. Either add `character:YourCharacterName` to this command, run `/link <code>` with the code from your RaidLead profile, or ask an officer to link you.");
     }
-    const { data: char } = await supabase
-      .from('characters').select('name').eq('team_id', teamRow.id).eq('account_id', account.id).maybeSingle();
-    if (!char) return ephemeral("You haven't claimed a character on RaidLead yet -- do that first in the app, or use `character:YourCharacterName` with this command.");
-    character = char;
+    const matches = [];
+    for (const t of candidateTeams) {
+      const { data: char } = await supabase
+        .from('characters').select('name').eq('team_id', t.id).eq('account_id', account.id).maybeSingle();
+      if (char) matches.push({ team: t, character: char });
+    }
+    if (matches.length === 0) {
+      return ephemeral("You haven't claimed a character on RaidLead yet -- do that first in the app, or use `character:YourCharacterName` with this command.");
+    }
+    if (matches.length > 1) {
+      return ephemeral(`You have a claimed character on more than one team here (${matches.map(m => m.team.name).join(', ')}) -- add \`team:\` to say which one you mean.`);
+    }
+    teamRow = matches[0].team;
+    character = matches[0].character;
   }
 
   let raidDate;
@@ -146,7 +177,7 @@ async function handleAttendanceCommand(supabase, interaction) {
     raidDate = parseDateInput(dateOpt);
     if (!raidDate) return ephemeral("Couldn't understand that date -- try formats like `9/8` or `2026-09-08`.");
   } else {
-    raidDate = await nextUpcomingRaidDate(supabase, guildRow, teamRow.id);
+    raidDate = await nextUpcomingRaidDate(supabase, teamRow);
   }
 
   const unavailable = statusOpt === 'out';
@@ -171,7 +202,8 @@ async function handleAttendanceCommand(supabase, interaction) {
   }
 
   const label = unavailable ? 'OUT' : 'IN (available)';
-  return ephemeral(`Marked **${character.name}** as **${label}** for ${raidDate}.`);
+  const teamSuffix = teamRows.length > 1 ? ` (${teamRow.name})` : '';
+  return ephemeral(`Marked **${character.name}**${teamSuffix} as **${label}** for ${raidDate}.`);
 }
 
 async function handleLinkCommand(supabase, interaction) {

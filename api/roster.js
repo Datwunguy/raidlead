@@ -7,6 +7,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
 const { decrypt } = require('./lib/crypto');
+const { assertTeamMembership } = require('./lib/teamAuth');
 
 // Thrown when a request needs WCL access but the caller's guild hasn't connected its
 // own Warcraft Logs API client yet -- callers check err.wclNotConfigured to show a
@@ -105,66 +106,52 @@ module.exports = async (req, res) => {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-  // Resolve caller's guild membership once
-  const { data: membership } = await supabase
-    .from('guild_members')
-    .select('role, guild_id')
-    .eq('account_id', session.id)
-    .single();
-
-  const isOfficer = ['owner', 'officer'].includes(membership?.role);
-  const myGuildId = membership?.guild_id || null;
-
-  // Helper: verify a teamId belongs to the caller's guild
-  async function assertTeamOwnership(teamId) {
-    if (!teamId) throw Object.assign(new Error('teamId required'), { status: 400 });
-    const { data: team } = await supabase
-      .from('teams')
-      .select('id')
-      .eq('id', teamId)
-      .eq('guild_id', myGuildId)
-      .single();
-    if (!team) throw Object.assign(new Error('Team does not belong to your guild'), { status: 403 });
+  // Helper: verify the caller belongs to teamId (optionally requiring officer/owner).
+  // Thin wrapper so the many call sites below didn't all need to change shape.
+  async function assertTeamOwnership(teamId, opts) {
+    return assertTeamMembership(supabase, session.id, teamId, opts);
   }
 
-  // Helper: resolve the caller's own guild's WCL API credentials (decrypted). Returns
-  // null if the guild hasn't set any up -- there is no shared/app-wide fallback, so one
-  // guild's usage can never draw on or be capped by another's WCL rate limit.
-  async function resolveWclCredentials() {
-    if (!myGuildId) return null;
-    const { data: guildRow } = await supabase
-      .from('guilds')
+  // Helper: resolve a specific team's own WCL API credentials (decrypted). Returns
+  // null if that team hasn't set any up -- there is no shared/app-wide fallback, so
+  // one team's usage can never draw on or be capped by another's WCL rate limit.
+  async function resolveWclCredentials(teamId) {
+    if (!teamId) return null;
+    const { data: teamRow } = await supabase
+      .from('teams')
       .select('wcl_client_id, wcl_client_secret_enc')
-      .eq('id', myGuildId)
+      .eq('id', teamId)
       .single();
-    if (!guildRow?.wcl_client_id || !guildRow?.wcl_client_secret_enc) return null;
+    if (!teamRow?.wcl_client_id || !teamRow?.wcl_client_secret_enc) return null;
     try {
-      return { clientId: guildRow.wcl_client_id, clientSecret: decrypt(guildRow.wcl_client_secret_enc) };
+      return { clientId: teamRow.wcl_client_id, clientSecret: decrypt(teamRow.wcl_client_secret_enc) };
     } catch (e) {
-      console.error('[wcl] failed to decrypt credentials for guild', myGuildId, e.message);
+      console.error('[wcl] failed to decrypt credentials for team', teamId, e.message);
       return null;
     }
   }
 
-  // ── WCL ZONES (accessible to all authenticated members) ──
+  // ── WCL ZONES (accessible to all members of the team) ──
   if (action === 'wclZones' || action === 'zones') {
+    const teamId = req.query.teamId || req.body?.teamId;
     try {
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(teamId);
+      const creds = await resolveWclCredentials(teamId);
       if (!creds) return res.status(200).json({ data: { worldData: { zones: [] } }, wclNotConfigured: true });
       const data = await wclQuery(`query { worldData { zones { id name frozen } } }`, creds);
       return res.status(200).json(data);
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   // ── PROGRESSION: own guild + benchmark data for Compare tab ──
   // Uses only worldData (client credentials compatible — reportData requires OAuth)
   if (action === 'progression') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
-    const { guildName, serverSlug, region, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
+    const { teamId, guildName, serverSlug, region, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
 
     try {
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+      const creds = await resolveWclCredentials(teamId);
       if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
       if (!bossIds || bossIds.length === 0) return res.status(400).json({ error: 'bossIds required' });
 
@@ -246,7 +233,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ benchmark });
     } catch(err) {
       console.error('progression error:', err);
-      return res.status(500).json({ error: err.message });
+      return res.status(err.status || 500).json({ error: err.message });
     }
   }
 
@@ -274,7 +261,6 @@ module.exports = async (req, res) => {
   // ── GET MITIGATION DATA ──
   if (action === 'getMitigation') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { guildName, serverSlug, region, zoneId, diffId, guildTagID, memberNames, validBossIds, teamId } = req.body || {};
     if (!guildName || !serverSlug || !region || !zoneId) return res.status(400).json({ error: 'missing params' });
 
@@ -285,8 +271,8 @@ module.exports = async (req, res) => {
     console.log('[mitigation] guildTagID:', tagId, '| diffId:', diffId);
 
     try {
-      await assertTeamOwnership(teamId);
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+      const creds = await resolveWclCredentials(teamId);
       if (!creds) return res.status(200).json({ mitigationMap: {}, bossNames: [], wclNotConfigured: true, error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings." });
       let allReports, mitigHitMaxPages;
       try {
@@ -493,10 +479,10 @@ module.exports = async (req, res) => {
 
   // ── DIAGNOSTIC: probe DamageTaken table structure for mitigation ──
   if (action === 'diagMitigation') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
-    const { reportCode, encounterID, targetName } = req.body || {};
+    const { teamId, reportCode, encounterID, targetName } = req.body || {};
     try {
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+      const creds = await resolveWclCredentials(teamId);
       if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
 
       // Get ALL fights for this encounter in the report
@@ -555,14 +541,14 @@ module.exports = async (req, res) => {
         mitigatedSum, unmitigatedSum,
         calculatedMitigPct: mitigPct != null ? mitigPct.toFixed(2) : null,
       });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { return res.status(e.status || 500).json({ error: e.message }); }
   }
 
   if (action === 'diagSurvival') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
-    const { reportCode, fightId, startTime, endTime } = req.body || {};
+    const { teamId, reportCode, fightId, startTime, endTime } = req.body || {};
     try {
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+      const creds = await resolveWclCredentials(teamId);
       if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
       const q = `query {
         reportData {
@@ -583,7 +569,7 @@ module.exports = async (req, res) => {
         deathEventsSample:   data?.deathEvents   ? JSON.stringify(data.deathEvents).slice(0, 1200)   : null,
         compositionSample:   data?.composition   ? JSON.stringify(data.composition).slice(0, 400)    : null,
       });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
+    } catch(e) { return res.status(e.status || 500).json({ error: e.message }); }
   }
 
   // ── GET SURVIVAL CACHE: read incremental survival cache from Supabase ──
@@ -618,7 +604,6 @@ module.exports = async (req, res) => {
   // ── GET SURVIVAL DATA: per-player survival % per boss using Summary table deathEvents ──
   if (action === 'getSurvival') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { guildName, serverSlug, region, zoneId, diffId, guildTagID, memberNames, validBossIds } = req.body || {};
     const validBossSet = new Set((validBossIds || []).map(id => parseInt(id)));
     if (!guildName || !serverSlug || !region || !zoneId) {
@@ -631,8 +616,8 @@ module.exports = async (req, res) => {
     console.log('[survival] guildTagID:', tagId, '| diffId:', diffId);
 
     try {
-      await assertTeamOwnership(req.body?.teamId);
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(req.body?.teamId, { requireOfficer: true });
+      const creds = await resolveWclCredentials(req.body?.teamId);
       if (!creds) return res.status(200).json({ survivorMap: {}, bossNames: [], wclNotConfigured: true, error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings." });
       // Step 1: Get ALL reports for this zone + team tag (paginated -- see fetchAllZoneReports)
       // The difficulty filter on fights is done below; reports API doesn't filter by difficulty
@@ -907,25 +892,24 @@ module.exports = async (req, res) => {
   }
 
   if (action === 'wclQuery' || action === 'query') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { query } = req.body || {};
+    const { teamId, query } = req.body || {};
     if (!query) return res.status(400).json({ error: 'query required' });
     try {
-      const creds = await resolveWclCredentials();
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+      const creds = await resolveWclCredentials(teamId);
       if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
       const data = await wclQuery(query, creds);
       return res.status(200).json(data);
-    } catch (err) { return res.status(500).json({ error: err.message }); }
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   // ── SYNC: write Wowaudit players to characters table ──
   if (action === 'sync') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, players } = req.body;
     if (!players?.length) return res.status(400).json({ error: 'teamId and players required' });
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamOwnership(teamId, { requireOfficer: true });
       const { data: existing } = await supabase
         .from('characters')
         .select('name, account_id, flex_tank, flex_heal, flex_melee, flex_ranged, can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged')
@@ -993,10 +977,9 @@ module.exports = async (req, res) => {
 
   // ── UPDATE FLEX (officer only) ──
   if (action === 'updateFlex') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, playerName, flex_tank, flex_heal, flex_melee, flex_ranged } = req.body;
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamOwnership(teamId, { requireOfficer: true });
       const { error } = await supabase
         .from('characters')
         .update({
@@ -1014,11 +997,10 @@ module.exports = async (req, res) => {
 
   // ── SAVE SCORES (officer only) ──
   if (action === 'saveScores') {
-    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     const { teamId, zoneId, scores, bossNames, fetchedAt, difficulty } = req.body;
     if (!scores?.length) return res.status(400).json({ error: 'teamId and scores required' });
     try {
-      await assertTeamOwnership(teamId);
+      await assertTeamOwnership(teamId, { requireOfficer: true });
       // Use difficulty as part of the server key so each difficulty has its own row
       const cacheKey = `cache_${difficulty || 'mythic'}`;
       const { error } = await supabase.from('wcl_scores').upsert({
