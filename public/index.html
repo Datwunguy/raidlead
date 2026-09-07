@@ -1590,7 +1590,17 @@
         <div class="form-row">
           <div class="form-group full">
             <label>Warcraft Logs API Credentials <span style="color:var(--text-mute);font-weight:400;">(required for WCL Scores — each guild uses its own, so nobody's usage is affected by another guild's)</span></label>
-            <div id="wcl-creds-status" style="font-size:13px; color:var(--text-dim); margin-bottom:10px;"></div>
+
+            <details style="margin-bottom:14px;">
+              <summary style="cursor:pointer; font-size:16px; color:var(--gold); text-transform:none; letter-spacing:0; font-weight:700;">How do I get these?</summary>
+              <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
+                <li>Log into <a href="https://www.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer" style="color:var(--gold-dim);">warcraftlogs.com/api/clients</a> with your Warcraft Logs account.</li>
+                <li>Click "Create Client".</li>
+                <li>Name it anything (e.g. "RaidLead") — the Redirect URL can be left blank, it isn't used.</li>
+                <li>Copy the Client ID and Client Secret it gives you and paste them in below.</li>
+              </ol>
+            </details>
+
             <div class="form-row" style="margin-bottom:0;">
               <div class="form-group">
                 <label>Client ID</label>
@@ -1605,16 +1615,7 @@
               <button class="btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="saveWclCredentials()">Save</button>
             </div>
             <div id="wcl-creds-msg" class="status-msg" style="margin-top:6px;"></div>
-
-            <details style="margin-top:14px;">
-              <summary style="cursor:pointer; font-size:12px; color:var(--text-mute); text-transform:none; letter-spacing:0; font-weight:600;">How do I get these?</summary>
-              <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
-                <li>Log into <a href="https://www.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer" style="color:var(--gold-dim);">warcraftlogs.com/api/clients</a> with your Warcraft Logs account.</li>
-                <li>Click "Create Client".</li>
-                <li>Name it anything (e.g. "RaidLead") — the Redirect URL can be left blank, it isn't used.</li>
-                <li>Copy the Client ID and Client Secret it gives you and paste them in above.</li>
-              </ol>
-            </details>
+            <div id="wcl-creds-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
           </div>
         </div>
         <div class="form-row">
