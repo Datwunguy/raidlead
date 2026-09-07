@@ -93,7 +93,7 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
-  // ── UPDATE: update guild settings (owner only) ──
+  // ── UPDATE: update guild settings (officers+) ──
   if (action === 'update') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
@@ -102,7 +102,7 @@ module.exports = async (req, res) => {
         .select('role, guild_id')
         .eq('account_id', session.id)
         .single();
-      if (!myMembership || myMembership.role !== 'owner') return res.status(403).json({ error: 'Owners only' });
+      if (!myMembership || !['owner', 'officer'].includes(myMembership.role)) return res.status(403).json({ error: 'Officers only' });
 
       const { guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays } = req.body;
       if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });

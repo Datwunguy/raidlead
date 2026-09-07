@@ -74,8 +74,10 @@ module.exports = async (req, res) => {
     const { targetAccountId, role } = req.body;
     if (!targetAccountId || !role) return res.status(400).json({ error: 'targetAccountId and role required' });
 
-    // Only owners can assign officer/owner roles
-    if (['officer', 'owner'].includes(role) && !isOwner) return res.status(403).json({ error: 'Owners only for this role' });
+    // Only owners can hand out the owner role -- promoting to officer is a normal
+    // officer-level action; becoming owner should only ever happen via transferOwner,
+    // which also demotes the current owner atomically so exactly one owner exists.
+    if (role === 'owner' && !isOwner) return res.status(403).json({ error: 'Owners only for this role' });
 
     // Prevent owner from removing their own owner status without a transfer
     if (targetAccountId === session.id && isOwner) {
@@ -83,6 +85,19 @@ module.exports = async (req, res) => {
     }
 
     try {
+      // Never let this action change the CURRENT owner's role away from owner --
+      // that must go through transferOwner, same reasoning as above.
+      const { data: targetMembership } = await supabase
+        .from('guild_members')
+        .select('role')
+        .eq('account_id', targetAccountId)
+        .eq('guild_id', myGuildId)
+        .maybeSingle();
+      if (!targetMembership) return res.status(404).json({ error: 'That account is not a member of your guild' });
+      if (targetMembership.role === 'owner' && role !== 'owner') {
+        return res.status(400).json({ error: "Use the transfer ownership action to change the owner's role" });
+      }
+
       await supabase
         .from('guild_members')
         .update({ role })
@@ -202,15 +217,28 @@ module.exports = async (req, res) => {
 
   // ── REMOVE MEMBER ──
   if (action === 'removeMember') {
-    if (!isOwner) return res.status(403).json({ error: 'Owners only' });
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
 
     const { targetAccountId } = req.body;
     if (!targetAccountId) return res.status(400).json({ error: 'targetAccountId required' });
 
-    // Prevent owner from removing themselves — use transferOwner in guild.js first
-    if (targetAccountId === session.id) return res.status(400).json({ error: 'Owner cannot remove themselves — transfer ownership first' });
+    // Prevent removing yourself this way — use transferOwner (if owner) or just leave
+    if (targetAccountId === session.id) return res.status(400).json({ error: 'You cannot remove yourself this way' });
 
     try {
+      // Nobody can remove the guild owner through this action, regardless of role --
+      // ownership has to change hands via transferOwner first.
+      const { data: targetMembership } = await supabase
+        .from('guild_members')
+        .select('role')
+        .eq('account_id', targetAccountId)
+        .eq('guild_id', myGuildId)
+        .maybeSingle();
+      if (!targetMembership) return res.status(404).json({ error: 'That account is not a member of your guild' });
+      if (targetMembership.role === 'owner') {
+        return res.status(400).json({ error: 'The guild owner cannot be removed — transfer ownership first' });
+      }
+
       // Unclaim any characters this member owned on this guild's teams
       const { data: guildTeams } = await supabase
         .from('teams').select('id').eq('guild_id', myGuildId);
@@ -245,7 +273,7 @@ module.exports = async (req, res) => {
   // ── DIAGNOSTIC: which Supabase key role is actually loaded in this deployment ──
   // Decodes only the JWT payload's `role` claim -- never exposes the key itself.
   if (action === 'diagKey') {
-    if (!isOwner) return res.status(403).json({ error: 'Owners only' });
+    if (!isOfficer) return res.status(403).json({ error: 'Officers only' });
     try {
       const key = process.env.SUPABASE_SERVICE_KEY || '';
       const parts = key.split('.');

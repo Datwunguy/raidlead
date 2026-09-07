@@ -6292,14 +6292,17 @@ function renderMembersListFromDB(members) {
           <div style="display:flex; align-items:center; gap:6px;">
             <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — click to change' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
             ${isOfficer ? `<button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="${char ? 'Reassign character' : 'Assign character'}">${char ? '⇄' : '+ Assign'}</button>` : ''}
-            <select onchange="updateRoleFromDB('${accountId}', this.value)"
-              style="background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:13px; padding:4px 8px; cursor:pointer;">
-              <option value="viewer"  ${m.role==='viewer'  ?'selected':''}>Viewer</option>
-              <option value="member"  ${m.role==='member'  ?'selected':''}>Member</option>
-              ${isOwner ? `<option value="officer" ${m.role==='officer'?'selected':''}>Officer</option>` : ''}
-              ${isOwner ? `<option value="owner"   ${m.role==='owner'  ?'selected':''}>Owner</option>` : ''}
-            </select>
-            ${isOwner ? `<button onclick="removeMember('${accountId}')" style="background:rgba(196,30,58,0.1); border:1px solid rgba(196,30,58,0.3); border-radius:4px; color:#ff6b6b; font-family:'Rajdhani',sans-serif; font-size:12px; padding:4px 8px; cursor:pointer;">✕</button>` : ''}
+            ${m.role === 'owner'
+              ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Change ownership from Guild Settings">Owner</span>`
+              : `<select onchange="updateRoleFromDB('${accountId}', this.value)"
+                  style="background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:13px; padding:4px 8px; cursor:pointer;">
+                  <option value="viewer"  ${m.role==='viewer'  ?'selected':''}>Viewer</option>
+                  <option value="member"  ${m.role==='member'  ?'selected':''}>Member</option>
+                  <option value="officer" ${m.role==='officer'?'selected':''}>Officer</option>
+                  ${isOwner ? `<option value="owner" ${m.role==='owner'?'selected':''}>Owner</option>` : ''}
+                </select>`
+            }
+            ${(isOfficer && m.role !== 'owner') ? `<button onclick="removeMember('${accountId}')" style="background:rgba(196,30,58,0.1); border:1px solid rgba(196,30,58,0.3); border-radius:4px; color:#ff6b6b; font-family:'Rajdhani',sans-serif; font-size:12px; padding:4px 8px; cursor:pointer;">✕</button>` : ''}
           </div>
         ` : `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--text-mute);">${m.role}</span>`}
       </div>
@@ -6727,11 +6730,11 @@ function applyRolePermissions(role) {
   if (!role) return;
   STATE.myRole = role;
   const isOfficer = ['owner', 'officer'].includes(role);
-  const isOwner   = role === 'owner';
 
-  // Settings — dropdown only, no standalone button
+  // Settings — dropdown only, no standalone button. Officers+ (owner-only actions
+  // like transferring ownership are gated separately, inside the Members panel).
   const dropdownSettingsBtn = document.getElementById('dropdown-settings-btn');
-  if (dropdownSettingsBtn) dropdownSettingsBtn.style.display = isOwner ? 'block' : 'none';
+  if (dropdownSettingsBtn) dropdownSettingsBtn.style.display = isOfficer ? 'block' : 'none';
 
   // Members — dropdown only, no standalone button
 
