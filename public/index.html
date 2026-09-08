@@ -1589,12 +1589,6 @@
         </div>
         <div class="form-row">
           <div class="form-group full">
-            <label>Raider.io Raid URL <span style="color:var(--text-mute);font-weight:400;">(optional — powers the Progress tab. Paste a rankings link for the current raid, e.g. raider.io/the-venomous-abyss/rankings/us/mythic)</span></label>
-            <input type="text" id="inp-raiderio" placeholder="https://raider.io/the-venomous-abyss/rankings/us/mythic" />
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group full">
             <label>Warcraft Logs API Credentials <span style="color:var(--text-mute);font-weight:400;">(required for WCL Scores — each guild uses its own, so nobody's usage is affected by another guild's)</span></label>
 
             <details style="margin-bottom:14px;">
@@ -1784,12 +1778,6 @@
           <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="gs-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group full">
-            <label>Raider.io Raid URL <span style="color:var(--text-mute);font-weight:400;">(optional — powers the Progress tab. Paste a rankings link for the current raid, e.g. raider.io/the-venomous-abyss/rankings/us/mythic)</span></label>
-            <input type="text" id="gs-raiderio" placeholder="https://raider.io/the-venomous-abyss/rankings/us/mythic" />
           </div>
         </div>
         <div class="form-row">
@@ -2796,7 +2784,6 @@ function showSetup() {
     set('inp-wowaudit', '');
     set('inp-wcl', '');
     set('inp-wcl-team', '');
-    set('inp-raiderio', '');
     set('inp-team', '');
     setRaidDaysOn('inp-raid-days', []);
     return;
@@ -2827,7 +2814,6 @@ function showSetup() {
     set('inp-wowaudit',  s.wowaudit);
     set('inp-wcl',       s.wclUrl);
     set('inp-wcl-team',  s.wclTeamId);
-    set('inp-raiderio',  s.raiderioUrl);
     set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
     set('inp-wcl-client-id', s.wclClientId);
@@ -2875,7 +2861,6 @@ async function submitAddTeam(confirmDuplicateWowaudit) {
   const wowaudit  = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl    = document.getElementById('inp-wcl').value.trim();
   const wclTeamId = document.getElementById('inp-wcl-team').value.trim() || null;
-  const raiderioUrl = document.getElementById('inp-raiderio').value.trim() || null;
   const raidDays  = getRaidDaysFrom('inp-raid-days');
 
   if (!teamName || !wowaudit) {
@@ -2893,7 +2878,7 @@ async function submitAddTeam(confirmDuplicateWowaudit) {
     const resp = await fetch('/api/guild?action=addTeam', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays, raiderioUrl, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
     const data = await resp.json();
 
@@ -2962,7 +2947,6 @@ async function loadGuild(confirmDuplicateWowaudit) {
   const wowaudit   = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl     = document.getElementById('inp-wcl').value.trim();
   const wclTeamId  = document.getElementById('inp-wcl-team').value.trim() || null;
-  const raiderioUrl = document.getElementById('inp-raiderio').value.trim() || null;
   const multiTeam  = document.querySelector('input[name="inp-multi-team"]:checked')?.value === 'yes';
   const teamName   = (multiTeam ? document.getElementById('inp-team')?.value.trim() : '') || 'Main Team';
   const raidDays   = getRaidDaysFrom('inp-raid-days');
@@ -2976,7 +2960,7 @@ async function loadGuild(confirmDuplicateWowaudit) {
 
   // Merge onto the existing config rather than replacing it outright -- fields this
   // form doesn't own (hasWclCredentials/wclClientId, zoneName, etc.) must survive a save.
-  STATE.config = { ...STATE.config, guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, raiderioUrl };
+  STATE.config = { ...STATE.config, guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays };
   STATE.zoneId = zoneId;
 
   setStatus('Saving...', 'loading');
@@ -2987,7 +2971,7 @@ async function loadGuild(confirmDuplicateWowaudit) {
     const resp = await fetch('/api/guild?action=update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, raiderioUrl, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
     const data = await resp.json();
 
@@ -3737,14 +3721,14 @@ async function loadProgressTab() {
   const content = document.getElementById('progress-content');
   const subtitle = document.getElementById('progress-subtitle');
 
-  if (!STATE.config?.raiderioRaidSlug) {
+  if (!STATE.config?.zoneName) {
     document.getElementById('progress-raid-name').textContent = '';
     subtitle.textContent = '';
     content.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">🗺</div>
         <h3>Progress isn't set up yet</h3>
-        <p>Add a Raider.io raid URL in Guild Settings to see world-wide boss kill counts for your region.</p>
+        <p>The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.</p>
         <button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>
       </div>`;
     return;
@@ -3777,12 +3761,15 @@ function renderProgress(data) {
   if (!data.configured) {
     document.getElementById('progress-raid-name').textContent = '';
     subtitle.textContent = '';
+    const message = data.reason === 'RAID_NOT_FOUND'
+      ? `Couldn't match your zone ("${data.zoneName || STATE.config?.zoneName || ''}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
+      : 'The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.';
     content.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">🗺</div>
-        <h3>Progress isn't set up yet</h3>
-        <p>Add a Raider.io raid URL in Guild Settings to see world-wide boss kill counts for your region.</p>
-        <button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>
+        <h3>Progress isn't available yet</h3>
+        <p>${message}</p>
+        ${data.reason !== 'RAID_NOT_FOUND' ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
       </div>`;
     return;
   }
@@ -6352,7 +6339,6 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
   const wowaudit   = document.getElementById('gs-wowaudit').value.trim();
   const wclUrl     = document.getElementById('gs-wcl').value.trim();
   const wclTeamId  = document.getElementById('gs-wcl-team').value.trim() || null;
-  const raiderioUrl = document.getElementById('gs-raiderio').value.trim() || null;
   const raidDays   = getRaidDaysFrom('gs-raid-days');
 
   if (!guild || !server || !wowaudit) {
@@ -6373,7 +6359,7 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, raiderioUrl, confirmNewTeam: !!confirmNewTeam, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
     });
 
     let data = {};
@@ -7117,8 +7103,6 @@ function applyGuildData(guildData) {
     zoneId:      t.zone_id || null,
     zoneName:    t.zone_name || '',
     raidDays:    t.raid_days || [],
-    raiderioUrl:      t.raiderio_url || '',
-    raiderioRaidSlug: t.raiderio_raid_slug || null,
     hasWclCredentials: t.hasWclCredentials || false,
     wclClientId: t.wcl_client_id || null,
   };

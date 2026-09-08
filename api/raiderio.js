@@ -3,14 +3,21 @@
 //  (world-wide boss kill counts, by difficulty + region, plus this
 //  guild's own progress).
 //
+//  The current raid isn't configured anywhere -- it's derived from the
+//  team's WCL zone name (already required for WCL Scores), slugified the
+//  same way Raider.io slugs its own raid names (e.g. "The Venomous Abyss"
+//  -> "the-venomous-abyss"), then verified against Raider.io itself. If
+//  Raider.io doesn't recognize the derived slug, the tab reports that
+//  clearly rather than showing wrong data.
+//
 //  Two Raider.io endpoints are used:
 //   - /api/raids/instance-rankings -- undocumented but public/unauthenticated,
 //     the same one their own rankings pages call. Its "timeline" is a
 //     per-milestone HISTOGRAM: timeline[i].totalGuilds is the count of
 //     guilds whose CURRENT furthest kill is exactly i bosses, not a
 //     cumulative "at least i" count. To get "guilds who have killed boss
-//     i" we sum totalGuilds from i up through the last boss (any guild
-//     sitting further along has necessarily also killed boss i).
+//     i" we sum totalGuilds from i through the last boss (any guild
+//     further along has necessarily also killed boss i).
 //   - /api/v1/guilds/profile -- Raider.io's documented public API,
 //     queried by region/realm/guild name (all already in Guild
 //     Configuration) for this guild's own raid_progression.
@@ -24,6 +31,17 @@ const { getSession, setCommonHeaders } = require('./lib/session');
 const { assertTeamMembership } = require('./lib/teamAuth');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
+
+// "The Venomous Abyss" -> "the-venomous-abyss" -- matches how Raider.io
+// slugs its own raid names.
+function slugifyRaidName(name) {
+  if (!name) return null;
+  return name
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || null;
+}
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -44,22 +62,28 @@ module.exports = async (req, res) => {
       await assertTeamMembership(supabase, session.id, teamId);
 
       const { data: team } = await supabase
-        .from('teams').select('raiderio_raid_slug, guilds ( name, server, region )').eq('id', teamId).single();
-      if (!team?.raiderio_raid_slug) {
-        return res.status(200).json({ configured: false });
+        .from('teams').select('zone_name, guilds ( name, server, region )').eq('id', teamId).single();
+
+      const zoneName = team?.zone_name;
+      const raidSlug = slugifyRaidName(zoneName);
+      if (!raidSlug) {
+        return res.status(200).json({ configured: false, reason: 'NO_ZONE' });
       }
-      const region     = team.guilds?.region || 'us';
-      const raidSlug   = team.raiderio_raid_slug;
+      const region = team.guilds?.region || 'us';
 
       const rankingsUrl = `https://raider.io/api/raids/instance-rankings?difficulty=${encodeURIComponent(difficulty)}` +
         `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(region)}` +
         `&realm=all&page=0&faction=&recent=false&limit=0`;
 
       const resp = await fetch(rankingsUrl);
-      if (!resp.ok) throw new Error(`Raider.io returned ${resp.status} -- the raid URL in Guild Settings may be wrong.`);
+      if (!resp.ok) {
+        return res.status(200).json({ configured: false, reason: 'RAID_NOT_FOUND', zoneName });
+      }
       const data = await resp.json();
       const rr = data.raidRankings;
-      if (!rr || !rr.raid) throw new Error('Unexpected response from Raider.io -- check the raid URL in Guild Settings.');
+      if (!rr || !rr.raid) {
+        return res.status(200).json({ configured: false, reason: 'RAID_NOT_FOUND', zoneName });
+      }
 
       const encounters = (rr.raid.encounters || []).slice().sort((a, b) => a.ordinal - b.ordinal);
       const bucketByProgress = {};
