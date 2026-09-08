@@ -1908,7 +1908,7 @@
           </div>
           <div class="stat-card">
             <div class="stat-label">Zone</div>
-            <div class="stat-value" id="stat-zone" style="font-size:18px; padding-top:6px;">—</div>
+            <div class="stat-value" id="stat-zone">—</div>
             <div class="stat-sub" id="stat-difficulty">—</div>
           </div>
         </div>
@@ -3850,7 +3850,7 @@ function renderRoster() {
   document.getElementById('stat-total').textContent = players.length;
   const zoneDisplay = STATE.zoneName && STATE.zoneName !== '—' ? STATE.zoneName : 'Zone ' + STATE.zoneId;
   document.getElementById('stat-zone').textContent  = zoneDisplay;
-  document.getElementById('stat-difficulty').textContent = STATE.config.difficulty.toUpperCase();
+  document.getElementById('stat-difficulty').textContent = 'Zone ' + STATE.zoneId;
 
   const ilvls = players.filter(p => p.ilvl > 0).map(p => p.ilvl);
   document.getElementById('stat-ilvl').textContent = ilvls.length

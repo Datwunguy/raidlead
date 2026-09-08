@@ -29,6 +29,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
 const { assertTeamMembership } = require('./lib/teamAuth');
+const { ensureZoneName } = require('./lib/wclZone');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
@@ -62,9 +63,9 @@ module.exports = async (req, res) => {
       await assertTeamMembership(supabase, session.id, teamId);
 
       const { data: team } = await supabase
-        .from('teams').select('zone_name, guilds ( name, server, region )').eq('id', teamId).single();
+        .from('teams').select('id, zone_id, zone_name, guilds ( name, server, region )').eq('id', teamId).single();
 
-      const zoneName = team?.zone_name;
+      const zoneName = await ensureZoneName(supabase, team);
       const raidSlug = slugifyRaidName(zoneName);
       if (!raidSlug) {
         return res.status(200).json({ configured: false, reason: 'NO_ZONE' });

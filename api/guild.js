@@ -13,6 +13,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
 const { getMyTeams, assertTeamMembership } = require('./lib/teamAuth');
+const { ensureZoneName } = require('./lib/wclZone');
 
 const TEAM_FIELDS = `id, name, guild_id, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
@@ -90,6 +91,14 @@ module.exports = async (req, res) => {
         const { data: teamRow, error: teamErr } = await supabase
           .from('teams').select(TEAM_FIELDS).eq('id', activeTeamId).single();
         if (teamErr) throw teamErr;
+
+        // Backfill zone_name if only the numeric zone_id has ever been set (e.g.
+        // parsed from a pasted WCL URL, which carries no name) -- powers both the
+        // Roster stat card and the Progress tab's raid detection.
+        if (!teamRow.zone_name && teamRow.zone_id) {
+          await ensureZoneName(supabase, teamRow);
+        }
+
         team = sanitizeTeam(teamRow);
 
         const { data: charRow } = await supabase
