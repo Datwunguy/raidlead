@@ -114,17 +114,22 @@ module.exports = async (req, res) => {
         try {
           const profileUrl = `https://raider.io/api/v1/guilds/profile?region=${encodeURIComponent(region)}` +
             `&realm=${encodeURIComponent(team.guilds.server)}&name=${encodeURIComponent(team.guilds.name)}` +
-            `&fields=raid_progression`;
+            `&fields=raid_progression,raid_rankings`;
           const profResp = await fetch(profileUrl);
           if (profResp.ok) {
             const profile = await profResp.json();
             const prog = profile?.raid_progression?.[raidSlug];
+            const rank = profile?.raid_rankings?.[raidSlug]?.[difficulty];
             if (prog) {
               const killedKey = `${difficulty}_bosses_killed`;
               yourGuild = {
                 killed:      prog[killedKey] ?? 0,
                 totalBosses: prog.total_bosses ?? maxProgress,
                 summary:     prog.summary || null,
+                // Overall region/world rank for this raid+difficulty (not per-boss --
+                // Raider.io doesn't expose a rank for an individual encounter kill).
+                regionRank:  rank?.region || null,
+                worldRank:   rank?.world || null,
               };
             }
           }
