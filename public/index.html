@@ -3801,7 +3801,7 @@ function renderProgress(data) {
   if (data.yourGuild) {
     yourCard.innerHTML = `
       <div>
-        <div style="font-size:10px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Your Guild</div>
+        <div style="font-size:15px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Your Guild</div>
         <div style="font-size:13px; color:var(--text-mute); margin-top:2px;">Per Raider.io's last crawl of your guild</div>
       </div>
       <div style="display:flex; align-items:center; gap:20px;">
@@ -3817,7 +3817,7 @@ function renderProgress(data) {
   } else {
     yourCard.innerHTML = `
       <div>
-        <div style="font-size:10px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Your Guild</div>
+        <div style="font-size:15px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Your Guild</div>
         <div style="font-size:13px; color:var(--text-mute); margin-top:2px;">Raider.io hasn't recorded a kill for your guild in this raid yet.</div>
       </div>
     `;
@@ -3840,7 +3840,7 @@ function renderProgress(data) {
       <div style="flex:1; min-width:0; font-weight:600; color:var(--text); display:flex; align-items:center; gap:8px;">
         ${boss.name}
         ${youKilled ? `<span title="Your guild has killed this boss" style="color:var(--gold); font-size:13px;">✓</span>` : ''}
-        ${youKilled && boss.yourRegionRank ? `<span title="Your guild's region rank for this boss" style="font-size:11px; font-weight:700; color:var(--gold); background:rgba(200,168,75,0.12); border:1px solid var(--gold-dim); border-radius:3px; padding:1px 6px;">Region #${boss.yourRegionRank.toLocaleString()}</span>` : ''}
+        ${youKilled && boss.yourRegionRank ? `<span title="Your guild's region rank for this boss" style="font-size:13px; font-weight:700; color:var(--gold); background:rgba(200,168,75,0.12); border:1px solid var(--gold-dim); border-radius:3px; padding:2px 8px;">Region #${boss.yourRegionRank.toLocaleString()}</span>` : ''}
       </div>
       <div style="font-size:16px; font-weight:700; color:var(--gold); flex-shrink:0; text-align:right; min-width:90px;">
         ${boss.guildsDefeated.toLocaleString()}
@@ -4008,14 +4008,14 @@ function renderRoster() {
 
   // ── Armor type breakdown section ──
   const ARMOR_TYPES = {
-    cloth:   { classes: ['mage', 'priest', 'warlock'],                   color: '#69CCF0' },
-    leather: { classes: ['druid', 'rogue', 'monk', 'demon hunter'],      color: '#FF7C0A' },
-    mail:    { classes: ['hunter', 'shaman', 'evoker'],                  color: '#AAD372' },
-    plate:   { classes: ['warrior', 'paladin', 'death knight'],          color: '#C79C6E' },
+    cloth:   ['mage', 'priest', 'warlock'],
+    leather: ['druid', 'rogue', 'monk', 'demon hunter'],
+    mail:    ['hunter', 'shaman', 'evoker'],
+    plate:   ['warrior', 'paladin', 'death knight'],
   };
   const CLASS_TO_ARMOR = {};
-  Object.entries(ARMOR_TYPES).forEach(([armor, info]) => {
-    info.classes.forEach(cls => { CLASS_TO_ARMOR[cls] = armor; });
+  Object.entries(ARMOR_TYPES).forEach(([armor, classes]) => {
+    classes.forEach(cls => { CLASS_TO_ARMOR[cls] = armor; });
   });
 
   const armorSection = document.createElement('div');
@@ -4043,7 +4043,7 @@ function renderRoster() {
 
   ['cloth', 'leather', 'mail', 'plate'].forEach(armor => {
     if (!byArmor[armor] || byArmor[armor].length === 0) return;
-    const color      = ARMOR_TYPES[armor].color;
+    const color      = '#c8a84b'; // var(--gold)
     const armorCard  = document.createElement('div');
     armorCard.style.cssText = `
       background: var(--bg2);
@@ -5651,18 +5651,45 @@ function renderPlannerSwaps() {
     </div>`;
   };
 
-  if (swaps.length > 0) {
+  // Group swaps by boss (in order of first appearance) so several swaps against
+  // the same boss show as one card with multiple rows, instead of a separate
+  // card per swap.
+  const bossOrder = [];
+  const swapsByBoss = {};
+  swaps.forEach(s => {
+    if (!swapsByBoss[s.boss]) { swapsByBoss[s.boss] = []; bossOrder.push(s.boss); }
+    swapsByBoss[s.boss].push(s);
+  });
+
+  if (bossOrder.length > 0) {
     const listWrap = document.createElement('div');
     listWrap.style.cssText = 'display:flex; flex-direction:column; gap:10px; margin-top:8px;';
-    swaps.forEach(swap => {
+    bossOrder.forEach(boss => {
       const card = document.createElement('div');
       card.style.cssText = 'background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:10px 12px 12px;';
-      card.innerHTML = `
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-          <div style="color:var(--gold); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase;">${escapeHtml(swap.boss)}</div>
-          ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : ''}
-        </div>
-        <div style="display:grid; grid-template-columns:1fr 20px 1fr; align-items:center; gap:6px;">
+
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;';
+      const bossLabel = document.createElement('div');
+      bossLabel.style.cssText = 'color:var(--gold); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase;';
+      bossLabel.textContent = boss;
+      header.appendChild(bossLabel);
+      if (isOfficer) {
+        const addToBossBtn = document.createElement('div');
+        addToBossBtn.title = 'Add another swap for ' + boss;
+        addToBossBtn.style.cssText = 'cursor:pointer; color:var(--gold); font-size:16px; line-height:1; font-weight:700; padding:2px 4px;';
+        addToBossBtn.textContent = '+';
+        addToBossBtn.onclick = () => openAddSwapForm(col, null, boss, card);
+        header.appendChild(addToBossBtn);
+      }
+      card.appendChild(header);
+
+      const rowsWrap = document.createElement('div');
+      rowsWrap.style.cssText = 'display:flex; flex-direction:column; gap:8px;';
+      swapsByBoss[boss].forEach(swap => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:grid; grid-template-columns:1fr 20px 1fr auto; align-items:center; gap:6px;';
+        row.innerHTML = `
           <div>
             <div class="plan-role-label" style="font-size:9px; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #FF333333; color:#FF6666;">OUT</div>
             ${swapPill(swap.outName)}
@@ -5672,8 +5699,11 @@ function renderPlannerSwaps() {
             <div class="plan-role-label" style="font-size:9px; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #1EFF0033; color:#1EFF00;">IN</div>
             ${swapPill(swap.inName)}
           </div>
-        </div>
-      `;
+          ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : '<div></div>'}
+        `;
+        rowsWrap.appendChild(row);
+      });
+      card.appendChild(rowsWrap);
       listWrap.appendChild(card);
     });
     col.appendChild(listWrap);
@@ -5691,8 +5721,13 @@ function renderPlannerSwaps() {
   wrap.appendChild(col);
 }
 
-function openAddSwapForm(col, addBtn) {
-  addBtn.style.display = 'none';
+// prefillBoss + appendTarget let the "+" on an existing boss card add another
+// swap for that same boss inline, without retyping the boss name or reopening
+// the generic "+ Add Swap" flow.
+function openAddSwapForm(col, addBtn, prefillBoss, appendTarget) {
+  const existingForm = document.getElementById('planner-swap-form');
+  if (existingForm) existingForm.remove();
+  if (addBtn) addBtn.style.display = 'none';
 
   const currentRoster = getSwapRosterState();
   const outNames = [...currentRoster].sort((a,b) => a.localeCompare(b));
@@ -5707,29 +5742,53 @@ function openAddSwapForm(col, addBtn) {
   const form = document.createElement('div');
   form.id = 'planner-swap-form';
   form.style.cssText = 'margin-top:10px; background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:12px; display:flex; flex-direction:column; gap:8px;';
-  form.innerHTML = `
-    <input type="text" id="swap-boss-input" placeholder="Boss Name" style="width:100%;">
-    <div style="display:flex; gap:8px;">
-      <select id="swap-out-select" style="flex:1;">
-        <option value="">Out...</option>
-        ${outNames.map(n => `<option value="${n}">${n}</option>`).join('')}
-      </select>
-      <select id="swap-in-select" style="flex:1;">
-        <option value="">In...</option>
-        ${inNames.map(n => `<option value="${n}">${n}</option>`).join('')}
-      </select>
-    </div>
-    <div style="display:flex; gap:8px; justify-content:flex-end;">
-      <button class="btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="renderPlannerSwaps()">Cancel</button>
-      <button class="btn-primary" style="padding:6px 12px; font-size:12px;" onclick="addPlannerSwap()">Add</button>
-    </div>
+
+  let bossInput = null;
+  if (!prefillBoss) {
+    bossInput = document.createElement('input');
+    bossInput.type = 'text';
+    bossInput.id = 'swap-boss-input';
+    bossInput.placeholder = 'Boss Name';
+    bossInput.style.width = '100%';
+    form.appendChild(bossInput);
+  }
+
+  const selectRow = document.createElement('div');
+  selectRow.style.cssText = 'display:flex; gap:8px;';
+  selectRow.innerHTML = `
+    <select id="swap-out-select" style="flex:1;">
+      <option value="">Out...</option>
+      ${outNames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+    </select>
+    <select id="swap-in-select" style="flex:1;">
+      <option value="">In...</option>
+      ${inNames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+    </select>
   `;
-  col.appendChild(form);
-  document.getElementById('swap-boss-input').focus();
+  form.appendChild(selectRow);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex; gap:8px; justify-content:flex-end;';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn-secondary';
+  cancelBtn.style.cssText = 'padding:6px 12px; font-size:12px;';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => renderPlannerSwaps();
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className = 'btn-primary';
+  confirmBtn.style.cssText = 'padding:6px 12px; font-size:12px;';
+  confirmBtn.textContent = 'Add';
+  confirmBtn.onclick = () => addPlannerSwap(prefillBoss || null);
+  btnRow.appendChild(cancelBtn);
+  btnRow.appendChild(confirmBtn);
+  form.appendChild(btnRow);
+
+  (appendTarget || col).appendChild(form);
+  (bossInput || document.getElementById('swap-out-select')).focus();
 }
 
-async function addPlannerSwap() {
-  const boss    = document.getElementById('swap-boss-input')?.value.trim();
+async function addPlannerSwap(prefillBoss) {
+  const boss    = prefillBoss || document.getElementById('swap-boss-input')?.value.trim();
   const outName = document.getElementById('swap-out-select')?.value;
   const inName  = document.getElementById('swap-in-select')?.value;
   if (!boss)    { showToast('Enter a boss name', 'error'); return; }
