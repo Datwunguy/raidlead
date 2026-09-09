@@ -17,7 +17,11 @@
 //     guilds whose CURRENT furthest kill is exactly i bosses, not a
 //     cumulative "at least i" count. To get "guilds who have killed boss
 //     i" we sum totalGuilds from i through the last boss (any guild
-//     further along has necessarily also killed boss i).
+//     further along has necessarily also killed boss i). Its rankedGuilds
+//     also carries each guild's encountersDefeated with kill timestamps,
+//     used by deriveBossOrder() below -- see that function for why (the
+//     encounter list's own "ordinal" field doesn't reliably match the
+//     order guilds actually kill bosses in).
 //   - /api/v1/guilds/profile -- Raider.io's documented public API,
 //     queried by region/realm/guild name (all already in Guild
 //     Configuration) for this guild's own raid_progression and overall
@@ -47,6 +51,46 @@ function slugifyRaidName(name) {
     .replace(/['’]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || null;
+}
+
+// Raider.io's own encounter "ordinal" field does NOT reliably match the order
+// guilds actually kill bosses in (verified: for The Venomous Abyss it has
+// Entombed Sentinels before The Lost Explorers, while every one of the top
+// 100 US mythic guilds killed The Lost Explorers first). The rankings
+// response we already fetch includes each ranked guild's encountersDefeated
+// with a firstDefeated timestamp, so the real order can be derived directly:
+// for each guild, sort their kills chronologically, and tally which boss
+// most commonly occupies each position. Falls back to ordinal for any
+// position no guild's data resolves (e.g. a boss nobody's killed yet).
+function deriveBossOrder(rankedGuilds, encounters) {
+  const votesByPosition = {};
+  (rankedGuilds || []).forEach(g => {
+    const sorted = [...(g.encountersDefeated || [])]
+      .sort((a, b) => new Date(a.firstDefeated) - new Date(b.firstDefeated));
+    sorted.forEach((enc, idx) => {
+      const pos = idx + 1;
+      if (!votesByPosition[pos]) votesByPosition[pos] = {};
+      votesByPosition[pos][enc.slug] = (votesByPosition[pos][enc.slug] || 0) + 1;
+    });
+  });
+
+  const assigned = new Set();
+  const order = [];
+  for (let pos = 1; pos <= encounters.length; pos++) {
+    const votes = Object.entries(votesByPosition[pos] || {}).sort((a, b) => b[1] - a[1]);
+    const winner = votes.find(([slug]) => !assigned.has(slug));
+    if (winner) { order.push(winner[0]); assigned.add(winner[0]); }
+    else order.push(null);
+  }
+
+  const ordinalFallback = encounters.slice().sort((a, b) => a.ordinal - b.ordinal)
+    .map(e => e.slug).filter(slug => !assigned.has(slug));
+  let fi = 0;
+  const slugOrder = order.map(slug => slug ?? ordinalFallback[fi++]);
+
+  const bySlug = {};
+  encounters.forEach(e => { bySlug[e.slug] = e; });
+  return slugOrder.map(slug => bySlug[slug]).filter(Boolean);
 }
 
 module.exports = async (req, res) => {
@@ -91,7 +135,7 @@ module.exports = async (req, res) => {
         return res.status(200).json({ configured: false, reason: 'RAID_NOT_FOUND', zoneName });
       }
 
-      const encounters = (rr.raid.encounters || []).slice().sort((a, b) => a.ordinal - b.ordinal);
+      const encounters = deriveBossOrder(rr.rankedGuilds, rr.raid.encounters || []);
       const bucketByProgress = {};
       (rr.timeline || []).forEach(t => { bucketByProgress[t.progress] = t.totalGuilds || 0; });
 
