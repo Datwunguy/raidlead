@@ -1411,6 +1411,13 @@
     #main-nav {
       order: 3;
       width: 100%;
+      /* The base `nav` rule sets overflow-x:auto for the desktop horizontal-
+         scroll fallback, which per spec forces overflow-y to clip too --
+         that silently hid the flyout dropdown below since it depends on
+         overflowing the nav's own height. Not needed here since the
+         .nav-btn row (the thing that used to need scrolling) is hidden
+         at this width anyway. */
+      overflow: visible;
     }
 
     /* Below the mobile breakpoint, the tab row becomes a hamburger + flyout
