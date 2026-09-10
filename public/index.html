@@ -143,6 +143,42 @@
     background: rgba(200,168,75,0.06);
   }
 
+  /* Mobile hamburger nav -- hidden except at the mobile breakpoint below,
+     where it replaces the .nav-btn row entirely. */
+  .mobile-nav-menu { display: none; position: relative; }
+
+  .mobile-nav-toggle {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--gold);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 6px 12px;
+    cursor: pointer;
+    width: 100%;
+  }
+  .mobile-nav-toggle span:first-child { font-size: 15px; color: var(--text-dim); }
+
+  .mobile-nav-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0; right: 0;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+    z-index: 200;
+    display: none;
+    overflow: hidden;
+  }
+  .mobile-nav-dropdown.open { display: block; }
+  .mobile-nav-dropdown .dropdown-item.active { color: var(--gold); background: rgba(200,168,75,0.06); }
+
   .header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
   .guild-badge {
@@ -1375,19 +1411,13 @@
     #main-nav {
       order: 3;
       width: 100%;
-      overflow-x: auto;
-      padding-bottom: 4px;
-      gap: 2px;
-      scrollbar-width: none;
     }
-    #main-nav::-webkit-scrollbar { display: none; }
 
-    .nav-btn {
-      font-size: 11px;
-      padding: 5px 10px;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
+    /* Below the mobile breakpoint, the tab row becomes a hamburger + flyout
+       instead of a horizontally-scrolling row -- easier to hit every tab
+       with a thumb once there are this many of them. */
+    .nav-btn { display: none; }
+    .mobile-nav-menu { display: block; }
 
     .header-right { gap: 6px; }
     .guild-badge  { font-size: 11px; padding: 4px 8px; }
@@ -1487,11 +1517,23 @@
       RAIDLEAD <span>GUILD DASHBOARD</span>
     </div>
     <nav id="main-nav" style="display:none;">
-      <button class="nav-btn active" onclick="showTab('roster')">Roster</button>
-      <button class="nav-btn" onclick="showTab('planner')">Raid Planner</button>
-      <button class="nav-btn" onclick="showTab('scores')">WCL Scores</button>
-      <button class="nav-btn" onclick="showTab('attendance')">Attendance</button>
-      <button class="nav-btn" onclick="showTab('progress')">Progress</button>
+      <button class="nav-btn active" data-tab="roster" onclick="showTab('roster')">Roster</button>
+      <button class="nav-btn" data-tab="planner" onclick="showTab('planner')">Raid Planner</button>
+      <button class="nav-btn" data-tab="scores" onclick="showTab('scores')">WCL Scores</button>
+      <button class="nav-btn" data-tab="attendance" onclick="showTab('attendance')">Attendance</button>
+      <button class="nav-btn" data-tab="progress" onclick="showTab('progress')">Progress</button>
+      <button class="nav-btn" data-tab="resources" onclick="showTab('resources')">Resources</button>
+
+      <!-- Mobile-only: collapses the tab row above into a hamburger + flyout,
+           built by cloning the .nav-btn list above so it can never drift out
+           of sync with the real tabs. -->
+      <div class="mobile-nav-menu" id="mobile-nav-menu">
+        <button class="mobile-nav-toggle" type="button" onclick="toggleMobileNav()">
+          <span aria-hidden="true">☰</span>
+          <span id="mobile-nav-current">Roster</span>
+        </button>
+        <div class="mobile-nav-dropdown" id="mobile-nav-dropdown"></div>
+      </div>
     </nav>
     <div class="header-right">
       <div class="guild-badge" id="guild-badge" style="display:none;">
@@ -2143,6 +2185,15 @@
         </div>
       </div>
 
+      <!-- RESOURCES TAB -->
+      <div class="tab-content" id="tab-resources">
+        <div class="section-header">
+          <div class="section-title">Resources</div>
+        </div>
+        <div style="font-size:12px; color:var(--text-mute); margin-top:4px;">Useful sites for recruiting, planning, and analyzing raids.</div>
+        <div id="resources-content" style="margin-top:18px;"></div>
+      </div>
+
       <!-- RAID SCHEDULE MODAL -->
       <div class="modal-overlay" id="raid-schedule-modal">
         <div class="modal" style="max-width:420px;">
@@ -2504,6 +2555,9 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Wire up raid-day-chip toggles in both setup forms
   initRaidDayChips();
+
+  // Build the mobile hamburger nav from the real .nav-btn tabs
+  initMobileNav();
 
   // Handle pending invite link
   checkInviteParam();
@@ -3665,7 +3719,8 @@ function showTab(name) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
-  event.target.classList.add('active');
+  document.querySelector('.nav-btn[data-tab="' + name + '"]')?.classList.add('active');
+  updateMobileNavActive(name);
 
   // Always load the published plan from DB when switching to planner
   // so every user sees the same roster regardless of device/localStorage
@@ -3706,6 +3761,10 @@ function showTab(name) {
 
   if (name === 'progress') {
     loadProgressTab();
+  }
+
+  if (name === 'resources') {
+    renderResources();
   }
 }
 
@@ -3851,6 +3910,70 @@ function renderProgress(data) {
   });
 
   content.appendChild(list);
+}
+
+// ─────────────────────────────────────────────
+//  RESOURCES — static directory of helpful external sites, grouped by
+//  category. Each entry is { name, url, description }; categories with no
+//  entries yet just show a placeholder instead of an empty section.
+// ─────────────────────────────────────────────
+const RESOURCES = {
+  'Recruiting':    [],
+  'Raid Planning': [],
+  'Analysis':      [],
+  'CD Planning':   [],
+};
+
+function renderResources() {
+  const content = document.getElementById('resources-content');
+  if (!content) return;
+  content.innerHTML = '';
+
+  Object.entries(RESOURCES).forEach(([category, items]) => {
+    const section = document.createElement('div');
+    section.style.cssText = 'margin-bottom: 32px;';
+
+    const divider = document.createElement('div');
+    divider.style.cssText = `
+      font-size: 11px; font-weight: 700; letter-spacing: 3px;
+      text-transform: uppercase; color: var(--gold);
+      margin-bottom: 16px; padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    `;
+    divider.textContent = category;
+    section.appendChild(divider);
+
+    if (items.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:13px; color:var(--text-mute); font-style:italic;';
+      empty.textContent = 'Links coming soon.';
+      section.appendChild(empty);
+    } else {
+      const grid = document.createElement('div');
+      grid.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;';
+      items.forEach(item => {
+        const card = document.createElement('a');
+        card.href = item.url;
+        card.target = '_blank';
+        card.rel = 'noopener noreferrer';
+        card.style.cssText = `
+          display: block; background: var(--bg2); border: 1px solid var(--border);
+          border-radius: 6px; padding: 14px 16px; text-decoration: none;
+          transition: border-color 0.15s;
+        `;
+        card.onmouseover = () => card.style.borderColor = 'var(--border2)';
+        card.onmouseout  = () => card.style.borderColor = 'var(--border)';
+        card.innerHTML = `
+          <div style="font-weight:700; color:var(--gold); font-size:14px; margin-bottom:4px;">${escapeHtml(item.name)}</div>
+          <div style="font-size:12px; color:var(--text-mute); line-height:1.5;">${escapeHtml(item.description)}</div>
+        `;
+        grid.appendChild(card);
+      });
+      section.appendChild(grid);
+    }
+
+    content.appendChild(section);
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -6227,11 +6350,50 @@ function toggleAccountMenu() {
   document.getElementById('account-dropdown').classList.toggle('open');
 }
 
+// ── Mobile hamburger nav -- built by cloning the real .nav-btn tabs so it
+// can never list a tab that doesn't exist (or miss one that's been added). ──
+function initMobileNav() {
+  const dropdown = document.getElementById('mobile-nav-dropdown');
+  if (!dropdown) return;
+  dropdown.innerHTML = '';
+  document.querySelectorAll('#main-nav > .nav-btn').forEach(btn => {
+    const item = document.createElement('button');
+    item.className = 'dropdown-item mobile-nav-item' + (btn.classList.contains('active') ? ' active' : '');
+    item.textContent = btn.textContent;
+    item.dataset.tab = btn.dataset.tab;
+    item.onclick = () => {
+      showTab(btn.dataset.tab);
+      dropdown.classList.remove('open');
+    };
+    dropdown.appendChild(item);
+  });
+}
+
+function toggleMobileNav() {
+  document.getElementById('mobile-nav-dropdown')?.classList.toggle('open');
+}
+
+// Keeps the hamburger's current-tab label and the dropdown's highlighted
+// item in sync with whichever tab is active, regardless of whether it was
+// switched from the desktop row or the mobile flyout.
+function updateMobileNavActive(name) {
+  const navBtn = document.querySelector('.nav-btn[data-tab="' + name + '"]');
+  const currentEl = document.getElementById('mobile-nav-current');
+  if (currentEl && navBtn) currentEl.textContent = navBtn.textContent;
+  document.querySelectorAll('#mobile-nav-dropdown .mobile-nav-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.tab === name);
+  });
+}
+
 document.addEventListener('click', (e) => {
   const menu = document.getElementById('account-menu');
   if (menu && !menu.contains(e.target)) {
     const dd = document.getElementById('account-dropdown');
     if (dd) dd.classList.remove('open');
+  }
+  const mobileNav = document.getElementById('mobile-nav-menu');
+  if (mobileNav && !mobileNav.contains(e.target)) {
+    document.getElementById('mobile-nav-dropdown')?.classList.remove('open');
   }
 });
 
