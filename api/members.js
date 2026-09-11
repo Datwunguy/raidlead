@@ -6,7 +6,7 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('./lib/session');
-const { getMyTeams, assertTeamMembership, isOfficerRole } = require('./lib/teamAuth');
+const { assertTeamMembership, isOfficerRole } = require('./lib/teamAuth');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -237,12 +237,21 @@ module.exports = async (req, res) => {
     }
   }
 
-  // ── DIAGNOSTIC: which Supabase key role is actually loaded in this deployment ──
-  // Decodes only the JWT payload's `role` claim -- never exposes the key itself.
+  // ── DIAGNOSTIC: which Supabase project/role is actually loaded in this
+  // deployment -- catches the quiet failure mode where SUPABASE_SERVICE_KEY
+  // is valid but points at the wrong project (e.g. an old key pasted back in
+  // during a rotation), which otherwise wouldn't announce itself as an error.
+  // Decodes only the JWT payload -- never exposes the key itself. Restricted
+  // to the site owner's own account (not "any officer of any team," which
+  // anyone can become by creating a throwaway guild) since this is
+  // infrastructure info, not something a guild officer has a reason to see. ──
   if (action === 'diagKey') {
     try {
-      const myTeams = await getMyTeams(supabase, session.id);
-      if (!myTeams.some(t => isOfficerRole(t.role))) return res.status(403).json({ error: 'Officers only' });
+      const ownerTag = process.env.SITE_OWNER_BATTLETAG;
+      if (!ownerTag) return res.status(403).json({ error: 'SITE_OWNER_BATTLETAG is not configured' });
+      const { data: account } = await supabase.from('accounts').select('battletag').eq('id', session.id).maybeSingle();
+      if (!account || account.battletag !== ownerTag) return res.status(403).json({ error: 'Not authorized' });
+
       const key = process.env.SUPABASE_SERVICE_KEY || '';
       const parts = key.split('.');
       if (parts.length !== 3) return res.status(200).json({ error: 'SUPABASE_SERVICE_KEY is not set or is not a JWT', length: key.length });
