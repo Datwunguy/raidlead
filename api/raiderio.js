@@ -65,6 +65,20 @@ function toRealmRegion(region) {
   return region === 'oceanic' ? 'us' : region;
 }
 
+// /api/guilds/raid-rankings (the per-boss lookup) only ever accepts a real
+// realm-region ("us"), never "americas" -- but its response carries BOTH a
+// "region" rank (scoped to that combined us+oceania bucket) and a narrower
+// "subregion" rank that lines up with the "americas" pool used above
+// (verified: subregion values track the americas-pool guild counts closely,
+// while "region" tracks the larger combined-us counts and can legitimately
+// exceed the americas guild count shown alongside it -- a guild ranked 601st
+// out of a 629-guild pool looks like nonsense next to "565 guilds have
+// killed this boss" if that 565 came from the smaller americas pool). Pick
+// whichever field actually matches the pool toRankingsRegion() queried.
+function bossRankFieldFor(region) {
+  return region === 'us' ? 'subregion' : 'region';
+}
+
 // "The Venomous Abyss" -> "the-venomous-abyss" -- matches how Raider.io
 // slugs its own raid names.
 function slugifyRaidName(name) {
@@ -196,8 +210,14 @@ module.exports = async (req, res) => {
                 totalBosses: prog.total_bosses ?? maxProgress,
                 summary:     prog.summary || null,
                 // Overall region/world rank for total progress on this raid+difficulty
-                // (separate from the per-boss ranks below).
+                // (separate from the per-boss ranks below). Raider.io only publishes
+                // this against the combined us+oceania bucket -- no americas-scoped
+                // equivalent exists, so when the boss list below is using the
+                // narrower americas pool, this is a genuinely bigger/different pool
+                // than that list. regionRankIsBroaderPool tells the frontend to
+                // label it accordingly instead of implying they match.
                 regionRank:  rank?.region || null,
+                regionRankIsBroaderPool: region === 'us',
                 worldRank:   rank?.world || null,
               };
             }
@@ -226,7 +246,7 @@ module.exports = async (req, res) => {
         // Only meaningful once this boss is actually killed -- Raider.io also
         // returns entries for bosses that are merely attempted (best pull %),
         // which isn't a kill rank. The frontend gates display on youKilled.
-        yourRegionRank: bossRankBySlug[enc.slug]?.region ?? null,
+        yourRegionRank: bossRankBySlug[enc.slug]?.[bossRankFieldFor(region)] ?? null,
       }));
 
       return res.status(200).json({
