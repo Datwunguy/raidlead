@@ -604,6 +604,29 @@
   .filter-btn:hover { border-color: var(--border2); color: var(--text); }
   .filter-btn.active { border-color: var(--gold-dim); color: var(--gold); background: rgba(200,168,75,0.06); }
 
+  /* A themed <select>, styled to sit alongside .filter-btn/.btn-secondary
+     controls instead of looking like a stock browser dropdown. */
+  .themed-select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background: var(--bg3)
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%237a8aaa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      no-repeat right 10px center;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-dim);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 5px 26px 5px 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .themed-select:hover  { border-color: var(--border2); color: var(--text); }
+  .themed-select:focus  { outline: none; border-color: var(--gold-dim); }
+  .themed-select option { background: var(--bg2); color: var(--text); }
+
   .raid-day-chip {
     display: inline-flex; align-items: center; justify-content: center;
     width: 48px; height: 36px;
@@ -2180,7 +2203,7 @@
         <div class="section-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
           <div class="section-title">Progress<span id="progress-raid-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <select id="progress-raid-select" onchange="setProgressRaid(this.value)" style="display:none;"></select>
+            <select id="progress-raid-select" class="themed-select" onchange="setProgressRaid(this.value)" style="display:none;"></select>
             <div class="role-filter" id="progress-difficulty-filter">
               <button class="filter-btn" onclick="setProgressDifficulty('normal', this)">Normal</button>
               <button class="filter-btn" onclick="setProgressDifficulty('heroic', this)">Heroic</button>
@@ -3827,9 +3850,8 @@ async function loadProgressRaidsList() {
   const raids = STATE.progressRaidsList;
   if (!raids || raids.length === 0) { select.style.display = 'none'; return; }
 
-  select.innerHTML = '<option value="">Current Raid</option>' +
-    raids.map(r => `<option value="${escapeHtml(r.slug)}">${escapeHtml(r.name)}</option>`).join('');
-  select.value = STATE.progressRaidSlug || '';
+  select.innerHTML = raids.map(r => `<option value="${escapeHtml(r.slug)}">${escapeHtml(r.name)}</option>`).join('');
+  if (STATE.progressRaidSlug) select.value = STATE.progressRaidSlug;
   select.style.display = 'inline-block';
 }
 
@@ -3906,6 +3928,17 @@ function renderProgress(data) {
 
   document.getElementById('progress-raid-name').textContent = data.raidName ? '– ' + data.raidName : '';
   subtitle.textContent = `Guilds that have defeated each boss on ${data.difficulty.toUpperCase()}, region: ${(data.region || '').toUpperCase()}`;
+
+  // Keep the raid dropdown in sync even when this load was in "current raid"
+  // (auto-detected) mode -- now that Raider.io has told us exactly which
+  // slug that resolved to, the dropdown should show it as selected too.
+  if (data.raidSlug) {
+    STATE.progressRaidSlug = data.raidSlug;
+    const raidSelect = document.getElementById('progress-raid-select');
+    if (raidSelect && raidSelect.querySelector(`option[value="${CSS.escape(data.raidSlug)}"]`)) {
+      raidSelect.value = data.raidSlug;
+    }
+  }
 
   const killedCount = data.yourGuild ? data.yourGuild.killed : 0;
 
