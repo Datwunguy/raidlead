@@ -42,6 +42,29 @@ const { ensureZoneName } = require('./lib/wclZone');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
+// "Oceanic" is a RaidLead-only region choice -- Blizzard/WCL's realm-region
+// system has no such thing, Oceanic realms are still part of the "us" region
+// there. It only matters for the Progress tab's world-wide rankings pool:
+// Raider.io's "us" rankings bucket is actually a combined "United States &
+// Oceania" pool, while its separate "americas" bucket is US/Canada only,
+// excluding Oceania. A RaidLead guild configured as plain "US" gets a more
+// precise comparison pool by querying "americas". Raider.io does also offer
+// a genuine Oceania-only "region=oceanic" pool, but per product decision
+// "Oceanic" here intentionally uses the combined "us" bucket instead (the
+// same pool "US" used before this option existed), not the narrower one.
+function toRankingsRegion(region) {
+  if (region === 'us') return 'americas';
+  if (region === 'oceanic') return 'us';
+  return region;
+}
+
+// For anything realm-scoped (a specific guild's profile or per-boss rank) --
+// unlike the rankings pool above, these need the real Raider.io/Blizzard
+// realm-region a guild's realm actually belongs to, which "oceanic" isn't.
+function toRealmRegion(region) {
+  return region === 'oceanic' ? 'us' : region;
+}
+
 // "The Venomous Abyss" -> "the-venomous-abyss" -- matches how Raider.io
 // slugs its own raid names.
 function slugifyRaidName(name) {
@@ -119,10 +142,10 @@ module.exports = async (req, res) => {
       if (!raidSlug) {
         return res.status(200).json({ configured: false, reason: 'NO_ZONE' });
       }
-      const region = team.guilds?.region || 'us';
+      const region = team.guilds?.region || 'us'; // literal team selection, used for display + realm-scoped lookups below
 
       const rankingsUrl = `https://raider.io/api/raids/instance-rankings?difficulty=${encodeURIComponent(difficulty)}` +
-        `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(region)}` +
+        `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(toRankingsRegion(region))}` +
         `&realm=all&page=0&faction=&recent=false&limit=0`;
 
       const resp = await fetch(rankingsUrl);
@@ -154,7 +177,7 @@ module.exports = async (req, res) => {
       let yourGuild = null;
       let bossRankBySlug = {};
       if (team.guilds?.name && team.guilds?.server) {
-        const region_    = encodeURIComponent(region);
+        const region_    = encodeURIComponent(toRealmRegion(region));
         const realm_     = encodeURIComponent(team.guilds.server);
         const guildName_ = encodeURIComponent(team.guilds.name);
 

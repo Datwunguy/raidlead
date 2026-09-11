@@ -1617,6 +1617,7 @@
             <label>Region</label>
             <select id="inp-region">
               <option value="us">US</option>
+              <option value="oceanic">Oceanic</option>
               <option value="eu">EU</option>
               <option value="kr">KR</option>
               <option value="tw">TW</option>
@@ -1787,6 +1788,7 @@
             <label>Region</label>
             <select id="gs-region">
               <option value="us">US</option>
+              <option value="oceanic">Oceanic</option>
               <option value="eu">EU</option>
               <option value="kr">KR</option>
               <option value="tw">TW</option>
@@ -2759,6 +2761,14 @@ const RAID_BUFFS = [
 ];
 
 const DIFF_MAP = { lfr:1, normal:3, heroic:4, mythic:5 };
+
+// "Oceanic" is a RaidLead-only region choice (it only changes which Raider.io
+// rankings pool the Progress tab compares against) -- Oceanic realms are
+// still part of Blizzard's/WCL's "us" game region, so WCL queries need the
+// real Blizzard region code, never "oceanic" itself.
+function toWclRegion(region) {
+  return region === 'oceanic' ? 'us' : region;
+}
 
 function setScoreDifficulty(diff, btn) {
   STATE.scoreDifficulty = diff;
@@ -4383,7 +4393,7 @@ async function fetchScores() {
   try {
     const zoneId = STATE.zoneId;
     const diffId = DIFF_MAP[STATE.scoreDifficulty] || 5;
-    const region = STATE.config.region;
+    const region = toWclRegion(STATE.config.region);
     const healRoles = ['heal', 'healer'];
 
     const results    = [];
@@ -4885,7 +4895,7 @@ async function fetchMitigationData(reset) {
   }
   const guildName  = STATE.config?.guild;
   const serverSlug = (STATE.config?.server || '').toLowerCase().replace(/\s+/g, '-');
-  const region     = (STATE.config?.region || 'us').toLowerCase();
+  const region     = toWclRegion((STATE.config?.region || 'us').toLowerCase());
   const diffId     = DIFF_MAP[STATE.scoreDifficulty] || 5;
   if (!zoneId || !guildName) {
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh Scores'; }
@@ -5007,7 +5017,7 @@ async function fetchSurvivalData(reset) {
   const diffId     = DIFF_MAP[STATE.scoreDifficulty] || 5;
   const guildName  = STATE.config?.guild;
   const serverSlug = (STATE.config?.server || '').toLowerCase().replace(/\s+/g, '-');
-  const region     = (STATE.config?.region || 'us').toLowerCase();
+  const region     = toWclRegion((STATE.config?.region || 'us').toLowerCase());
 
   if (!zoneId || !guildName) {
     btn.disabled = false;
@@ -7668,7 +7678,7 @@ async function fetchCompareData() {
   try {
     const diffId     = DIFF_MAP[STATE.compareDifficulty] || 5;
     const zoneId     = STATE.zoneId;
-    const region     = (STATE.config.region || 'us').toLowerCase();
+    const region     = toWclRegion((STATE.config.region || 'us').toLowerCase());
     const guildName  = STATE.config.guild;
     const serverSlug = (STATE.config.server || '').toLowerCase().replace(/\s+/g, '-');
     const startMs    = STATE.compareDate || (Date.now() - 7 * 24 * 60 * 60 * 1000);

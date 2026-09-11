@@ -19,6 +19,14 @@ class WclNotConfiguredError extends Error {
   }
 }
 
+// "Oceanic" is a RaidLead-only region choice (it only changes which Raider.io
+// rankings pool the Progress tab compares against) -- Oceanic realms are
+// still part of Blizzard's/WCL's "us" game region, so every WCL query needs
+// the real Blizzard region code, never "oceanic" itself.
+function toWclRegion(region) {
+  return region === 'oceanic' ? 'us' : region;
+}
+
 // ── WCL token cache, keyed by client ID -- every guild brings its own WCL API client,
 // so each guild's usage draws only on its own quota, never a shared app-wide one. ──
 const wclTokenCache = new Map(); // clientId -> { token, exp }
@@ -147,7 +155,8 @@ module.exports = async (req, res) => {
   // Uses only worldData (client credentials compatible — reportData requires OAuth)
   if (action === 'progression') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, guildName, serverSlug, region, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
+    const { teamId, guildName, serverSlug, region: rawRegion, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
+    const region = toWclRegion(rawRegion);
 
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
@@ -261,8 +270,9 @@ module.exports = async (req, res) => {
   // ── GET MITIGATION DATA ──
   if (action === 'getMitigation') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { guildName, serverSlug, region, zoneId, diffId, guildTagID, memberNames, validBossIds, teamId } = req.body || {};
-    if (!guildName || !serverSlug || !region || !zoneId) return res.status(400).json({ error: 'missing params' });
+    const { guildName, serverSlug, region: rawRegion, zoneId, diffId, guildTagID, memberNames, validBossIds, teamId } = req.body || {};
+    if (!guildName || !serverSlug || !rawRegion || !zoneId) return res.status(400).json({ error: 'missing params' });
+    const region = toWclRegion(rawRegion);
 
     const memberSet    = new Set((memberNames || []).map(n => n.toLowerCase()));
     const validBossSet = new Set((validBossIds || []).map(id => parseInt(id)));
@@ -604,9 +614,10 @@ module.exports = async (req, res) => {
   // ── GET SURVIVAL DATA: per-player survival % per boss using Summary table deathEvents ──
   if (action === 'getSurvival') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { guildName, serverSlug, region, zoneId, diffId, guildTagID, memberNames, validBossIds } = req.body || {};
+    const { guildName, serverSlug, region: rawRegion, zoneId, diffId, guildTagID, memberNames, validBossIds } = req.body || {};
+    const region = toWclRegion(rawRegion);
     const validBossSet = new Set((validBossIds || []).map(id => parseInt(id)));
-    if (!guildName || !serverSlug || !region || !zoneId) {
+    if (!guildName || !serverSlug || !rawRegion || !zoneId) {
       return res.status(400).json({ error: 'guildName, serverSlug, region, zoneId required' });
     }
 
