@@ -194,6 +194,8 @@ module.exports = async (req, res) => {
 
       // This guild's own progress + per-boss ranks, straight from Raider.io --
       // no manual entry, it's whatever Raider.io has last crawled for them.
+      // The two lookups don't depend on each other, so they run concurrently
+      // instead of one after another.
       let yourGuild = null;
       let bossRankBySlug = {};
       if (team.guilds?.name && team.guilds?.server) {
@@ -201,11 +203,12 @@ module.exports = async (req, res) => {
         const realm_     = encodeURIComponent(team.guilds.server);
         const guildName_ = encodeURIComponent(team.guilds.name);
 
-        try {
-          const profResp = await fetch(
-            `https://raider.io/api/v1/guilds/profile?region=${region_}&realm=${realm_}&name=${guildName_}&fields=raid_progression,raid_rankings`
-          );
-          if (profResp.ok) {
+        const profilePromise = (async () => {
+          try {
+            const profResp = await fetch(
+              `https://raider.io/api/v1/guilds/profile?region=${region_}&realm=${realm_}&name=${guildName_}&fields=raid_progression,raid_rankings`
+            );
+            if (!profResp.ok) return;
             const profile = await profResp.json();
             const prog = profile?.raid_progression?.[raidSlug];
             const rank = profile?.raid_rankings?.[raidSlug]?.[difficulty];
@@ -227,21 +230,24 @@ module.exports = async (req, res) => {
                 worldRank:   rank?.world || null,
               };
             }
-          }
-        } catch (e) { /* Your Guild is a nice-to-have -- world data above still renders without it */ }
+          } catch (e) { /* Your Guild is a nice-to-have -- world data above still renders without it */ }
+        })();
 
-        try {
-          const bossRankResp = await fetch(
-            `https://raider.io/api/guilds/raid-rankings?raid=${encodeURIComponent(raidSlug)}&difficulty=${encodeURIComponent(difficulty)}` +
-            `&region=${region_}&realm=${realm_}&guild=${guildName_}`
-          );
-          if (bossRankResp.ok) {
+        const bossRankPromise = (async () => {
+          try {
+            const bossRankResp = await fetch(
+              `https://raider.io/api/guilds/raid-rankings?raid=${encodeURIComponent(raidSlug)}&difficulty=${encodeURIComponent(difficulty)}` +
+              `&region=${region_}&realm=${realm_}&guild=${guildName_}`
+            );
+            if (!bossRankResp.ok) return;
             const bossRankData = await bossRankResp.json();
             (bossRankData?.bossRankings || []).forEach(b => {
               if (b.boss && b.ranks) bossRankBySlug[b.boss] = b.ranks;
             });
-          }
-        } catch (e) { /* per-boss rank is a nice-to-have -- world data above still renders without it */ }
+          } catch (e) { /* per-boss rank is a nice-to-have -- world data above still renders without it */ }
+        })();
+
+        await Promise.all([profilePromise, bossRankPromise]);
       }
 
       const bosses = encounters.map((enc, i) => ({
