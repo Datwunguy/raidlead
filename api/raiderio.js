@@ -270,10 +270,9 @@ module.exports = async (req, res) => {
   }
 
   // ── LIST RAIDS: every raid tier Raider.io has progression data for on this
-  // guild (their raid_progression keys), for the raid-tier selector. Each
-  // tier's display name/boss count is looked up live -- Raider.io doesn't
-  // expose a name for a bare slug otherwise, and there are typically only a
-  // handful of tiers per expansion so this stays cheap. ──
+  // guild (their raid_progression keys), for the raid-tier selector. Names/
+  // boss counts/release dates come from the lightweight static-data
+  // endpoint (see below) rather than looking each tier up individually. ──
   if (action === 'listRaids') {
     const teamId = req.query.teamId || req.body?.teamId;
     if (!teamId) return res.status(400).json({ error: 'teamId required' });
@@ -297,26 +296,45 @@ module.exports = async (req, res) => {
       if (!profResp.ok) return res.status(200).json({ raids: [] });
       const profile = await profResp.json();
       const slugs = Object.keys(profile?.raid_progression || {});
+      if (slugs.length === 0) return res.status(200).json({ raids: [] });
 
-      const raids = await Promise.all(slugs.map(async slug => {
-        try {
-          const r = await fetch(
-            `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(slug)}` +
-            `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
-          );
-          if (!r.ok) return { slug, name: slug, totalBosses: null };
-          const j = await r.json();
+      // Bare-slug fallback if either lookup below fails -- still usable,
+      // just without a friendly name or release-date sort.
+      const fallbackRaids = slugs.map(slug => ({ slug, name: slug, totalBosses: null }));
+
+      // instance-rankings does a full (slow, ~250ms+) rankings computation
+      // no matter how small `limit` is, so calling it once per tier just to
+      // read a name doesn't scale. Instead, call it ONCE for any one of the
+      // guild's known slugs purely to read Raider.io's expansion_id, then
+      // use that to pull the full tier list (name, boss count, real release
+      // date) from the lightweight static-data endpoint in a single ~10ms
+      // request that doesn't touch rankings computation at all.
+      const metaResp = await fetch(
+        `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(slugs[slugs.length - 1])}` +
+        `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
+      );
+      if (!metaResp.ok) return res.status(200).json({ raids: fallbackRaids });
+      const metaData = await metaResp.json();
+      const expansionId = metaData?.raidRankings?.raid?.expansion_id;
+      if (!expansionId) return res.status(200).json({ raids: fallbackRaids });
+
+      const staticResp = await fetch(`https://raider.io/api/v1/raiding/static-data?expansion_id=${expansionId}`);
+      if (!staticResp.ok) return res.status(200).json({ raids: fallbackRaids });
+      const staticData = await staticResp.json();
+      const bySlug = {};
+      (staticData.raids || []).forEach(r => { bySlug[r.slug] = r; });
+
+      const raids = slugs
+        .map(slug => {
+          const meta = bySlug[slug];
           return {
             slug,
-            name: j?.raidRankings?.raid?.name || slug,
-            totalBosses: j?.raidRankings?.raid?.encounters?.length || null,
+            name:        meta?.name || slug,
+            totalBosses: meta?.encounters?.length || null,
+            starts:      meta?.starts?.us || null,
           };
-        } catch (e) { return { slug, name: slug, totalBosses: null }; }
-      }));
-
-      // Raider.io returns raid_progression keys in the order tiers were
-      // added -- reverse so the most recently released tier comes first.
-      raids.reverse();
+        })
+        .sort((a, b) => new Date(b.starts || 0) - new Date(a.starts || 0)); // most recently released first
 
       return res.status(200).json({ raids });
     } catch (err) {
