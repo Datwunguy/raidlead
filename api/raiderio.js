@@ -139,7 +139,7 @@ module.exports = async (req, res) => {
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-  if (action === 'progress' || req.method === 'GET') {
+  if (action === 'progress') {
     const teamId     = req.query.teamId || req.body?.teamId;
     const difficulty = (req.query.difficulty || req.body?.difficulty || 'mythic').toLowerCase();
     if (!teamId) return res.status(400).json({ error: 'teamId required' });
