@@ -184,6 +184,16 @@ module.exports = async (req, res) => {
         return res.status(200).json({ configured: false, reason: 'RAID_NOT_FOUND', zoneName });
       }
 
+      // Raider.io's guild-profile "raid_progression"/"raid_rankings" fields
+      // silently default to the guild's CURRENT expansion only -- for any
+      // older raid (verified live: Manaforge Omega, a prior-expansion raid
+      // this guild has fully cleared, was invisible there even though the
+      // guild's own Raider.io page shows real 8/8 data for it) they need to
+      // be scoped with "raid_progression:<expansion_id>" instead of the bare
+      // field name to return anything at all. The raid we already looked up
+      // above tells us exactly which expansion it belongs to.
+      const raidExpansionId = rr.raid.expansion_id;
+
       const encounters = deriveBossOrder(rr.rankedGuilds, rr.raid.encounters || []);
       const bucketByProgress = {};
       (rr.timeline || []).forEach(t => { bucketByProgress[t.progress] = t.totalGuilds || 0; });
@@ -211,8 +221,10 @@ module.exports = async (req, res) => {
 
         const profilePromise = (async () => {
           try {
+            const progField = raidExpansionId ? `raid_progression:${raidExpansionId}` : 'raid_progression';
+            const rankField = raidExpansionId ? `raid_rankings:${raidExpansionId}`    : 'raid_rankings';
             const profResp = await fetch(
-              `https://raider.io/api/v1/guilds/profile?region=${region_}&realm=${realm_}&name=${guildName_}&fields=raid_progression,raid_rankings`
+              `https://raider.io/api/v1/guilds/profile?region=${region_}&realm=${realm_}&name=${guildName_}&fields=${progField},${rankField}`
             );
             if (!profResp.ok) return;
             const profile = await profResp.json();
