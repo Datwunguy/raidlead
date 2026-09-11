@@ -129,7 +129,6 @@
 
   /* Mid-width screens: tighten nav further before the mobile breakpoint */
   @media (max-width: 1300px) {
-    .nav-btn { font-size: 12px; padding: 6px 10px; letter-spacing: 1px; }
     .pill-full-text { display: none; }
     .pill-short-text { display: inline; }
     .account-battletag-text { display: none; }
@@ -1402,9 +1401,15 @@
 
   /* ── RESPONSIVE ── */
 
-  /* Tablet: 600–900px */
+  /* Tablet: 600–900px, and also tall/narrow windows (e.g. 1200x1900) where
+     the full tab row runs out of room well before true mobile widths --
+     swap it for the same hamburger + flyout used on mobile, rather than
+     relying on nav's horizontal-scroll fallback. */
   @media (max-width: 1300px) {
     .guild-badge span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+    .nav-btn { display: none; }
+    .mobile-nav-menu { display: block; }
+    #main-nav { overflow: visible; } /* see the mobile breakpoint below for why */
   }
 
   @media (max-width: 900px) {
