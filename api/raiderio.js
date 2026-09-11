@@ -42,6 +42,12 @@ const { ensureZoneName } = require('./lib/wclZone');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
+// Module-scope cache for listRaids' "current expansion" lookup -- see where
+// it's used below. Persists across invocations on the same warm serverless
+// instance, same pattern as roster.js's WCL token cache.
+let currentExpansionIdCache = { id: null, fetchedAt: 0 };
+const EXPANSION_ID_CACHE_MS = 60 * 60 * 1000; // 1 hour -- this basically never changes
+
 // "Oceanic" is a RaidLead-only region choice -- Blizzard/WCL's realm-region
 // system has no such thing, Oceanic realms are still part of the "us" region
 // there. It only matters for the Progress tab's world-wide rankings pool:
@@ -275,10 +281,23 @@ module.exports = async (req, res) => {
     }
   }
 
-  // ── LIST RAIDS: every raid tier Raider.io has progression data for on this
-  // guild (their raid_progression keys), for the raid-tier selector. Names/
-  // boss counts/release dates come from the lightweight static-data
-  // endpoint (see below) rather than looking each tier up individually. ──
+  // Raider.io's own encounter-name slugging for expansion display names --
+  // static-data has no expansion-level name field, only its raids, so this
+  // is hand-maintained for the 3 most recent expansions (current + two
+  // prior, for cross-expansion comparison). Verified live that expansion_id
+  // decrements by exactly 1 per prior expansion (11=Midnight, 10=The War
+  // Within, 9=Dragonflight, 8=Shadowlands). Update this when a new
+  // expansion ships -- everything shifts by one automatically since it's
+  // indexed by offset from whatever the current expansion_id resolves to,
+  // not a hardcoded ID.
+  const EXPANSION_NAMES = ['Midnight', 'The War Within', 'Dragonflight'];
+
+  // ── LIST RAIDS: every raid from the 3 most recent expansions, for the
+  // raid-tier selector -- not filtered to what this guild has raided, so
+  // older tiers are browsable as a world-wide comparison even if the guild
+  // has no Raider.io history there. Names/boss counts/release dates come
+  // from the lightweight static-data endpoint rather than looking each
+  // tier up individually. ──
   if (action === 'listRaids') {
     const teamId = req.query.teamId || req.body?.teamId;
     if (!teamId) return res.status(400).json({ error: 'teamId required' });
@@ -286,69 +305,69 @@ module.exports = async (req, res) => {
     try {
       await assertTeamMembership(supabase, session.id, teamId);
 
-      const { data: team } = await supabase
-        .from('teams').select('guilds ( name, server, region )').eq('id', teamId).single();
-      if (!team?.guilds?.name || !team?.guilds?.server) {
-        return res.status(200).json({ raids: [] });
+      // Raider.io's expansion_id for "the current expansion" is the same
+      // for every team, so it's cached at module scope (mirrors roster.js's
+      // WCL token cache) -- the one slow instance-rankings call needed to
+      // discover it then only actually happens once per warm serverless
+      // instance instead of on every listRaids request, from any team.
+      let currentExpansionId;
+      if (currentExpansionIdCache.id && Date.now() - currentExpansionIdCache.fetchedAt < EXPANSION_ID_CACHE_MS) {
+        currentExpansionId = currentExpansionIdCache.id;
+      } else {
+        const { data: team } = await supabase
+          .from('teams').select('id, zone_id, zone_name').eq('id', teamId).single();
+
+        // Any known raid slug works to discover Raider.io's current
+        // expansion_id -- use the team's own current raid (from its WCL zone).
+        const zoneName = await ensureZoneName(supabase, team);
+        const currentSlug = slugifyRaidName(zoneName);
+        if (!currentSlug) return res.status(200).json({ raids: [] });
+
+        // instance-rankings does a full (slow, ~250ms+) rankings computation
+        // no matter how small `limit` is, so this is the one unavoidable slow
+        // call -- everything else comes from the lightweight static-data
+        // endpoint (~10ms, no rankings computation).
+        const metaResp = await fetch(
+          `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(currentSlug)}` +
+          `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
+        );
+        if (!metaResp.ok) return res.status(200).json({ raids: [] });
+        const metaData = await metaResp.json();
+        currentExpansionId = metaData?.raidRankings?.raid?.expansion_id;
+        if (!currentExpansionId) return res.status(200).json({ raids: [] });
+        currentExpansionIdCache = { id: currentExpansionId, fetchedAt: Date.now() };
       }
 
-      const region_    = encodeURIComponent(toRealmRegion(team.guilds.region || 'us'));
-      const realm_     = encodeURIComponent(team.guilds.server);
-      const guildName_ = encodeURIComponent(team.guilds.name);
-
-      const profResp = await fetch(
-        `https://raider.io/api/v1/guilds/profile?region=${region_}&realm=${realm_}&name=${guildName_}&fields=raid_progression`
-      );
-      if (!profResp.ok) return res.status(200).json({ raids: [] });
-      const profile = await profResp.json();
-      const slugs = Object.keys(profile?.raid_progression || {});
-      if (slugs.length === 0) return res.status(200).json({ raids: [] });
-
-      // Bare-slug fallback if either lookup below fails -- still usable,
-      // just without a friendly name or release-date sort.
-      const fallbackRaids = slugs.map(slug => ({ slug, name: slug, totalBosses: null }));
-
-      // instance-rankings does a full (slow, ~250ms+) rankings computation
-      // no matter how small `limit` is, so calling it once per tier just to
-      // read a name doesn't scale. Instead, call it ONCE for any one of the
-      // guild's known slugs purely to read Raider.io's expansion_id, then
-      // use that to pull the full tier list (name, boss count, real release
-      // date) from the lightweight static-data endpoint in a single ~10ms
-      // request that doesn't touch rankings computation at all.
-      const metaResp = await fetch(
-        `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(slugs[slugs.length - 1])}` +
-        `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
-      );
-      if (!metaResp.ok) return res.status(200).json({ raids: fallbackRaids });
-      const metaData = await metaResp.json();
-      const expansionId = metaData?.raidRankings?.raid?.expansion_id;
-      if (!expansionId) return res.status(200).json({ raids: fallbackRaids });
-
-      const staticResp = await fetch(`https://raider.io/api/v1/raiding/static-data?expansion_id=${expansionId}`);
-      if (!staticResp.ok) return res.status(200).json({ raids: fallbackRaids });
-      const staticData = await staticResp.json();
-      const bySlug = {};
-      (staticData.raids || []).forEach(r => { bySlug[r.slug] = r; });
-
-      const raids = slugs
-        .map(slug => {
-          const meta = bySlug[slug];
-          return {
-            slug,
-            name:        meta?.name || slug,
-            totalBosses: meta?.encounters?.length || null,
-            starts:      meta?.starts?.us || null,
-          };
+      const expansionResults = await Promise.all(
+        EXPANSION_NAMES.map(async (expansionName, offset) => {
+          try {
+            const r = await fetch(`https://raider.io/api/v1/raiding/static-data?expansion_id=${currentExpansionId - offset}`);
+            if (!r.ok) return { expansionName, raids: [] };
+            const j = await r.json();
+            return { expansionName, raids: j.raids || [] };
+          } catch (e) { return { expansionName, raids: [] }; }
         })
-        .sort((a, b) => {
-          // Most recently released tier first; a mini-raid/bonus encounter
-          // often ships on the exact same date as that patch's main raid
-          // (e.g. The Tidebound Grotto and The Venomous Abyss both started
-          // 2026-08-18), so break same-date ties by boss count -- the
-          // bigger raid is reliably the "main" one of the two.
-          const dateDiff = new Date(b.starts || 0) - new Date(a.starts || 0);
-          return dateDiff !== 0 ? dateDiff : (b.totalBosses || 0) - (a.totalBosses || 0);
-        });
+      );
+
+      const raids = expansionResults.flatMap(({ expansionName, raids: expansionRaids }) =>
+        expansionRaids
+          .map(r => ({
+            slug:        r.slug,
+            name:        r.name,
+            expansion:   expansionName,
+            totalBosses: r.encounters?.length || null,
+            starts:      r.starts?.us || null,
+          }))
+          .sort((a, b) => {
+            // Most recently released tier first; a mini-raid/bonus encounter
+            // often ships on the exact same date as that patch's main raid
+            // (e.g. The Tidebound Grotto and The Venomous Abyss both started
+            // 2026-08-18), so break same-date ties by boss count -- the
+            // bigger raid is reliably the "main" one of the two.
+            const dateDiff = new Date(b.starts || 0) - new Date(a.starts || 0);
+            return dateDiff !== 0 ? dateDiff : (b.totalBosses || 0) - (a.totalBosses || 0);
+          })
+      );
 
       return res.status(200).json({ raids });
     } catch (err) {

@@ -3855,7 +3855,21 @@ async function loadProgressRaidsList() {
   const raids = STATE.progressRaidsList;
   if (!raids || raids.length === 0) { select.style.display = 'none'; return; }
 
-  select.innerHTML = raids.map(r => `<option value="${escapeHtml(r.slug)}">${escapeHtml(r.name)}</option>`).join('');
+  // Group into <optgroup>s by expansion, preserving the order expansions
+  // arrived in (current expansion first, then progressively older ones).
+  const expansionOrder = [];
+  const raidsByExpansion = {};
+  raids.forEach(r => {
+    const exp = r.expansion || 'Other';
+    if (!raidsByExpansion[exp]) { raidsByExpansion[exp] = []; expansionOrder.push(exp); }
+    raidsByExpansion[exp].push(r);
+  });
+
+  select.innerHTML = expansionOrder.map(exp => `
+    <optgroup label="${escapeHtml(exp)}">
+      ${raidsByExpansion[exp].map(r => `<option value="${escapeHtml(r.slug)}">${escapeHtml(r.name)}</option>`).join('')}
+    </optgroup>
+  `).join('');
   if (STATE.progressRaidSlug) select.value = STATE.progressRaidSlug;
   select.style.display = 'inline-block';
 }
