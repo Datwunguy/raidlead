@@ -2179,7 +2179,8 @@
       <div class="tab-content" id="tab-progress">
         <div class="section-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
           <div class="section-title">Progress<span id="progress-raid-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
-          <div style="display:flex; align-items:center; gap:10px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <select id="progress-raid-select" onchange="setProgressRaid(this.value)" style="display:none;"></select>
             <div class="role-filter" id="progress-difficulty-filter">
               <button class="filter-btn" onclick="setProgressDifficulty('normal', this)">Normal</button>
               <button class="filter-btn" onclick="setProgressDifficulty('heroic', this)">Heroic</button>
@@ -2450,7 +2451,9 @@ const STATE = {
   plannerDate:         null,         // 'YYYY-MM-DD' string for the raid night currently being planned
   plannerSwaps:        [],           // [{id, boss, outName, inName}] boss-by-boss swaps against the published roster
   progressDifficulty:  'mythic',     // 'normal' | 'heroic' | 'mythic' for the Progress tab
-  progressCache:       {},           // per-difficulty cached response from /api/raiderio
+  progressCache:       {},           // per raidSlug+difficulty cached response from /api/raiderio
+  progressRaidSlug:    null,         // null = current raid (auto-detected from WCL zone); otherwise a past tier's slug
+  progressRaidsList:   null,         // cached /api/raiderio?action=listRaids response, fetched once per session
 };
 
 // ── Global fetch wrapper: automatically adds credentials for all /api/ calls ──
@@ -3796,11 +3799,49 @@ function setProgressDifficulty(diff, btn) {
   loadProgressTab();
 }
 
+// Switches to a past raid tier ('' means back to the current/auto-detected one).
+function setProgressRaid(slug) {
+  STATE.progressRaidSlug = slug || null;
+  loadProgressTab();
+}
+
+function progressCacheKey() {
+  return (STATE.progressRaidSlug || 'current') + '_' + STATE.progressDifficulty;
+}
+
+// Populates the raid-tier dropdown once per session from the guild's own
+// Raider.io progression history, so past tiers are viewable without anyone
+// needing to know or type a raid's slug.
+async function loadProgressRaidsList() {
+  const select = document.getElementById('progress-raid-select');
+  if (!select) return;
+
+  if (!STATE.progressRaidsList) {
+    try {
+      const resp = await fetch(`/api/raiderio?action=listRaids&teamId=${encodeURIComponent(STATE.teamId)}`);
+      const data = await resp.json();
+      STATE.progressRaidsList = resp.ok ? (data.raids || []) : [];
+    } catch (e) { STATE.progressRaidsList = []; }
+  }
+
+  const raids = STATE.progressRaidsList;
+  if (!raids || raids.length === 0) { select.style.display = 'none'; return; }
+
+  select.innerHTML = '<option value="">Current Raid</option>' +
+    raids.map(r => `<option value="${escapeHtml(r.slug)}">${escapeHtml(r.name)}</option>`).join('');
+  select.value = STATE.progressRaidSlug || '';
+  select.style.display = 'inline-block';
+}
+
 async function loadProgressTab() {
   const content = document.getElementById('progress-content');
   const subtitle = document.getElementById('progress-subtitle');
 
-  if (!STATE.config?.zoneName) {
+  loadProgressRaidsList();
+
+  // The current-raid flow depends on a detected WCL zone; a specific past
+  // tier (picked from the dropdown) doesn't need one at all.
+  if (!STATE.progressRaidSlug && !STATE.config?.zoneName) {
     document.getElementById('progress-raid-name').textContent = '';
     subtitle.textContent = '';
     content.innerHTML = `
@@ -3813,8 +3854,8 @@ async function loadProgressTab() {
     return;
   }
 
-  const diff = STATE.progressDifficulty;
-  const cached = STATE.progressCache[diff];
+  const cacheKey = progressCacheKey();
+  const cached = STATE.progressCache[cacheKey];
   if (cached) {
     renderProgress(cached);
     return;
@@ -3823,10 +3864,12 @@ async function loadProgressTab() {
   content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading Progress...</div></div>';
 
   try {
-    const resp = await fetch(`/api/raiderio?action=progress&teamId=${encodeURIComponent(STATE.teamId)}&difficulty=${diff}`);
+    let url = `/api/raiderio?action=progress&teamId=${encodeURIComponent(STATE.teamId)}&difficulty=${STATE.progressDifficulty}`;
+    if (STATE.progressRaidSlug) url += `&raidSlug=${encodeURIComponent(STATE.progressRaidSlug)}`;
+    const resp = await fetch(url);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to load progress data');
-    STATE.progressCache[diff] = data;
+    STATE.progressCache[cacheKey] = data;
     renderProgress(data);
   } catch (e) {
     content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load progress</h3><p>${e.message}</p></div>`;
@@ -7364,6 +7407,8 @@ function applyGuildData(guildData) {
   STATE.teamId           = t.id;
   STATE.teamName         = t.name;
   STATE.progressCache    = {}; // may be a different team/region/raid than what was cached
+  STATE.progressRaidsList = null;
+  STATE.progressRaidSlug  = null;
   STATE.claimedCharacter = guildData.claimedCharacter || null;
   STATE.joinCode         = t.join_code || null;
   STATE.discordGuildId   = t.discord_guild_id || null;

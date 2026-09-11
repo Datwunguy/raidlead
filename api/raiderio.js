@@ -151,8 +151,14 @@ module.exports = async (req, res) => {
       const { data: team } = await supabase
         .from('teams').select('id, zone_id, zone_name, guilds ( name, server, region )').eq('id', teamId).single();
 
-      const zoneName = await ensureZoneName(supabase, team);
-      const raidSlug = slugifyRaidName(zoneName);
+      // An explicit raidSlug (from the raid-tier selector) views a past
+      // tier; otherwise default to whatever the team's WCL zone resolves to.
+      const requestedSlug = req.query.raidSlug || req.body?.raidSlug || null;
+      let raidSlug = requestedSlug;
+      if (!raidSlug) {
+        const zoneName = await ensureZoneName(supabase, team);
+        raidSlug = slugifyRaidName(zoneName);
+      }
       if (!raidSlug) {
         return res.status(200).json({ configured: false, reason: 'NO_ZONE' });
       }
@@ -251,12 +257,68 @@ module.exports = async (req, res) => {
 
       return res.status(200).json({
         configured: true,
+        raidSlug,
         raidName:   rr.raid.name || null,
         difficulty,
         region,
         bosses,
         yourGuild,
       });
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+
+  // ── LIST RAIDS: every raid tier Raider.io has progression data for on this
+  // guild (their raid_progression keys), for the raid-tier selector. Each
+  // tier's display name/boss count is looked up live -- Raider.io doesn't
+  // expose a name for a bare slug otherwise, and there are typically only a
+  // handful of tiers per expansion so this stays cheap. ──
+  if (action === 'listRaids') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
+
+    try {
+      await assertTeamMembership(supabase, session.id, teamId);
+
+      const { data: team } = await supabase
+        .from('teams').select('guilds ( name, server, region )').eq('id', teamId).single();
+      if (!team?.guilds?.name || !team?.guilds?.server) {
+        return res.status(200).json({ raids: [] });
+      }
+
+      const region_    = encodeURIComponent(toRealmRegion(team.guilds.region || 'us'));
+      const realm_     = encodeURIComponent(team.guilds.server);
+      const guildName_ = encodeURIComponent(team.guilds.name);
+
+      const profResp = await fetch(
+        `https://raider.io/api/v1/guilds/profile?region=${region_}&realm=${realm_}&name=${guildName_}&fields=raid_progression`
+      );
+      if (!profResp.ok) return res.status(200).json({ raids: [] });
+      const profile = await profResp.json();
+      const slugs = Object.keys(profile?.raid_progression || {});
+
+      const raids = await Promise.all(slugs.map(async slug => {
+        try {
+          const r = await fetch(
+            `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(slug)}` +
+            `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
+          );
+          if (!r.ok) return { slug, name: slug, totalBosses: null };
+          const j = await r.json();
+          return {
+            slug,
+            name: j?.raidRankings?.raid?.name || slug,
+            totalBosses: j?.raidRankings?.raid?.encounters?.length || null,
+          };
+        } catch (e) { return { slug, name: slug, totalBosses: null }; }
+      }));
+
+      // Raider.io returns raid_progression keys in the order tiers were
+      // added -- reverse so the most recently released tier comes first.
+      raids.reverse();
+
+      return res.status(200).json({ raids });
     } catch (err) {
       return res.status(err.status || 500).json({ error: err.message });
     }
