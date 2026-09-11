@@ -334,7 +334,15 @@ module.exports = async (req, res) => {
             starts:      meta?.starts?.us || null,
           };
         })
-        .sort((a, b) => new Date(b.starts || 0) - new Date(a.starts || 0)); // most recently released first
+        .sort((a, b) => {
+          // Most recently released tier first; a mini-raid/bonus encounter
+          // often ships on the exact same date as that patch's main raid
+          // (e.g. The Tidebound Grotto and The Venomous Abyss both started
+          // 2026-08-18), so break same-date ties by boss count -- the
+          // bigger raid is reliably the "main" one of the two.
+          const dateDiff = new Date(b.starts || 0) - new Date(a.starts || 0);
+          return dateDiff !== 0 ? dateDiff : (b.totalBosses || 0) - (a.totalBosses || 0);
+        });
 
       return res.status(200).json({ raids });
     } catch (err) {
