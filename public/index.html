@@ -3977,9 +3977,9 @@ function renderProgress(data) {
       </div>
       <div style="display:flex; align-items:center; gap:20px;">
         ${data.yourGuild.regionRank ? `
-          <div style="text-align:right;" title="${data.yourGuild.regionRankIsBroaderPool ? "Raider.io only publishes this rank against its combined US+Oceania pool -- broader than the Americas-only pool used for the boss list below." : ''}">
+          <div style="text-align:right;">
             <div style="font-size:18px; font-weight:700; color:var(--text);">#${data.yourGuild.regionRank.toLocaleString()}</div>
-            <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">${data.yourGuild.regionRankIsBroaderPool ? 'US Region Rank' : 'Region Rank'}</div>
+            <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">Region Rank</div>
           </div>
         ` : ''}
         <div style="font-size:22px; font-weight:700; color:var(--gold);">${data.yourGuild.killed}/${data.yourGuild.totalBosses} <span style="font-size:13px; font-weight:600; color:var(--text-mute); text-transform:uppercase;">${data.difficulty}</span></div>
