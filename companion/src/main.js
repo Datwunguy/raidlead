@@ -75,7 +75,12 @@ app.whenReady().then(() => {
   app.setLoginItemSettings({ openAtLogin: currentConfig.autoStart !== false });
 
   createTray();
-  createWindow();
+  // Only pop the settings window open when someone actually launched this
+  // themselves (double-clicked it, or it's their first-ever run) -- a
+  // window suddenly appearing every time Windows boots is exactly the kind
+  // of "why is this here" surprise the tray-app model is supposed to avoid.
+  // Auto-started-at-login runs stay fully in the tray until clicked.
+  if (!app.getLoginItemSettings().wasOpenedAtLogin) createWindow();
   sync.start();
   startUpdateChecks(sendLog);
 
@@ -98,6 +103,8 @@ ipcMain.handle('raidlead:setConfig', (_e, partial) => {
 });
 
 ipcMain.handle('raidlead:getLog', () => logBuffer);
+
+ipcMain.handle('raidlead:getWowStatus', () => sync.wowRunning);
 
 ipcMain.handle('raidlead:browseWowFolder', async () => {
   // Ask for the AddOns folder specifically -- it's the same folder the user

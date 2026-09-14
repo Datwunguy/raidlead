@@ -13,6 +13,16 @@
 // ============================================================
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
+
+/** True if a WoW client process is currently running. */
+function isWowRunning() {
+  return new Promise((resolve) => {
+    exec('tasklist /FI "IMAGENAME eq Wow.exe" /NH', (err, stdout) => {
+      resolve(!err && /wow\.exe/i.test(stdout));
+    });
+  });
+}
 
 const COMMON_ROOTS = [
   'C:\\Program Files (x86)\\World of Warcraft',
@@ -125,5 +135,5 @@ function resolveAccount(wowRoot) {
 
 module.exports = {
   guessWowRoot, deriveWowRootFromAddonsFolder, addonIsInstalled, listAccounts, listCharacters,
-  accountSavedVariablesPath, characterSavedVariablesPath, resolveAccount,
+  accountSavedVariablesPath, characterSavedVariablesPath, resolveAccount, isWowRunning,
 };

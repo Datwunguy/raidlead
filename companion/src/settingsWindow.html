@@ -34,6 +34,8 @@
   <h1>RaidLead Companion</h1>
   <p class="sub">Keeps your addon's loot data and published roster in sync with the RaidLead Docs bridge folder — no scheduled task, no console window, just runs quietly while it's open. It never makes a network call itself; the website still handles all of that.</p>
 
+  <div id="wow-status" class="hint" style="font-size:12px; margin-bottom:14px;">Checking for WoW...</div>
+
   <div class="section" style="border-top:none; margin-top:0; padding-top:0;">
     <label>WoW AddOns Folder</label>
     <div class="hint" style="margin-top:0; margin-bottom:6px;">
@@ -63,6 +65,11 @@
       <input type="checkbox" id="autoStart" />
       <label for="autoStart" style="margin:0;">Start automatically when Windows starts</label>
     </div>
+    <div class="hint" style="margin-top:6px;">
+      It starts quietly in the tray either way (no window popping up) and stays idle until it detects WoW running, so
+      leaving this on is the same as "only runs while you're playing" in practice — there's no reliable, non-hacky way
+      on Windows to launch an app specifically when a game starts, so this is the closest equivalent to that.
+    </div>
   </div>
 
   <div class="section">
@@ -82,6 +89,13 @@
     box.scrollTop = box.scrollHeight;
   }
 
+  async function refreshWowStatus() {
+    const running = await window.raidlead.getWowStatus();
+    const box = el('wow-status');
+    if (running === null || running === undefined) { box.textContent = 'Checking for WoW...'; return; }
+    box.textContent = running ? '🟢 WoW is running — actively syncing.' : '⚪ WoW isn\'t running — waiting quietly in the background.';
+  }
+
   async function init() {
     config = await window.raidlead.getConfig();
     el('wowRoot').value = config.wowRoot || '';
@@ -91,6 +105,9 @@
     const existingLog = await window.raidlead.getLog();
     existingLog.forEach(appendLog);
     window.raidlead.onLog(appendLog);
+
+    refreshWowStatus();
+    setInterval(refreshWowStatus, 10000);
   }
 
   el('browseWow').addEventListener('click', async () => {

@@ -87,8 +87,10 @@ Settings if you'd rather launch it manually.
 ## Packaging
 
 `npm run dist` (electron-builder) produces an installer for distributing
-this to whoever's actually running it. `assets/icon.png` is currently a 1x1
-placeholder; swap in real branding art before shipping a build to anyone. An
+this to whoever's actually running it. `assets/icon.png`/`assets/icon.ico`
+are the RaidLead Discord icon (`raidleaddiscordicon.jpg` at the repo root,
+converted via Jimp/png-to-ico) -- the `.ico` is what `build.win.icon` points
+at for the installer/exe icon, since a plain PNG renders blurry there. An
 unsigned `.exe` can still draw a SmartScreen prompt on first run -- code
 signing would remove that, but is a separate cost/setup decision, not
 something this app can route around on its own.

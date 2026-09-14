@@ -143,8 +143,12 @@
   }
 
   /* Mobile hamburger nav -- hidden except at the mobile breakpoint below,
-     where it replaces the .nav-btn row entirely. */
-  .mobile-nav-menu { display: none; position: relative; }
+     where it replaces the .nav-btn row entirely. Fixed width (not sized to
+     content) so the box doesn't grow/shrink depending on which tab name is
+     currently selected -- a short label like "Loot" was making the whole
+     menu (and the dropdown stretched to match it) too narrow to fit the
+     longer item labels inside it, clipping them. */
+  .mobile-nav-menu { display: none; position: relative; width: 200px; flex-shrink: 0; }
 
   .mobile-nav-toggle {
     display: flex; align-items: center; gap: 8px;
@@ -2257,19 +2261,29 @@
                 <br />
                 • <strong>RaidLead</strong> — copy this into <code>...\_retail_\Interface\AddOns\</code>.
                 <br />
-                • <strong>RaidLead Docs</strong> — this is the bridge folder from above. Put it in your
-                <strong>Documents folder</strong> — not the Desktop (Windows' built-in ransomware protection can silently block the
-                files it needs from being created there) and not inside Program Files (the one place a website can never be granted
-                access to). It just lets the addon and this site read/write data back and forth; the addon won't actually sync
-                anything without it.
+                • <strong>RaidLead Docs</strong> — this acts as a bridge. Put it in your <strong>Documents folder</strong>. It
+                just lets the addon and this site read/write data back and forth; the addon won't actually sync anything
+                without it.
                 <br /><br />
                 Then <a href="https://github.com/Datwunguy/raidlead/releases/latest/download/RaidLead-Companion-Setup.exe" style="color:var(--gold-dim);">download RaidLead Companion</a> and
                 install it — this is the small always-running app that actually keeps the addon and the "RaidLead Docs" folder in
                 sync. In its Settings, point it at your WoW AddOns folder and at "RaidLead Docs". Once it's running, it does
                 everything automatically in the background — no scripts to run, nothing to remember before or after a raid.
                 <br /><br />
-                Then click Connect below and select the <strong>RaidLead Docs</strong> folder (wherever you put it). After completing
-                a game session, come back and press <code>Sync Now</code> and your loot history should display below.
+                Then click Connect below and select the <strong>RaidLead Docs</strong> folder (wherever you put it).
+              </div>
+              <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
+                <strong>Night to night, once set up:</strong>
+                <br />
+                • RaidLead Companion should just stay running in the background (it starts with Windows automatically) —
+                you never need to click anything inside it.
+                <br />
+                • <strong>Before a raid:</strong> publish your roster on Raid Planner. Companion picks it up within moments;
+                <code>/reload</code> in-game to see it.
+                <br />
+                • <strong>After a raid:</strong> log out or <code>/reload</code> so WoW saves this session's loot to disk,
+                then come back here and press <code>Sync Now</code> once. That's the one manual step that can't be
+                automated — your browser needs an actual click to read the folder.
               </div>
             </div>
             <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">

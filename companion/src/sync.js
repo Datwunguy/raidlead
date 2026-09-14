@@ -39,6 +39,10 @@ class SyncManager {
     // single tick.
     this.lastLootJson = null;
     this.lastRosterJson = null;
+    // Cached, not re-checked on every single file event -- just enough to
+    // show "waiting for WoW" vs "syncing" in Settings, and to only log the
+    // transition once instead of on every poll tick.
+    this.wowRunning = null;
   }
 
   log(msg) {
@@ -84,12 +88,24 @@ class SyncManager {
     this.rosterWatcher.on('change', () => this.importRoster());
     this.rosterWatcher.on('add', () => this.importRoster());
 
+    this.checkWowStatus();
     this.exportLoot();
     this.importRoster();
     // Belt-and-suspenders poll on top of the file watchers above -- catches
     // the case where the account wasn't resolvable yet at start() but is by
     // now (e.g. this app started before the player's first WoW login).
-    this.pollTimer = setInterval(() => { this.exportLoot(); this.importRoster(); }, ROSTER_POLL_MS);
+    this.pollTimer = setInterval(() => { this.checkWowStatus(); this.exportLoot(); this.importRoster(); }, ROSTER_POLL_MS);
+  }
+
+  // Purely for status/log clarity (Settings shows this, see main.js) -- the
+  // file watchers/imports work fine whether or not WoW happens to be open,
+  // so this never gates them, it just tells the person what's going on.
+  async checkWowStatus() {
+    const running = await wowPaths.isWowRunning();
+    if (running !== this.wowRunning) {
+      this.wowRunning = running;
+      this.log(running ? 'WoW detected -- actively syncing.' : 'WoW isn\'t running -- waiting quietly in the background.');
+    }
   }
 
   stop() {

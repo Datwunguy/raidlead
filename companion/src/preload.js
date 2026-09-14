@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('raidlead', {
   getConfig: () => ipcRenderer.invoke('raidlead:getConfig'),
   setConfig: (partial) => ipcRenderer.invoke('raidlead:setConfig', partial),
   getLog: () => ipcRenderer.invoke('raidlead:getLog'),
+  getWowStatus: () => ipcRenderer.invoke('raidlead:getWowStatus'),
   browseWowFolder: () => ipcRenderer.invoke('raidlead:browseWowFolder'),
   browseBridgeFolder: () => ipcRenderer.invoke('raidlead:browseBridgeFolder'),
   syncNow: () => ipcRenderer.invoke('raidlead:syncNow'),
