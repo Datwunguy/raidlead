@@ -36,9 +36,9 @@
 //  Action: progress (teamId, difficulty)
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { getSession, setCommonHeaders } = require('./lib/session');
-const { assertTeamMembership } = require('./lib/teamAuth');
-const { ensureZoneName } = require('./lib/wclZone');
+const { getSession, setCommonHeaders } = require('../lib/session');
+const { assertTeamMembership } = require('../lib/teamAuth');
+const { ensureZoneName } = require('../lib/wclZone');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 

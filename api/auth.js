@@ -3,7 +3,7 @@
 //  Actions: login, callback, session, join-guild
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { encodeSession, getSession, setCommonHeaders } = require('./lib/session');
+const { encodeSession, getSession, setCommonHeaders } = require('../lib/session');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);

@@ -3,8 +3,8 @@
 //  Actions: save, get, getPrevious, saveSwaps
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { getSession, setCommonHeaders } = require('./lib/session');
-const { assertTeamMembership } = require('./lib/teamAuth');
+const { getSession, setCommonHeaders } = require('../lib/session');
+const { assertTeamMembership } = require('../lib/teamAuth');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);

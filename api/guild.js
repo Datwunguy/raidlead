@@ -11,9 +11,9 @@
 //  no team's owner needs another team's permission for anything.
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { getSession, setCommonHeaders } = require('./lib/session');
-const { getMyTeams, assertTeamMembership } = require('./lib/teamAuth');
-const { ensureZoneName } = require('./lib/wclZone');
+const { getSession, setCommonHeaders } = require('../lib/session');
+const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
+const { ensureZoneName } = require('../lib/wclZone');
 
 const TEAM_FIELDS = `id, name, guild_id, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
@@ -376,7 +376,7 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Both Client ID and Client Secret are required' });
       }
 
-      const { encrypt } = require('./lib/crypto');
+      const { encrypt } = require('../lib/crypto');
       const { error } = await supabase.from('teams').update({
         wcl_client_id:         clientId,
         wcl_client_secret_enc: encrypt(clientSecret),

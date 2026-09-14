@@ -14,7 +14,7 @@
 //  perfectly normal setup, not a conflict.
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { setCommonHeaders } = require('./lib/session');
+const { setCommonHeaders } = require('../lib/session');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);

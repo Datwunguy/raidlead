@@ -5,9 +5,9 @@
 //  (wcl.js is now consolidated here — wcl.js can be deleted)
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { getSession, setCommonHeaders } = require('./lib/session');
-const { decrypt } = require('./lib/crypto');
-const { assertTeamMembership } = require('./lib/teamAuth');
+const { getSession, setCommonHeaders } = require('../lib/session');
+const { decrypt } = require('../lib/crypto');
+const { assertTeamMembership } = require('../lib/teamAuth');
 
 // Thrown when a request needs WCL access but the caller's guild hasn't connected its
 // own Warcraft Logs API client yet -- callers check err.wclNotConfigured to show a
