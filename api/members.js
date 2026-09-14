@@ -5,8 +5,8 @@
 //           getAttendance, markAttendance, addRaidNight, removeRaidNight
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
-const { getSession, setCommonHeaders } = require('./lib/session');
-const { assertTeamMembership, isOfficerRole } = require('./lib/teamAuth');
+const { getSession, setCommonHeaders } = require('../lib/session');
+const { assertTeamMembership, isOfficerRole } = require('../lib/teamAuth');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -31,7 +31,7 @@ module.exports = async (req, res) => {
 
       const { data: chars } = await supabase
         .from('characters')
-        .select('name, class, primary_role, account_id')
+        .select('id, name, class, primary_role, account_id')
         .eq('team_id', teamId)
         .not('account_id', 'is', null);
       const characterMap = {};

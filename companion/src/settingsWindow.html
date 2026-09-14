@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>RaidLead Companion</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; background: #0f0f11; color: #e6e6e9; font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 13px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { color: #888; margin: 0 0 18px; font-size: 12px; }
+  label { display: block; font-weight: 600; margin: 14px 0 4px; color: #cfcfd4; }
+  input[type=text], input[type=password], select {
+    width: 100%; box-sizing: border-box; background: #1a1a1e; border: 1px solid #333;
+    border-radius: 4px; color: #e6e6e9; padding: 7px 9px; font-size: 13px;
+  }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input[type=text] { flex: 1; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; }
+  .checkbox-row input { width: auto; }
+  .checkbox-row label { margin: 0; }
+  button {
+    background: #2a2a30; border: 1px solid #3a3a42; color: #e6e6e9; border-radius: 4px;
+    padding: 7px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { background: #34343c; }
+  button.primary { background: #caa53d; border-color: #caa53d; color: #1a1400; font-weight: 700; }
+  .hint { color: #777; font-size: 11px; margin-top: 4px; }
+  #log { margin-top: 18px; background: #000; border: 1px solid #222; border-radius: 4px; height: 150px;
+    overflow-y: auto; padding: 8px; font-family: Consolas, monospace; font-size: 11px; color: #9c9; white-space: pre-wrap; }
+  .section { border-top: 1px solid #222; margin-top: 18px; padding-top: 14px; }
+</style>
+</head>
+<body>
+  <h1>RaidLead Companion</h1>
+  <p class="sub">Keeps your addon's loot data and published roster in sync with the RaidLead Docs bridge folder — no scheduled task, no console window, just runs quietly while it's open. It never makes a network call itself; the website still handles all of that.</p>
+
+  <div class="section" style="border-top:none; margin-top:0; padding-top:0;">
+    <label>WoW AddOns Folder</label>
+    <div class="hint" style="margin-top:0; margin-bottom:6px;">
+      Browse to <code>...\_retail_\Interface\AddOns\</code> (the same folder you copied the <code>RaidLead</code> addon into) — this app works out your WoW install from it. Which account is yours is re-detected automatically every time, so there's nothing to pick.
+    </div>
+    <div class="row">
+      <input type="text" id="wowRoot" readonly placeholder="Not set" />
+      <button id="browseWow">Browse...</button>
+    </div>
+    <div id="addon-check-warning" class="hint" style="display:none; color:#e5a53d;"></div>
+  </div>
+
+  <div class="section">
+    <label>RaidLead Docs (bridge folder)</label>
+    <div class="hint" style="margin-top:0; margin-bottom:6px;">
+      The same folder you connected on the website's Loot tab (Connect Bridge Folder) — put it in your Documents folder, not
+      the Desktop, since Windows can silently block files from being created there.
+    </div>
+    <div class="row">
+      <input type="text" id="bridgeFolderPath" readonly placeholder="Not set" />
+      <button id="browseBridge">Browse...</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="checkbox-row">
+      <input type="checkbox" id="autoStart" />
+      <label for="autoStart" style="margin:0;">Start automatically when Windows starts</label>
+    </div>
+  </div>
+
+  <div class="section">
+    <button class="primary" id="syncNow">Sync Now</button>
+    <div class="hint">Loot exports automatically whenever the addon's SavedVariables file changes (i.e. after a /reload or logout). Roster imports automatically whenever the website queues a new one.</div>
+  </div>
+
+  <div id="log"></div>
+
+<script>
+  const el = (id) => document.getElementById(id);
+  let config = {};
+
+  function appendLog(line) {
+    const box = el('log');
+    box.textContent += line + '\n';
+    box.scrollTop = box.scrollHeight;
+  }
+
+  async function init() {
+    config = await window.raidlead.getConfig();
+    el('wowRoot').value = config.wowRoot || '';
+    el('bridgeFolderPath').value = config.bridgeFolderPath || '';
+    el('autoStart').checked = config.autoStart !== false;
+
+    const existingLog = await window.raidlead.getLog();
+    existingLog.forEach(appendLog);
+    window.raidlead.onLog(appendLog);
+  }
+
+  el('browseWow').addEventListener('click', async () => {
+    const result = await window.raidlead.browseWowFolder();
+    const warning = el('addon-check-warning');
+    if (!result) return;
+
+    if (result.error) {
+      warning.textContent = result.error;
+      warning.style.display = 'block';
+      return;
+    }
+
+    config = await window.raidlead.setConfig({ wowRoot: result.wowRoot });
+    el('wowRoot').value = result.wowRoot;
+
+    if (!result.addonInstalled) {
+      warning.textContent = 'Found your WoW folder, but the RaidLead addon isn\'t in there yet -- copy the "RaidLead" folder into this AddOns directory first.';
+      warning.style.display = 'block';
+    } else {
+      warning.style.display = 'none';
+    }
+  });
+
+  el('browseBridge').addEventListener('click', async () => {
+    const folder = await window.raidlead.browseBridgeFolder();
+    if (!folder) return;
+    config = await window.raidlead.setConfig({ bridgeFolderPath: folder });
+    el('bridgeFolderPath').value = folder;
+  });
+
+  el('autoStart').addEventListener('change', async () => {
+    config = await window.raidlead.setConfig({ autoStart: el('autoStart').checked });
+  });
+
+  el('syncNow').addEventListener('click', async () => {
+    appendLog('Syncing...');
+    await window.raidlead.syncNow();
+  });
+
+  init();
+</script>
+</body>
+</html>

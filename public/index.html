@@ -1557,6 +1557,7 @@
       <button class="nav-btn" data-tab="scores" onclick="showTab('scores')">WCL Scores</button>
       <button class="nav-btn" data-tab="attendance" onclick="showTab('attendance')">Attendance</button>
       <button class="nav-btn" data-tab="progress" onclick="showTab('progress')">Progress</button>
+      <button class="nav-btn" data-tab="loot" onclick="showTab('loot')">Loot</button>
       <button class="nav-btn" data-tab="resources" onclick="showTab('resources')">Resources</button>
 
       <!-- Mobile-only: collapses the tab row above into a hamburger + flyout,
@@ -2122,6 +2123,7 @@
             <span id="plan-status-badge" style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; padding:4px 10px; border-radius:3px; background:rgba(255,107,107,0.1); color:#ff6b6b; border:1px solid rgba(255,107,107,0.3);">DRAFT</span>
             <button class="btn-secondary" id="planner-edit-btn" style="display:none;" onclick="enterEditMode()">✎ Edit</button>
             <button class="btn-primary" id="planner-publish-btn" style="display:none;" onclick="publishRaidPlan()">⬆ Publish</button>
+            <button class="btn-secondary" id="planner-sync-btn" onclick="plannerSyncNow()" title="Push this roster into your connected WoW folder — same as the Loot tab's Sync Now">🔄 Sync to WoW</button>
             <button class="btn-secondary" id="planner-import-btn" style="display:none;" onclick="importLastRaidRoster()">⤓ Use Last Roster</button>
             <button class="btn-secondary" id="planner-clear-btn" style="display:none;" onclick="clearRaidRoster()">✕ Clear</button>
           </div>
@@ -2223,6 +2225,81 @@
         </div>
       </div>
 
+      <!-- LOOT TAB -->
+      <div class="tab-content" id="tab-loot">
+        <div class="section-header">
+          <div class="section-title">Loot</div>
+          <button class="btn-secondary" onclick="loadLootTab()">↻ Refresh</button>
+        </div>
+        <div style="font-size:12px; color:var(--text-mute); margin-top:4px;">
+          Captured by the RaidLead addon — boss drops and tracked BoEs, who they went to, and each member's tier-token status.
+        </div>
+
+        <div id="wow-sync-box" style="margin-top:16px; background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="toggleWowSyncExplainer()">
+            <div style="font-weight:700;">WoW Sync</div>
+            <span id="wow-sync-toggle-arrow" style="font-size:26px; line-height:1; color:#fff; transition:transform 0.15s; padding:4px 10px;">▾</span>
+          </div>
+          <div id="wow-sync-unsupported" style="display:none; font-size:14px; color:#fff; margin-top:6px;">
+            This feature needs Chrome or Edge — your browser doesn't support the File System Access API it relies on to read your addon's saved data.
+          </div>
+          <div id="wow-sync-controls">
+            <div id="wow-sync-explainer">
+              <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
+                <strong>Why this exists:</strong> a WoW addon can never make a network call, so it can't
+                talk to RaidLead on its own — this page is the bridge. Chrome/Edge also won't let a website reach anything inside
+                <code>Program Files</code>, which is where WoW normally lives, so a small local script relays data through a separate
+                folder instead — this page only ever touches that folder, never your WoW install directly.
+              </div>
+              <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
+                <strong>One-time setup:</strong>
+                <a href="/RaidLead-Download.zip" style="color:var(--gold-dim);">Download RaidLead</a> — the zip has two folders:
+                <br />
+                • <strong>RaidLead</strong> — copy this into <code>...\_retail_\Interface\AddOns\</code>.
+                <br />
+                • <strong>RaidLead Docs</strong> — this is the bridge folder from above. Put it in your
+                <strong>Documents folder</strong> — not the Desktop (Windows' built-in ransomware protection can silently block the
+                files it needs from being created there) and not inside Program Files (the one place a website can never be granted
+                access to). It just lets the addon and this site read/write data back and forth; the addon won't actually sync
+                anything without it.
+                <br /><br />
+                Then <a href="https://github.com/Datwunguy/raidlead/releases/latest/download/RaidLead-Companion-Setup.exe" style="color:var(--gold-dim);">download RaidLead Companion</a> and
+                install it — this is the small always-running app that actually keeps the addon and the "RaidLead Docs" folder in
+                sync. In its Settings, point it at your WoW AddOns folder and at "RaidLead Docs". Once it's running, it does
+                everything automatically in the background — no scripts to run, nothing to remember before or after a raid.
+                <br /><br />
+                Then click Connect below and select the <strong>RaidLead Docs</strong> folder (wherever you put it). After completing
+                a game session, come back and press <code>Sync Now</code> and your loot history should display below.
+              </div>
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+              <button class="btn-secondary" style="padding:6px 14px; font-size:13px;" onclick="connectWowFolder()">Connect Bridge Folder</button>
+              <button class="btn-primary" id="wow-sync-now-btn" style="display:none; padding:6px 14px; font-size:13px;" onclick="wowSyncNow()">Sync Now</button>
+            </div>
+            <div id="wow-sync-status" style="font-size:14px; color:#fff; margin-top:8px;"></div>
+          </div>
+        </div>
+
+        <div class="role-filter" id="loot-subtab-filter" style="margin-top:18px;">
+          <button class="filter-btn active" onclick="setLootSubTab('tier', this)">Tier Tokens</button>
+          <button class="filter-btn" onclick="setLootSubTab('boe', this)">BoEs</button>
+          <button class="filter-btn" onclick="setLootSubTab('history', this)">Loot History</button>
+        </div>
+
+        <div id="loot-subtab-tier" style="margin-top:18px;">
+          <div id="loot-tier-tracker"></div>
+          <div id="loot-tier-roster" style="margin-top:18px;"></div>
+        </div>
+        <div id="loot-subtab-boe" style="display:none; margin-top:18px;">
+          <div id="loot-boe-runs"></div>
+        </div>
+        <div id="loot-subtab-history" style="display:none; margin-top:18px;">
+          <div id="loot-runs">
+            <div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading Loot...</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- RESOURCES TAB -->
       <div class="tab-content" id="tab-resources">
         <div class="section-header">
@@ -2230,6 +2307,26 @@
         </div>
         <div style="font-size:12px; color:var(--text-mute); margin-top:4px;">Useful sites for recruiting, planning, and analyzing raids.</div>
         <div id="resources-content" style="margin-top:18px;"></div>
+      </div>
+
+      <!-- ADDON SETUP PROMPT MODAL -->
+      <div class="modal-overlay" id="addon-setup-modal">
+        <div class="modal" style="max-width:420px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;">Set up WoW sync?</div>
+            <button class="modal-close" onclick="closeAddonSetupModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:13px; color:var(--text-dim); line-height:1.6;">
+              You haven't connected a WoW bridge folder yet, so there's nowhere to sync this roster to. Set it up on the Loot tab —
+              it walks through installing the addon and connecting a folder.
+            </p>
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+              <button class="btn-secondary" onclick="closeAddonSetupModal()">Not now</button>
+              <button class="btn-primary" onclick="closeAddonSetupModal(); showTab('loot');">Take me there</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- RAID SCHEDULE MODAL -->
@@ -2776,6 +2873,16 @@ const CLASS_COLORS = {
   'paladin':'#F48CBA','priest':'#FFFFFF','rogue':'#FFF468','shaman':'#446AE3',
   'warrior':'#C79C6E','warlock':'#9482C9',
 };
+
+// Standard class -> armor-type mapping (unchanged across expansions), used
+// to group the Tier Token roster grid into Cloth/Leather/Mail/Plate columns.
+const ARMOR_TYPE_BY_CLASS = {
+  'warrior':'Plate', 'paladin':'Plate', 'death knight':'Plate',
+  'hunter':'Mail', 'shaman':'Mail', 'evoker':'Mail',
+  'rogue':'Leather', 'monk':'Leather', 'druid':'Leather', 'demon hunter':'Leather',
+  'mage':'Cloth', 'priest':'Cloth', 'warlock':'Cloth',
+};
+const ARMOR_TYPE_ORDER = ['Plate', 'Mail', 'Leather', 'Cloth'];
 
 const RAID_BUFFS = [
   { class:'demon hunter', buff:'3% Magic'    },
@@ -3811,6 +3918,10 @@ function showTab(name) {
     loadProgressTab();
   }
 
+  if (name === 'loot') {
+    loadLootTab();
+  }
+
   if (name === 'resources') {
     renderResources();
   }
@@ -4035,6 +4146,596 @@ const RESOURCES = {
   'Analysis':      [],
   'CD Planning':   [],
 };
+
+// ─────────────────────────────────────────────
+//  WOW SYNC — bridges the RaidLead addon's local SavedVariables to this
+//  site, via a small local relay (the RaidLead Companion app) plus this
+//  in-browser File System Access code. Originally this talked to the WoW
+//  install folder directly with no local helper at all -- but Chrome/Edge
+//  categorically refuse File System Access to anything under
+//  "Program Files"/"Program Files (x86)", which is exactly where Battle.net
+//  installs WoW by default. There's no way around that from a webpage, so
+//  RaidLead Companion (a small always-running desktop app -- see companion/)
+//  mirrors data between the real WoW folder and a plain, non-blocked
+//  "bridge" folder in the user's Documents, and this code only ever
+//  touches that bridge folder -- never Program Files.
+//
+//  Because both sides of THIS hop (Companion <-> browser) are code we
+//  fully control, the bridge folder's files are plain JSON, not Lua -- only
+//  Companion needs to speak Lua now (for the real WoW files), which
+//  simplifies this side a lot (no more Lua parsing here, no more account
+//  picker -- Companion already resolved which WoW account to use).
+//
+//  Chromium-only (Chrome/Edge) -- there's no fallback for Firefox/Safari,
+//  which don't implement the File System Access API at all.
+// ─────────────────────────────────────────────
+const WOWSYNC_DB_NAME = 'raidlead-wowsync';
+const WOWSYNC_STORE   = 'handles';
+const BRIDGE_LOOT_FILE   = 'loot-export.json';
+const BRIDGE_ROSTER_FILE = 'roster-import.json';
+
+function wowSyncSupported() {
+  return typeof window.showDirectoryPicker === 'function';
+}
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(WOWSYNC_DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(WOWSYNC_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(WOWSYNC_STORE, 'readonly');
+    const req = tx.objectStore(WOWSYNC_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(WOWSYNC_STORE, 'readwrite');
+    tx.objectStore(WOWSYNC_STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function setWowSyncStatus(msg) {
+  const el = document.getElementById('wow-sync-status');
+  if (el) el.textContent = msg;
+}
+
+async function connectWowFolder() {
+  if (!wowSyncSupported()) return;
+  try {
+    const handle = await window.showDirectoryPicker({ startIn: 'documents' });
+    await idbSet('bridgeHandle', handle);
+
+    const hasRun = await fileExistsInHandle(handle, 'config.json');
+    setWowSyncStatus(hasRun
+      ? 'Connected.'
+      : 'Connected, but this doesn\'t look like RaidLead Companion has run yet — open it (or install it) and try Sync again.');
+
+    document.getElementById('wow-sync-now-btn').style.display = '';
+    // Auto-collapse the setup instructions once there's real evidence this
+    // is actually hooked up -- but only then, so someone who connects the
+    // wrong folder (or hasn't installed/run Companion yet) still sees the
+    // instructions rather than having them vanish on a false-looking success.
+    if (hasRun) setWowSyncExplainerCollapsed(true);
+  } catch (e) {
+    if (e.name !== 'AbortError') setWowSyncStatus('Couldn\'t open that folder — try again.'); // user just cancelled the picker otherwise
+  }
+}
+
+async function fileExistsInHandle(dirHandle, name) {
+  try { await dirHandle.getFileHandle(name); return true; }
+  catch { return false; }
+}
+
+// Restores a previously-connected folder on page load, if the browser still
+// honors the stored permission. Re-granting can't happen silently (the API
+// requires a real click) -- if permission has lapsed, this just shows the
+// Connect button again rather than erroring.
+// Collapses/expands just the explanatory text (not the Connect/Sync
+// buttons or status, which stay put) so the box doesn't hog the whole page
+// once someone's already set up and just wants to see loot history below.
+// Remembered per-browser via localStorage -- purely a display preference,
+// nothing meaningful to sync anywhere else.
+function setWowSyncExplainerCollapsed(collapsed) {
+  const explainer = document.getElementById('wow-sync-explainer');
+  const arrow = document.getElementById('wow-sync-toggle-arrow');
+  if (!explainer || !arrow) return;
+  explainer.style.display = collapsed ? 'none' : '';
+  arrow.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+  try { localStorage.setItem('raidlead_wowsync_collapsed', collapsed ? '1' : '0'); } catch {}
+}
+
+function toggleWowSyncExplainer() {
+  const explainer = document.getElementById('wow-sync-explainer');
+  const isCollapsed = explainer && explainer.style.display === 'none';
+  setWowSyncExplainerCollapsed(!isCollapsed);
+}
+
+async function initWowSync() {
+  try { setWowSyncExplainerCollapsed(localStorage.getItem('raidlead_wowsync_collapsed') === '1'); } catch {}
+
+  const box = document.getElementById('wow-sync-controls');
+  const unsupported = document.getElementById('wow-sync-unsupported');
+  if (!wowSyncSupported()) {
+    box.style.display = 'none';
+    unsupported.style.display = 'block';
+    return;
+  }
+
+  const handle = await idbGet('bridgeHandle');
+  if (!handle) return;
+
+  try {
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    setWowSyncStatus(perm === 'granted' ? 'Connected.' : 'Connected previously — click Sync Now to re-grant access.');
+    document.getElementById('wow-sync-now-btn').style.display = '';
+  } catch {
+    setWowSyncStatus('Lost access to your bridge folder — click Connect WoW Folder again.');
+  }
+}
+
+// Shared by both Sync buttons (Loot tab and Raid Planner) so there's one
+// place that actually does the work -- each caller just wires its own UI
+// feedback around it. Throws with `.needsConnect = true` when there's
+// nothing connected yet, so callers can point the user at the Loot tab
+// specifically rather than a generic failure.
+async function performFullSync() {
+  const handle = await idbGet('bridgeHandle');
+  if (!handle) {
+    const err = new Error('Connect your bridge folder on the Loot tab first.');
+    err.needsConnect = true;
+    throw err;
+  }
+
+  // Must run inside a click handler -- the API requires a fresh user gesture
+  // to (re-)request permission, which is exactly what both callers are.
+  const perm = await handle.requestPermission({ mode: 'readwrite' });
+  if (perm !== 'granted') throw new Error('Permission denied — can\'t sync without access to your bridge folder.');
+
+  const uploaded = await wowSyncUploadLoot(handle);
+  const rosterResult = await wowSyncDownloadRoster(handle);
+  return { uploaded, rosterResult };
+}
+
+async function wowSyncNow() {
+  const btn = document.getElementById('wow-sync-now-btn');
+  btn.disabled = true;
+  try {
+    setWowSyncStatus('Syncing...');
+    const { uploaded, rosterResult } = await performFullSync();
+    setWowSyncStatus(`Done — uploaded ${uploaded} loot record(s), ${rosterResult}. RaidLead Companion picks this up automatically within a few minutes, then /reload in-game to see it.`);
+    loadLootTab();
+  } catch (e) {
+    setWowSyncStatus(e.needsConnect ? 'Connect your bridge folder first (below).' : ('Sync failed: ' + e.message));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Raid Planner's "Sync to WoW" button -- same underlying sync, feedback via
+// toast instead of the Loot tab's status line since that element isn't on
+// this tab. Exists because publishing already auto-syncs the roster when a
+// folder's connected, but that's silent/best-effort (see
+// autoSyncRosterIfConnected) -- this gives officers a visible, on-demand way
+// to push again (e.g. after editing swaps/attendance) without hunting for
+// the Loot tab, and a clear way to find out *why* nothing happened if
+// they're not connected yet or a permission prompt is needed.
+async function plannerSyncNow() {
+  const btn = document.getElementById('planner-sync-btn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Syncing...';
+  try {
+    const { uploaded, rosterResult } = await performFullSync();
+    showToast(`Synced to WoW — ${rosterResult}; ${uploaded} loot record(s) uploaded. RaidLead Companion will pull this into the game within a few minutes.`, 'success');
+  } catch (e) {
+    if (e.needsConnect) {
+      openAddonSetupModal();
+    } else {
+      showToast('Sync failed: ' + e.message, 'error');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+function openAddonSetupModal() {
+  document.getElementById('addon-setup-modal').classList.add('open');
+}
+
+function closeAddonSetupModal() {
+  document.getElementById('addon-setup-modal').classList.remove('open');
+}
+
+// Reads loot-export.json from the bridge folder (written there by the
+// RaidLead Companion app, which pulled it out of the real WoW SavedVariables
+// file) -- plain JSON now, no Lua involved on this side of the bridge.
+async function wowSyncUploadLoot(bridgeHandle) {
+  let recordsById;
+  try {
+    const fileHandle = await bridgeHandle.getFileHandle(BRIDGE_LOOT_FILE);
+    const text = await (await fileHandle.getFile()).text();
+    recordsById = text ? JSON.parse(text) : {};
+  } catch {
+    recordsById = {}; // Companion hasn't run yet, or nothing captured so far
+  }
+
+  const records = Object.values(recordsById || {});
+  if (records.length === 0) return 0;
+
+  const resp = await fetch('/api/loot?action=import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamId: STATE.teamId, records }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Loot upload failed');
+  return data.imported || 0;
+}
+
+// Writes roster-import.json into the bridge folder -- plain JSON; the
+// PowerShell script is what turns this into the Lua WoW actually reads.
+async function wowSyncDownloadRoster(bridgeHandle) {
+  const [planResp, membersResp, attendanceResp] = await Promise.all([
+    fetch(`/api/plans?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+    fetch(`/api/members?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+    fetch(`/api/members?action=getAttendance&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+  ]);
+
+  const roster = (membersResp.members || [])
+    .flatMap(m => m.characters || [])
+    .map(c => ({ name: c.name, class: c.class, primaryRole: c.primary_role }));
+
+  let plan = null;
+  if (planResp.plan) {
+    const unavailable = (attendanceResp.marks || [])
+      .filter(m => m.status === 'unavailable' && m.raid_date === planResp.plan.raid_date)
+      .map(m => m.character_name);
+    plan = {
+      name: planResp.plan.name,
+      raidDate: planResp.plan.raid_date,
+      updatedAt: planResp.plan.updated_at,
+      members: (planResp.plan.raid_plan_members || [])
+        .filter(m => m.characters)
+        .map(m => ({ name: m.characters.name, class: m.characters.class, primaryRole: m.characters.primary_role, assignedRole: m.assigned_role })),
+      unavailable,
+    };
+  }
+
+  const payload = { plan, roster, syncedAt: Math.floor(Date.now() / 1000) };
+
+  const fileHandle = await bridgeHandle.getFileHandle(BRIDGE_ROSTER_FILE, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(JSON.stringify(payload));
+  await writable.close();
+
+  return plan
+    ? `"${plan.name}" queued for import`
+    : 'no published plan, but roster data queued for import';
+}
+
+// Called right after a successful Publish so an officer who's already
+// connected their bridge folder doesn't need a second trip to the Loot tab
+// to push the new roster down. Deliberately silent/best-effort: publishing
+// already succeeded regardless, this is a bonus, and a fresh permission
+// PROMPT popping up out of nowhere after clicking Publish would be a worse
+// experience than just skipping it -- queryPermission (not requestPermission)
+// only proceeds if the browser still honors an earlier grant. If it doesn't,
+// the officer can always still hit Sync Now manually on the Loot tab.
+async function autoSyncRosterIfConnected() {
+  if (!wowSyncSupported()) return;
+  try {
+    const handle = await idbGet('bridgeHandle');
+    if (!handle) return;
+
+    const perm = await handle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') return;
+
+    await wowSyncDownloadRoster(handle);
+    showToast('Roster queued for your bridge folder — RaidLead Companion picks it up automatically, then /reload in-game to see it.', 'success');
+  } catch (e) {
+    // Best-effort only -- publishing already succeeded either way.
+  }
+}
+
+// ─────────────────────────────────────────────
+//  LOOT TAB — fed by the RaidLead WoW addon. Runs are grouped by the
+//  addon-generated session_id so a whole non-guild run can be cleaned up
+//  in one action; reassign/delete are Officer/Owner-only, matching the
+//  server-side guard in api/loot.js.
+// ─────────────────────────────────────────────
+async function loadLootTab() {
+  if (!STATE.teamId) return;
+  initWowSync();
+  try {
+    const [lootData, checksData, membersData] = await Promise.all([
+      fetch(`/api/loot?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+      fetch(`/api/loot?action=getTierChecks&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+      fetch(`/api/members?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+    ]);
+    if (lootData.error) throw new Error(lootData.error);
+    // Surface these two explicitly rather than silently defaulting to an
+    // empty checklist/roster -- that would look exactly like "the checklist
+    // keeps resetting" when it's actually just a failed fetch (e.g. the
+    // tier_token_checks table not existing yet in Supabase).
+    if (checksData.error) throw new Error('Tier checklist: ' + checksData.error);
+    if (membersData.error) throw new Error('Roster: ' + membersData.error);
+    STATE.lootDrops = lootData.drops || [];
+    STATE.tierCheckedIds = new Set(checksData.checkedCharacterIds || []);
+    STATE.teamRosterChars = (membersData.members || []).flatMap(m => m.characters || []);
+
+    renderTierTracker(STATE.lootDrops);
+    renderTierRoster();
+    renderLootRuns(STATE.lootDrops, 'loot-runs', null,
+      'No loot recorded yet — install the RaidLead addon + companion app to start tracking.');
+    renderLootRuns(STATE.lootDrops, 'loot-boe-runs', d => d.is_boe, 'No BoEs recorded yet.');
+  } catch (e) {
+    const el = document.getElementById('loot-runs');
+    if (el) el.innerHTML = `<div style="color:var(--text-mute); font-size:13px;">Error loading loot: ${e.message}</div>`;
+  }
+}
+
+function setLootSubTab(name, btn) {
+  document.querySelectorAll('#loot-subtab-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  ['tier', 'boe', 'history'].forEach(n => {
+    const el = document.getElementById('loot-subtab-' + n);
+    if (el) el.style.display = n === name ? '' : 'none';
+  });
+}
+
+function renderTierTracker(drops) {
+  const el = document.getElementById('loot-tier-tracker');
+  if (!el) return;
+
+  const tokensByHolder = {};
+  drops.filter(d => d.is_tier_token).forEach(d => {
+    const holder = d.current_holder_name || 'Unknown';
+    tokensByHolder[holder] = (tokensByHolder[holder] || 0) + 1;
+  });
+
+  const names = Object.keys(tokensByHolder).sort();
+  el.innerHTML = `
+    <div class="section-title" style="font-size:14px; margin-bottom:10px;">Recorded by Addon</div>
+    ${names.length === 0
+      ? '<div style="font-size:12px; color:var(--text-mute);">No tier tokens recorded yet.</div>'
+      : `<div style="display:flex; flex-wrap:wrap; gap:8px;">
+          ${names.map(name => `
+            <div style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:6px 12px; font-size:12px;">
+              ${name} <span style="color:var(--gold); font-weight:700;">×${tokensByHolder[name]}</span>
+            </div>
+          `).join('')}
+        </div>`}
+  `;
+}
+
+// Manual "one tier token per member" checklist, split into Cloth/Leather/Mail/
+// Plate columns -- separate from renderTierTracker's addon-recorded list above
+// since officers need to be able to hand-confirm this regardless of what the
+// addon saw (see the schema note on tier_token_checks for why).
+function renderTierRoster() {
+  const el = document.getElementById('loot-tier-roster');
+  if (!el) return;
+
+  const chars = STATE.teamRosterChars || [];
+  if (chars.length === 0) { el.innerHTML = ''; return; }
+
+  const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+  const checkedIds = STATE.tierCheckedIds || new Set();
+
+  const tokensByName = {};
+  (STATE.lootDrops || []).filter(d => d.is_tier_token).forEach(d => {
+    if (d.current_holder_name) tokensByName[d.current_holder_name] = (tokensByName[d.current_holder_name] || 0) + 1;
+  });
+
+  const byArmor = { Plate: [], Mail: [], Leather: [], Cloth: [] };
+  chars.forEach(c => {
+    const armor = ARMOR_TYPE_BY_CLASS[(c.class || '').toLowerCase()];
+    if (armor) byArmor[armor].push(c);
+  });
+  Object.values(byArmor).forEach(list => list.sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+
+  el.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <div class="section-title" style="font-size:14px;">Tier Token Checklist</div>
+      ${isOfficer ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="resetTierChecklist()">Reset for New Tier</button>` : ''}
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px;">
+      ${ARMOR_TYPE_ORDER.map(armor => `
+        <div style="background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:10px;">
+          <div style="font-weight:700; font-size:12px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">${armor}</div>
+          ${byArmor[armor].length === 0 ? '<div style="font-size:11px; color:var(--text-mute);">—</div>' : byArmor[armor].map(c => {
+            const checked = checkedIds.has(c.id);
+            const color = CLASS_COLORS[(c.class || '').toLowerCase()] || '#fff';
+            const recorded = tokensByName[c.name];
+            return `
+              <label style="display:flex; align-items:center; gap:6px; padding:3px 0; font-size:12px; ${isOfficer ? 'cursor:pointer;' : ''}">
+                <input type="checkbox" ${checked ? 'checked' : ''} ${isOfficer ? '' : 'disabled'} ${c.id ? `onchange="toggleTierCheck('${c.id}', this.checked)"` : 'disabled'} />
+                <span style="color:${color};">${c.name}</span>
+                ${recorded ? `<span title="${recorded} tier token drop recorded by the addon" style="color:var(--gold); font-size:11px;">🎁</span>` : ''}
+              </label>
+            `;
+          }).join('')}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function toggleTierCheck(characterId, checked) {
+  try {
+    const resp = await fetch('/api/loot?action=setTierCheck', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, characterId, checked }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to update');
+    if (checked) STATE.tierCheckedIds.add(characterId); else STATE.tierCheckedIds.delete(characterId);
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    renderTierRoster();
+  }
+}
+
+async function resetTierChecklist() {
+  if (!confirm('Clear every checked-off tier token for this team? Use this at the start of a new raid tier.')) return;
+  try {
+    const resp = await fetch('/api/loot?action=resetTierChecks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to reset');
+    STATE.tierCheckedIds = new Set();
+    renderTierRoster();
+    showToast('Tier token checklist reset', 'success');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// name -> Blizzard's real in-game color for that upgrade track badge.
+const QUALITY_TRACK_COLORS = { Veteran: '#1eff00', Champion: '#0070dd', Hero: '#a335ee', Mythic: '#ff8000' };
+
+function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+
+  const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+
+  const sessions = {};
+  drops.forEach(d => {
+    if (filterFn && !filterFn(d)) return;
+    (sessions[d.session_id] = sessions[d.session_id] || []).push(d);
+  });
+
+  const sessionIds = Object.keys(sessions).sort((a, b) => {
+    const aTime = sessions[a][0]?.created_at || '';
+    const bTime = sessions[b][0]?.created_at || '';
+    return bTime.localeCompare(aTime);
+  });
+
+  if (sessionIds.length === 0) {
+    el.innerHTML = `<div style="font-size:13px; color:var(--text-mute);">${emptyMessage}</div>`;
+    return;
+  }
+
+  // Deleting a run removes every item from that session, including ones this
+  // filtered view isn't showing -- only offer that button on the unfiltered
+  // (Loot History) view so it can't be mistaken for "delete just these".
+  const allowDeleteRun = !filterFn;
+
+  el.innerHTML = sessionIds.map(sessionId => {
+    const items = sessions[sessionId];
+    const likelyPug = items.some(d => d.likely_pug);
+    const bossCount = new Set(items.map(d => d.boss_name).filter(Boolean)).size;
+    const raidDate = items[0]?.raid_date || '?';
+
+    return `
+      <div style="background:var(--bg3); border:1px solid ${likelyPug ? 'rgba(196,30,58,0.4)' : 'var(--border)'}; border-radius:6px; padding:14px; margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div>
+            <span style="font-weight:700;">${raidDate}</span>
+            <span style="color:var(--text-mute); font-size:12px; margin-left:8px;">${bossCount} boss${bossCount === 1 ? '' : 'es'} · ${items.length} item${items.length === 1 ? '' : 's'}</span>
+            ${likelyPug ? '<span style="margin-left:8px; font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#ff6b6b; border:1px solid rgba(196,30,58,0.4); border-radius:3px; padding:2px 6px;">Likely PUG</span>' : ''}
+          </div>
+          ${isOfficer && allowDeleteRun ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="deleteLootRun('${sessionId}')">Delete Run</button>` : ''}
+        </div>
+        <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+          ${items.map(d => renderLootRow(d, isOfficer)).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderLootRow(d, isOfficer) {
+  const traded = d.current_holder_name && d.current_holder_name !== d.recipient_name;
+  const trackColor = QUALITY_TRACK_COLORS[d.item_quality_track];
+  const trackBadge = d.item_quality_track
+    ? `<span style="color:${trackColor || 'var(--text-mute)'}; margin-left:6px;">${d.item_quality_track}${d.upgrade_level ? ` ${d.upgrade_level}/${d.upgrade_level_max || '?'}` : ''}</span>`
+    : '';
+  const metaBits = [d.item_slot, d.armor_type].filter(Boolean).join(' · ');
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:6px 8px; background:var(--bg2); border-radius:4px;">
+      <div>
+        <span style="font-weight:600;">${d.item_name || ('Item ' + d.item_id)}</span>
+        ${d.is_tier_token ? '<span style="color:var(--gold); margin-left:6px;">Tier Token</span>' : ''}
+        ${d.is_boe ? '<span style="color:var(--text-mute); margin-left:6px;">BoE</span>' : ''}
+        ${trackBadge}
+        <span style="color:var(--text-mute); margin-left:6px;">${d.boss_name || 'Trash'}</span>
+        ${metaBits ? `<span style="color:var(--text-mute); margin-left:6px;">(${metaBits})</span>` : ''}
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span>${d.current_holder_name || '?'}${traded ? ` <span style="color:var(--text-mute);">(was ${d.recipient_name})</span>` : ''}</span>
+        ${isOfficer ? `
+          <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="reassignLootItem('${d.id}')">Reassign</button>
+          <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" onclick="deleteLootItem('${d.id}')">✕</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function reassignLootItem(lootId) {
+  const newHolderName = prompt('Character name this item should be credited to:');
+  if (!newHolderName) return;
+  try {
+    const resp = await fetch('/api/loot?action=reassign', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, lootId, newHolderName: newHolderName.trim() }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to reassign');
+    showToast('Reassigned to ' + newHolderName.trim(), 'success');
+    loadLootTab();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function deleteLootItem(lootId) {
+  if (!confirm('Delete this loot record? This cannot be undone.')) return;
+  try {
+    const resp = await fetch('/api/loot?action=delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, lootId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to delete');
+    loadLootTab();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function deleteLootRun(sessionId) {
+  if (!confirm('Delete every loot record from this run? This cannot be undone.')) return;
+  try {
+    const resp = await fetch('/api/loot?action=deleteSession', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, sessionId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to delete run');
+    showToast(`Deleted ${data.deleted || 0} record(s)`, 'success');
+    loadLootTab();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
 
 function renderResources() {
   const content = document.getElementById('resources-content');
@@ -6358,6 +7059,7 @@ async function publishRaidPlan() {
     document.getElementById('plan-status-badge').style.color     = '#1EFF00';
     document.getElementById('plan-status-badge').style.borderColor = 'rgba(30,255,0,0.3)';
     showToast('Raid plan published! Members can now see it.', 'success');
+    autoSyncRosterIfConnected();
   } catch(e) {
     showToast('Error publishing: ' + e.message, 'error');
     // Restore edit mode UI so user can try again

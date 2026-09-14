@@ -1,0 +1,10 @@
+# The companion desktop app's source, dependencies, and build output never
+# need to be part of the deployed site. Without this, `vercel --prod` was
+# trying to upload companion/'s own Electron binaries (173MB+ each), blowing
+# past Vercel's 100MB per-file limit even though git itself already ignores
+# them.
+companion/
+# The installer itself is also over that same 100MB limit -- distributed via
+# a GitHub Release asset instead (see companion/README.md), never served
+# from this site directly.
+public/RaidLead-Companion-Setup.exe

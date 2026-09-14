@@ -1,0 +1,17 @@
+## Interface: 120100
+## Title: RaidLead
+## Notes: Mirrors your RaidLead published roster in-game and tracks boss loot.
+## Author: RaidLead
+## Version: 0.1.0
+## SavedVariables: RaidLeadDB, RaidLeadExportDB
+## SavedVariablesPerCharacter: RaidLeadCompanionDB
+## IconTexture: Interface\AddOns\RaidLead\Icon.png
+
+Json.lua
+ClassColors.lua
+Core.lua
+Loot.lua
+Roster.lua
+UI\RosterFrame.lua
+UI\LootFrame.lua
+UI\MinimapButton.lua

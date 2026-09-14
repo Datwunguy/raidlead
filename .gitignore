@@ -1,5 +1,12 @@
 node_modules/
 api/node_modules/
+companion/node_modules/
+companion/dist/
+companion/out/
+# Built installer -- too large for git (100MB+, over GitHub's per-file
+# limit). Distributed via a GitHub Release asset instead; see
+# companion/README.md's "Releasing a new version" section.
+public/RaidLead-Companion-Setup.exe
 .env
 .env.local
 .netlify/
