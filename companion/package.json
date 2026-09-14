@@ -1,6 +1,6 @@
 {
   "name": "raidlead-companion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Desktop companion for the RaidLead WoW addon -- keeps the addon's SavedVariables and the RaidLead Docs bridge folder in sync in the background, replacing the scheduled-task/PowerShell setup. The only network access it has is checking raidlead.vercel.app/updates for a newer version and notifying you -- it never downloads or installs anything on its own.",
   "main": "src/main.js",
