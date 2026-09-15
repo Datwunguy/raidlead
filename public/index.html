@@ -4474,10 +4474,10 @@ async function loadLootTab() {
   if (!STATE.teamId) return;
   initWowSync();
   try {
-    const [lootData, checksData, membersData] = await Promise.all([
+    const [lootData, checksData, planData] = await Promise.all([
       fetch(`/api/loot?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
       fetch(`/api/loot?action=getTierChecks&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
-      fetch(`/api/members?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+      fetch(`/api/plans?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
     ]);
     if (lootData.error) throw new Error(lootData.error);
     // Surface these two explicitly rather than silently defaulting to an
@@ -4485,10 +4485,15 @@ async function loadLootTab() {
     // keeps resetting" when it's actually just a failed fetch (e.g. the
     // tier_token_checks table not existing yet in Supabase).
     if (checksData.error) throw new Error('Tier checklist: ' + checksData.error);
-    if (membersData.error) throw new Error('Roster: ' + membersData.error);
+    if (planData.error) throw new Error('Roster: ' + planData.error);
     STATE.lootDrops = lootData.drops || [];
     STATE.tierCheckedIds = new Set(checksData.checkedCharacterIds || []);
-    STATE.teamRosterChars = (membersData.members || []).flatMap(m => m.characters || []);
+    // The published *roster* only -- not every character every team member
+    // has ever claimed. Tier-token tracking should be scoped to who's
+    // actually raiding right now, same list the addon's Roster pane mirrors.
+    STATE.teamRosterChars = (planData.plan?.raid_plan_members || [])
+      .map(m => m.characters)
+      .filter(Boolean);
 
     renderTierTracker(STATE.lootDrops);
     renderTierRoster();
@@ -4544,7 +4549,10 @@ function renderTierRoster() {
   if (!el) return;
 
   const chars = STATE.teamRosterChars || [];
-  if (chars.length === 0) { el.innerHTML = ''; return; }
+  if (chars.length === 0) {
+    el.innerHTML = '<div style="font-size:12px; color:var(--text-mute);">No published roster yet — publish one on Raid Planner to track tier tokens here.</div>';
+    return;
+  }
 
   const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
   const checkedIds = STATE.tierCheckedIds || new Set();
