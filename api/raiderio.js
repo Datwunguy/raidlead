@@ -156,9 +156,15 @@ module.exports = async (req, res) => {
         `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(toRaiderioRegion(region))}` +
         `&realm=all&page=0&faction=&recent=false&limit=0`;
 
+      // Raider.io returns 400 for a slug it genuinely doesn't recognize, but
+      // 5xx/timeouts (verified live: instance-rankings intermittently 502s/
+      // 504s under load) mean their service is struggling, not that the raid
+      // is wrong -- those need a different message, or "couldn't match your
+      // zone" reads as a RaidLead bug when it's actually Raider.io's outage.
       const resp = await fetch(rankingsUrl);
       if (!resp.ok) {
-        return res.status(200).json({ configured: false, reason: 'RAID_NOT_FOUND', zoneName });
+        const reason = resp.status >= 500 ? 'RAIDERIO_UNAVAILABLE' : 'RAID_NOT_FOUND';
+        return res.status(200).json({ configured: false, reason, zoneName });
       }
       const data = await resp.json();
       const rr = data.raidRankings;
@@ -319,7 +325,14 @@ module.exports = async (req, res) => {
           `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(currentSlug)}` +
           `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
         );
-        if (!metaResp.ok) return res.status(200).json({ raids: [] });
+        // Same 5xx-vs-other distinction as the progress action below -- a
+        // Raider.io outage here is what made the whole raid-tier dropdown
+        // disappear (this call is what discovers currentExpansionId), so the
+        // frontend needs to tell "Raider.io is down" apart from "empty".
+        if (!metaResp.ok) {
+          const reason = metaResp.status >= 500 ? 'RAIDERIO_UNAVAILABLE' : 'RAID_NOT_FOUND';
+          return res.status(200).json({ raids: [], reason });
+        }
         const metaData = await metaResp.json();
         currentExpansionId = metaData?.raidRankings?.raid?.expansion_id;
         if (!currentExpansionId) return res.status(200).json({ raids: [] });

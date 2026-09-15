@@ -3970,11 +3970,20 @@ async function loadProgressRaidsList() {
   if (!select) return;
 
   if (!STATE.progressRaidsList) {
+    let raidsResult = null;
     try {
       const resp = await fetch(`/api/raiderio?action=listRaids&teamId=${encodeURIComponent(STATE.teamId)}`);
       const data = await resp.json();
-      STATE.progressRaidsList = resp.ok ? (data.raids || []) : [];
-    } catch (e) { STATE.progressRaidsList = []; }
+      // A Raider.io outage (RAIDERIO_UNAVAILABLE) must NOT be cached as a
+      // permanent empty list -- that's what made the dropdown "go away" for
+      // the rest of the session even after Raider.io recovered. Only a
+      // genuine successful response sticks; a failure just retries next
+      // time this tab is opened.
+      if (resp.ok && data.reason !== 'RAIDERIO_UNAVAILABLE') raidsResult = data.raids || [];
+    } catch (e) { /* leave raidsResult null so this retries next time */ }
+
+    if (raidsResult === null) { select.style.display = 'none'; return; }
+    STATE.progressRaidsList = raidsResult;
   }
 
   const raids = STATE.progressRaidsList;
@@ -4047,6 +4056,7 @@ async function loadProgressTab() {
 // automatic polling), but useful right after a big guild kill.
 function refreshProgressTab() {
   STATE.progressCache = {};
+  STATE.progressRaidsList = null;
   loadProgressTab();
 }
 
@@ -4057,15 +4067,20 @@ function renderProgress(data) {
   if (!data.configured) {
     document.getElementById('progress-raid-name').textContent = '';
     subtitle.textContent = '';
-    const message = data.reason === 'RAID_NOT_FOUND'
-      ? `Couldn't match your zone ("${data.zoneName || STATE.config?.zoneName || ''}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
-      : 'The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.';
+    const isOutage = data.reason === 'RAIDERIO_UNAVAILABLE';
+    const title = isOutage ? "Raider.io is having issues" : "Progress isn't available yet";
+    const icon = isOutage ? '⏳' : '🗺';
+    const message = isOutage
+      ? "Raider.io's servers are temporarily unavailable, so we can't pull rankings right now. This is on their end, not RaidLead -- try again in a few minutes."
+      : data.reason === 'RAID_NOT_FOUND'
+        ? `Couldn't match your zone ("${data.zoneName || STATE.config?.zoneName || ''}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
+        : 'The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.';
     content.innerHTML = `
       <div class="empty-state">
-        <div class="empty-state-icon">🗺</div>
-        <h3>Progress isn't available yet</h3>
+        <div class="empty-state-icon">${icon}</div>
+        <h3>${title}</h3>
         <p>${message}</p>
-        ${data.reason !== 'RAID_NOT_FOUND' ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
+        ${(!isOutage && data.reason !== 'RAID_NOT_FOUND') ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
       </div>`;
     return;
   }
