@@ -72,7 +72,13 @@ module.exports = async (req, res) => {
 
   // ── GET: list every team this account belongs to; if a teamId is given (or
   // there's only one team), also return that team's full config ──
-  if (action === 'get' || req.method === 'GET') {
+  // `!action && req.method === 'GET'`, not just `req.method === 'GET'` --
+  // that broader check would silently swallow any other GET-based action in
+  // this file too, the same real bug found and fixed in api/loot.js and
+  // api/members.js (every other action here happens to always be called via
+  // POST today, so this was latent rather than actively broken, but the
+  // same mistake, worth closing off).
+  if (action === 'get' || (!action && req.method === 'GET')) {
     try {
       const myTeams = await getMyTeams(supabase, session.id);
       if (myTeams.length === 0) {

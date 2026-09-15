@@ -18,7 +18,15 @@ module.exports = async (req, res) => {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
   // ── GET: return all members of a specific team ──
-  if (action === 'get' || req.method === 'GET') {
+  // `!action && req.method === 'GET'`, not just `req.method === 'GET'` --
+  // the broader check silently swallowed every other GET-based action below
+  // (getAttendance included) since a plain fetch() defaults to GET
+  // regardless of the actual `action` param. Confirmed real impact: the
+  // roster-sync's GET call to getAttendance was always hitting this branch
+  // instead, so the "unavailable" list mirrored to the addon was always
+  // empty -- while the Attendance tab's own POST call to the same action
+  // worked fine, which is why marks showed up correctly there the whole time.
+  if (action === 'get' || (!action && req.method === 'GET')) {
     const teamId = req.query.teamId || req.body?.teamId;
     try {
       await assertTeamMembership(supabase, session.id, teamId);

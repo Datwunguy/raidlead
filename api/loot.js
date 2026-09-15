@@ -120,7 +120,14 @@ module.exports = async (req, res) => {
   if (!session) return res.status(401).json({ error: 'Not authenticated' });
 
   // ── GET: loot history for a team (any team member) ──
-  if (action === 'get' || req.method === 'GET') {
+  // `!action && req.method === 'GET'` (not just `req.method === 'GET'`) --
+  // that broader check was silently swallowing every OTHER GET-based action
+  // below (getTierChecks included), since a plain fetch() defaults to GET
+  // regardless of the actual `action` param. Writes (setTierCheck, a POST)
+  // were never affected -- only reads were ever hijacked into returning the
+  // loot list instead, which is exactly why checked state looked like it
+  // never persisted even though it was being saved correctly the whole time.
+  if (action === 'get' || (!action && req.method === 'GET')) {
     const teamId = req.query.teamId || req.body?.teamId;
     try {
       await assertTeamMembership(supabase, session.id, teamId);
