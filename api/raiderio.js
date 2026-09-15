@@ -286,6 +286,14 @@ module.exports = async (req, res) => {
   // not a hardcoded ID.
   const EXPANSION_NAMES = ['Midnight', 'The War Within', 'Dragonflight'];
 
+  // Fallback for the discovery block below, used only when live discovery
+  // fails (e.g. the instance-rankings outage that made the dropdown vanish
+  // entirely). The raid *list* itself comes from static-data, which doesn't
+  // depend on instance-rankings at all -- so as long as this ID is correct,
+  // the dropdown keeps working through an instance-rankings outage. Keep in
+  // sync with EXPANSION_NAMES[0] when a new expansion ships.
+  const CURRENT_EXPANSION_ID_FALLBACK = 11; // Midnight, as of 2026-09
+
   // ── LIST RAIDS: every raid from the 3 most recent expansions, for the
   // raid-tier selector -- not filtered to what this guild has raided, so
   // older tiers are browsable as a world-wide comparison even if the guild
@@ -308,34 +316,39 @@ module.exports = async (req, res) => {
       if (currentExpansionIdCache.id && Date.now() - currentExpansionIdCache.fetchedAt < EXPANSION_ID_CACHE_MS) {
         currentExpansionId = currentExpansionIdCache.id;
       } else {
-        const { data: team } = await supabase
-          .from('teams').select('id, zone_id, zone_name').eq('id', teamId).single();
+        // Try live discovery first (self-updating -- no code change needed
+        // when a new expansion ships), but never let it block the dropdown:
+        // any failure (bad zone/slug, network error, or the instance-rankings
+        // outage that used to take the whole dropdown down with it) falls
+        // back to the hand-maintained constant above instead.
+        let discovered = null;
+        try {
+          const { data: team } = await supabase
+            .from('teams').select('id, zone_id, zone_name').eq('id', teamId).single();
 
-        // Any known raid slug works to discover Raider.io's current
-        // expansion_id -- use the team's own current raid (from its WCL zone).
-        const zoneName = await ensureZoneName(supabase, team);
-        const currentSlug = slugifyRaidName(zoneName);
-        if (!currentSlug) return res.status(200).json({ raids: [] });
+          // Any known raid slug works to discover Raider.io's current
+          // expansion_id -- use the team's own current raid (from its WCL zone).
+          const zoneName = await ensureZoneName(supabase, team);
+          const currentSlug = slugifyRaidName(zoneName);
 
-        // instance-rankings does a full (slow, ~250ms+) rankings computation
-        // no matter how small `limit` is, so this is the one unavoidable slow
-        // call -- everything else comes from the lightweight static-data
-        // endpoint (~10ms, no rankings computation).
-        const metaResp = await fetch(
-          `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(currentSlug)}` +
-          `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
-        );
-        // Same 5xx-vs-other distinction as the progress action below -- a
-        // Raider.io outage here is what made the whole raid-tier dropdown
-        // disappear (this call is what discovers currentExpansionId), so the
-        // frontend needs to tell "Raider.io is down" apart from "empty".
-        if (!metaResp.ok) {
-          const reason = metaResp.status >= 500 ? 'RAIDERIO_UNAVAILABLE' : 'RAID_NOT_FOUND';
-          return res.status(200).json({ raids: [], reason });
-        }
-        const metaData = await metaResp.json();
-        currentExpansionId = metaData?.raidRankings?.raid?.expansion_id;
-        if (!currentExpansionId) return res.status(200).json({ raids: [] });
+          if (currentSlug) {
+            // instance-rankings does a full (slow, ~250ms+) rankings
+            // computation no matter how small `limit` is, so this is the one
+            // slow/failure-prone call -- everything else (the actual raid
+            // list) comes from the lightweight, more reliable static-data
+            // endpoint (~10ms, no rankings computation).
+            const metaResp = await fetch(
+              `https://raider.io/api/raids/instance-rankings?difficulty=mythic&raid=${encodeURIComponent(currentSlug)}` +
+              `&region=us&realm=all&page=0&faction=&recent=false&limit=1`
+            );
+            if (metaResp.ok) {
+              const metaData = await metaResp.json();
+              discovered = metaData?.raidRankings?.raid?.expansion_id || null;
+            }
+          }
+        } catch (e) { /* fall through to the fallback constant below */ }
+
+        currentExpansionId = discovered || CURRENT_EXPANSION_ID_FALLBACK;
         currentExpansionIdCache = { id: currentExpansionId, fetchedAt: Date.now() };
       }
 
