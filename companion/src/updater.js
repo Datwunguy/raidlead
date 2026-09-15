@@ -46,7 +46,16 @@ function isNewer(remote, current) {
   return false;
 }
 
-let notifiedVersion = null; // don't nag about the same available version on every check
+let notifiedVersion = null; // don't fire a second OS notification for the same available version
+// Queryable synchronously via getStatus() -- a persistent banner in Settings
+// (see settingsWindow.html) is more reliable than the one-shot OS
+// notification below, which can be missed, auto-dismissed, or silently
+// blocked by Windows' Focus Assist with no way for this app to know.
+let latestKnown = { available: false, version: null, current: app.getVersion() };
+
+function getStatus() {
+  return latestKnown;
+}
 
 async function checkOnce(onLog) {
   const log = (msg) => onLog(`[update] ${msg}`);
@@ -55,21 +64,25 @@ async function checkOnce(onLog) {
     const current = app.getVersion();
     if (!data.version) throw new Error('version.json missing a "version" field');
 
-    if (!isNewer(data.version, current)) {
+    const available = isNewer(data.version, current);
+    latestKnown = { available, version: available ? data.version : null, current };
+
+    if (!available) {
       log(`Up to date (running ${current}).`);
       return;
     }
-    if (notifiedVersion === data.version) return; // already told them about this one
 
     log(`A newer version is available: v${data.version} (you're on v${current}).`);
-    notifiedVersion = data.version;
-    if (Notification.isSupported()) {
-      const n = new Notification({
-        title: 'RaidLead Companion update available',
-        body: `Version ${data.version} is available (you're on ${current}). Click to download.`,
-      });
-      n.on('click', () => shell.openExternal(DOWNLOAD_URL));
-      n.show();
+    if (notifiedVersion !== data.version) {
+      notifiedVersion = data.version;
+      if (Notification.isSupported()) {
+        const n = new Notification({
+          title: 'RaidLead Companion update available',
+          body: `Version ${data.version} is available (you're on ${current}). Click to download.`,
+        });
+        n.on('click', () => shell.openExternal(DOWNLOAD_URL));
+        n.show();
+      }
     }
   } catch (err) {
     log(`Update check failed (will retry later): ${err.message}`);
@@ -85,4 +98,4 @@ function startUpdateChecks(onLog) {
   setInterval(() => checkOnce(onLog), CHECK_INTERVAL_MS);
 }
 
-module.exports = { startUpdateChecks, checkOnce };
+module.exports = { startUpdateChecks, checkOnce, getStatus, DOWNLOAD_URL };

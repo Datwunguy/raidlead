@@ -34,7 +34,8 @@
   <h1>RaidLead Companion</h1>
   <p class="sub">Keeps your addon's loot data and published roster in sync with the RaidLead Docs bridge folder — no scheduled task, no console window, just runs quietly while it's open. It never makes a network call itself; the website still handles all of that.</p>
 
-  <div id="wow-status" class="hint" style="font-size:12px; margin-bottom:14px;">Checking for WoW...</div>
+  <div id="wow-status" class="hint" style="font-size:12px; margin-bottom:6px;">Checking for WoW...</div>
+  <div id="update-status" style="display:none; font-size:12px; margin-bottom:14px; color:#4ade80;"></div>
 
   <div class="section" style="border-top:none; margin-top:0; padding-top:0;">
     <label>WoW AddOns Folder</label>
@@ -96,6 +97,19 @@
     box.textContent = running ? '🟢 WoW is running — actively syncing.' : '⚪ WoW isn\'t running — waiting quietly in the background.';
   }
 
+  async function refreshUpdateStatus() {
+    const status = await window.raidlead.getUpdateStatus();
+    const box = el('update-status');
+    if (!status || !status.available) { box.style.display = 'none'; return; }
+    box.innerHTML = `An update is available (v${status.version}, you're on v${status.current}) — `
+      + `<a href="#" id="update-link" style="color:#4ade80; text-decoration:underline;">download it from RaidLead</a>`;
+    box.style.display = 'block';
+    el('update-link').addEventListener('click', (e) => {
+      e.preventDefault();
+      window.raidlead.openDownloadLink();
+    });
+  }
+
   async function init() {
     config = await window.raidlead.getConfig();
     el('wowRoot').value = config.wowRoot || '';
@@ -107,7 +121,9 @@
     window.raidlead.onLog(appendLog);
 
     refreshWowStatus();
+    refreshUpdateStatus();
     setInterval(refreshWowStatus, 10000);
+    setInterval(refreshUpdateStatus, 10000);
   }
 
   el('browseWow').addEventListener('click', async () => {

@@ -4,12 +4,12 @@
 // preload.js's IPC bridge, never directly).
 // ============================================================
 const path = require('path');
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell } = require('electron');
 
 const config = require('./config');
 const wowPaths = require('./wowPaths');
 const { SyncManager } = require('./sync');
-const { startUpdateChecks, checkOnce } = require('./updater');
+const { startUpdateChecks, checkOnce, getStatus: getUpdateStatus, DOWNLOAD_URL } = require('./updater');
 
 let mainWindow = null;
 let tray = null;
@@ -105,6 +105,10 @@ ipcMain.handle('raidlead:setConfig', (_e, partial) => {
 ipcMain.handle('raidlead:getLog', () => logBuffer);
 
 ipcMain.handle('raidlead:getWowStatus', () => sync.wowRunning);
+
+ipcMain.handle('raidlead:getUpdateStatus', () => ({ ...getUpdateStatus(), downloadUrl: DOWNLOAD_URL }));
+
+ipcMain.handle('raidlead:openDownloadLink', () => shell.openExternal(DOWNLOAD_URL));
 
 ipcMain.handle('raidlead:browseWowFolder', async () => {
   // Ask for the AddOns folder specifically -- it's the same folder the user
