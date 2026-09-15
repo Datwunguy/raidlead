@@ -63,12 +63,12 @@
   <div class="section">
     <div class="checkbox-row">
       <input type="checkbox" id="autoStart" />
-      <label for="autoStart" style="margin:0;">Start automatically when Windows starts</label>
+      <label for="autoStart" style="margin:0;">Start with Windows (waits quietly until WoW is running)</label>
     </div>
     <div class="hint" style="margin-top:6px;">
-      It starts quietly in the tray either way (no window popping up) and stays idle until it detects WoW running, so
-      leaving this on is the same as "only runs while you're playing" in practice — there's no reliable, non-hacky way
-      on Windows to launch an app specifically when a game starts, so this is the closest equivalent to that.
+      There's no reliable way on Windows to launch an app specifically when a game starts without the same fragility
+      this project already moved away from (a background Task Scheduler job) -- this is the closest, safe equivalent:
+      it opens no window and does nothing at all until it detects WoW is actually running.
     </div>
   </div>
 
