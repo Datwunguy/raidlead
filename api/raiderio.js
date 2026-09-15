@@ -137,10 +137,14 @@ module.exports = async (req, res) => {
 
       // An explicit raidSlug (from the raid-tier selector) views a past
       // tier; otherwise default to whatever the team's WCL zone resolves to.
+      // zoneName is declared out here (not just inside the `if`) because the
+      // RAID_NOT_FOUND responses below reference it regardless of which path
+      // was taken -- it stays null when raidSlug came from the selector.
       const requestedSlug = req.query.raidSlug || req.body?.raidSlug || null;
       let raidSlug = requestedSlug;
+      let zoneName = null;
       if (!raidSlug) {
-        const zoneName = await ensureZoneName(supabase, team);
+        zoneName = await ensureZoneName(supabase, team);
         raidSlug = slugifyRaidName(zoneName);
       }
       if (!raidSlug) {
