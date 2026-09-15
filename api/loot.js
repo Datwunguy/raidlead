@@ -1,7 +1,7 @@
 // ============================================================
 //  loot.js — handles loot-tracking actions
 //  Actions: import, get, reassign, delete, deleteSession,
-//           getTierChecks, setTierCheck, resetTierChecks
+//           getTierChecks, setTierCheck, resetTierChecks, resolveCharacterIds
 //
 //  `import` is append-only -- there is no update/delete path reachable
 //  through it, even though it only needs a normal team-member session (the
@@ -294,6 +294,22 @@ module.exports = async (req, res) => {
       if (error) throw error;
 
       return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+
+  // ── RESOLVE CHARACTER IDS: name -> character_id lookup for a batch of names
+  // (any team member). Used by the Tier Token checklist to tie the live
+  // WowAudit-sourced roster (STATE.players, which has no DB id of its own)
+  // to stable character_id values for persistence. ──
+  if (action === 'resolveCharacterIds') {
+    const { teamId, names } = req.body || {};
+    if (!teamId || !Array.isArray(names)) return res.status(400).json({ error: 'teamId and names[] required' });
+    try {
+      await assertTeamMembership(supabase, session.id, teamId);
+      const ids = await resolveCharacterIds(supabase, teamId, names);
+      return res.status(200).json({ ids });
     } catch (err) {
       return res.status(err.status || 500).json({ error: err.message });
     }

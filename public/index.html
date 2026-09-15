@@ -4474,10 +4474,22 @@ async function loadLootTab() {
   if (!STATE.teamId) return;
   initWowSync();
   try {
-    const [lootData, checksData, planData] = await Promise.all([
+    // The real roster is STATE.players -- the live WowAudit-sourced Guild
+    // Roster tab, already loaded before any tab can be viewed (see
+    // loadRosterFromWowaudit(), called during the main boot sequence). Not
+    // the Raid Planner's published plan (that's one night's assignment, a
+    // subset) and not api/members' claimed-characters list (that omits
+    // anyone who hasn't linked an account yet). It has no database id of
+    // its own, so resolveCharacterIds ties each name to the character_id
+    // tier_token_checks actually persists against.
+    const rosterNames = (STATE.players || []).map(p => p.name);
+    const [lootData, checksData, idsData] = await Promise.all([
       fetch(`/api/loot?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
       fetch(`/api/loot?action=getTierChecks&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
-      fetch(`/api/plans?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
+      fetch('/api/loot?action=resolveCharacterIds', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teamId: STATE.teamId, names: rosterNames }),
+      }).then(r => r.json()),
     ]);
     if (lootData.error) throw new Error(lootData.error);
     // Surface these two explicitly rather than silently defaulting to an
@@ -4485,15 +4497,12 @@ async function loadLootTab() {
     // keeps resetting" when it's actually just a failed fetch (e.g. the
     // tier_token_checks table not existing yet in Supabase).
     if (checksData.error) throw new Error('Tier checklist: ' + checksData.error);
-    if (planData.error) throw new Error('Roster: ' + planData.error);
+    if (idsData.error) throw new Error('Roster: ' + idsData.error);
     STATE.lootDrops = lootData.drops || [];
     STATE.tierCheckedIds = new Set(checksData.checkedCharacterIds || []);
-    // The published *roster* only -- not every character every team member
-    // has ever claimed. Tier-token tracking should be scoped to who's
-    // actually raiding right now, same list the addon's Roster pane mirrors.
-    STATE.teamRosterChars = (planData.plan?.raid_plan_members || [])
-      .map(m => m.characters)
-      .filter(Boolean);
+    STATE.teamRosterChars = (STATE.players || [])
+      .map(p => ({ id: idsData.ids?.[p.name], name: p.name, class: p.class }))
+      .filter(c => c.id); // not yet synced to the characters table -- shouldn't normally happen, but don't render an unpersistable checkbox
 
     renderTierTracker(STATE.lootDrops);
     renderTierRoster();
@@ -4550,7 +4559,7 @@ function renderTierRoster() {
 
   const chars = STATE.teamRosterChars || [];
   if (chars.length === 0) {
-    el.innerHTML = '<div style="font-size:12px; color:var(--text-mute);">No published roster yet — publish one on Raid Planner to track tier tokens here.</div>';
+    el.innerHTML = '<div style="font-size:12px; color:var(--text-mute);">No guild roster loaded yet — check your Wowaudit setup in Guild Settings.</div>';
     return;
   }
 
