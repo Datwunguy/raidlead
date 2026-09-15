@@ -4170,10 +4170,48 @@ function renderProgress(data) {
 //  entries yet just show a placeholder instead of an empty section.
 // ─────────────────────────────────────────────
 const RESOURCES = {
-  'Recruiting':    [],
-  'Raid Planning': [],
-  'Analysis':      [],
-  'CD Planning':   [],
+  'Guild Analytics': [
+    { name: 'Warcraft Logs',          url: 'https://www.warcraftlogs.com/',                          description: 'Review and compare dps/healer logs. Track guild progress and rankings.' },
+    { name: 'WoW Progression Stats',  url: 'https://progstats.io/',                                  description: 'Paste your warcraftlogs progress url for analysis of your progress.' },
+    { name: 'Warcraft Recorder',      url: 'https://warcraftrecorder.com/',                          description: 'Capture povs from multiple different raiders to watch and review.' },
+    { name: 'WoW Analyzer',           url: 'https://wowanalyzer.com/',                                description: 'Upload a report and get character analysis for boss fights.' },
+    { name: 'Wipefest',               url: 'https://www.wipefest.gg/?gameVersion=warcraft-live',      description: 'Upload a report and get analysis for how well players did mechanics.' },
+  ],
+  'Raid Planning': [
+    { name: 'Viserio Cooldowns',            url: 'https://wowutils.com/viserio-cooldowns',    description: 'Plan raid assignments, healer/tank/dps cooldowns, pull CDs from logs.' },
+    { name: 'Raid Leader Exchange Discord', url: 'https://discord.com/invite/rlexchange',     description: 'Really smart people discussing boss strats.' },
+    { name: 'Raid Strats',                  url: 'https://raidstrats.gg/',                    description: 'Create visual plans for bosses.' },
+  ],
+  'Class/Spec Info': [
+    { name: 'Wowhead',    url: 'https://www.wowhead.com/',           description: 'Spec specific guides: BiS gear, rotations, consumables, stats, etc.' },
+    { name: 'Icy Veins',  url: 'https://www.icy-veins.com/wow/',     description: 'Spec specific guides: BiS gear, rotations, consumables, stats, etc.' },
+    { name: 'Bloodmallet', url: 'https://bloodmallet.com/',          description: 'Spec specific trinket lists & PI charts.' },
+    { name: 'Lorrgs',     url: 'https://lorrgs.io/',                 description: 'Spec specific CD timings per boss fights.' },
+    { name: 'Murlok',     url: 'https://murlok.io/',                 description: 'Spec specific talents for pvp and pve.' },
+    { name: 'Archon',     url: 'https://www.archon.gg/wow',          description: 'Spec specific talents for raid & m+ (similar to murlok.io).' },
+  ],
+  'Recruitment': [
+    { name: 'Raider.io',                  url: 'https://raider.io/',                                                              description: 'Manage guild info and recruitment. Look up other guilds and characters. Search for recruits.' },
+    { name: 'Recruitment Discord (NA/OC)', url: 'https://discord.com/invite/recruitment-community-na-oc-246097056958119944',      description: 'A discord for all types of recruitment needs.' },
+    { name: 'WoW Poacher',                url: 'https://wowpoacher.io/',                                                          description: 'Filter by parse, guild progress, and guild rankings. Find your perfect fit.' },
+    { name: 'Guilds of WoW',              url: 'https://guildsofwow.com/',                                                        description: 'Similar to raider.io; manage guild info and search for new recruits.' },
+  ],
+  'Class Discords': [
+    { name: 'Class Discords', url: 'https://www.wowhead.com/discord-servers', description: 'Directory of official class Discord communities, curated by Wowhead.' },
+    { name: 'Death Knight',  url: 'https://discord.com/invite/acherus',                description: 'Official Death Knight community Discord.' },
+    { name: 'Demon Hunter',  url: 'https://discord.com/invite/felhammer',               description: 'Official Demon Hunter community Discord.' },
+    { name: 'Druid',         url: 'https://discord.com/invite/0dWu0WkuetF87H9H',        description: 'Official Druid community Discord.' },
+    { name: 'Evoker',        url: 'https://discord.com/invite/JcCFEcmSWD',              description: 'Official Evoker community Discord.' },
+    { name: 'Hunter',        url: 'https://discord.com/invite/yqer4BX',                 description: 'Official Hunter community Discord.' },
+    { name: 'Mage',          url: 'https://discord.com/invite/WzYCnbg',                 description: 'Official Mage community Discord.' },
+    { name: 'Monk',          url: 'https://discord.com/invite/0dkfBMAxzTkWj21F',        description: 'Official Monk community Discord.' },
+    { name: 'Paladin',       url: 'https://discord.com/invite/hammerofwrath',           description: 'Official Paladin community Discord.' },
+    { name: 'Priest',        url: 'https://discord.com/invite/WarcraftPriests',         description: 'Official Priest community Discord.' },
+    { name: 'Rogue',         url: 'https://discord.com/invite/Ravenholdt',              description: 'Official Rogue community Discord.' },
+    { name: 'Shaman',        url: 'https://discord.com/invite/0VcupJEQX0HuE5HH',        description: 'Official Shaman community Discord.' },
+    { name: 'Warlock',       url: 'https://discord.com/invite/0onXDymd9Wpc2CEu',        description: 'Official Warlock community Discord.' },
+    { name: 'Warrior',       url: 'https://discord.com/invite/Skyhold',                 description: 'Official Warrior community Discord.' },
+  ],
 };
 
 // ─────────────────────────────────────────────
