@@ -1642,7 +1642,7 @@
           </div>
           <div class="form-group">
             <label>Server</label>
-            <input type="text" id="inp-server" placeholder="Sargeras" />
+            <input type="text" id="inp-server" placeholder="Sargeras" onblur="this.value = titleCaseServer(this.value)" />
           </div>
         </div>
         <div class="form-row">
@@ -1831,7 +1831,7 @@
           </div>
           <div class="form-group">
             <label>Server</label>
-            <input type="text" id="gs-server" placeholder="Sargeras" />
+            <input type="text" id="gs-server" placeholder="Sargeras" onblur="this.value = titleCaseServer(this.value)" />
           </div>
         </div>
         <div class="form-row">
@@ -2415,7 +2415,7 @@
             <div class="form-row">
               <div class="form-group">
                 <label>Server</label>
-                <input type="text" id="cm-server" placeholder="e.g. Sargeras" autocomplete="off" />
+                <input type="text" id="cm-server" placeholder="e.g. Sargeras" autocomplete="off" onblur="this.value = titleCaseServer(this.value)" />
               </div>
               <div class="form-group">
                 <label>Rank</label>
@@ -2959,6 +2959,13 @@ const CLASS_COLORS = {
   'warrior':'#C79C6E','warlock':'#9482C9',
 };
 
+// "sargeras" or "twisting-nether" -> "Sargeras" / "Twisting Nether" -- for
+// display and for pre-filling/blurring server-name inputs. Mirrors
+// lib/serverSlug.js's serverDisplayFromSlug on the backend.
+function titleCaseServer(raw) {
+  return String(raw || '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 // Standard class -> armor-type mapping (unchanged across expansions), used
 // to group the Tier Token roster grid into Cloth/Leather/Mail/Plate columns.
 const ARMOR_TYPE_BY_CLASS = {
@@ -3073,7 +3080,7 @@ function showSetup() {
     // Guild identity is shared and fixed here -- pre-fill and lock it
     const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
     set('inp-guild',  STATE.config?.guild);
-    set('inp-server', STATE.config?.server);
+    set('inp-server', titleCaseServer(STATE.config?.server));
     set('inp-region', STATE.config?.region);
     guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
 
@@ -3104,7 +3111,7 @@ function showSetup() {
     const s = STATE.config;
     const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
     set('inp-guild',    s.guild);
-    set('inp-server',   s.server);
+    set('inp-server',   titleCaseServer(s.server));
     set('inp-region',   s.region);
 
     set('inp-wcl',       s.wclUrl);
@@ -3335,7 +3342,7 @@ function openAddCharacterModal() {
   populateClassDropdown('cm-class');
   document.getElementById('cm-name').value = '';
   document.getElementById('cm-role').value = 'ranged';
-  document.getElementById('cm-server').value = STATE.config?.server || '';
+  document.getElementById('cm-server').value = titleCaseServer(STATE.config?.server);
   document.getElementById('cm-rank').value = 'Main';
   document.getElementById('cm-msg').textContent = '';
   document.getElementById('cm-rename-warning').style.display = 'none';
@@ -3560,7 +3567,7 @@ function showDashboard() {
   document.getElementById('guild-badge').style.display  = 'flex';
 
   document.getElementById('badge-guild').textContent  = STATE.config.guild;
-  document.getElementById('badge-server').textContent = (STATE.config.server || '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  document.getElementById('badge-server').textContent = titleCaseServer(STATE.config.server);
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
   document.getElementById('claim-gate-screen').style.display  = 'none';
