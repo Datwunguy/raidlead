@@ -27,6 +27,57 @@ local function columnFor(member)
   return baseColumnFor(member.primaryRole)
 end
 
+-- RaidLead stores realms as lowercase, hyphenated slugs (e.g.
+-- "bleeding-hollow", same format Raider.io's API wants) -- WoW's own
+-- Name-Realm invite format needs them title-cased with no separator at all
+-- (e.g. "BleedingHollow"). NEEDS LIVE-CLIENT VERIFICATION for any realm
+-- whose real name has an apostrophe or other punctuation the slug already
+-- dropped server-side (e.g. "Kel'Thuzad" -> stored as "kelthuzad" ->
+-- reconstructed here as "Kelthuzad", missing the apostrophe) -- not an
+-- issue for any realm currently on this guild's roster, but worth knowing
+-- if inviting to one specific realm ever silently fails.
+local function realmNameFromSlug(slug)
+  if not slug or slug == '' then return nil end
+  local parts = {}
+  for word in slug:gmatch('[^-]+') do
+    table.insert(parts, word:sub(1, 1):upper() .. word:sub(2))
+  end
+  if #parts == 0 then return nil end
+  return table.concat(parts)
+end
+
+-- Builds whatever C_PartyInfo.InviteUnit actually needs to find this
+-- person -- a bare name only resolves same-realm (and connected realms);
+-- anyone else needs "Name-Realm" or the client reports "player not found"
+-- even though they're a real roster member. Falls back to the bare name if
+-- no server was synced down (shouldn't normally happen, but never worse
+-- than the old always-bare-name behavior).
+local function inviteTargetFor(entry)
+  if not entry or not entry.name then return nil end
+  local realm = realmNameFromSlug(entry.server)
+  if realm then return entry.name .. '-' .. realm end
+  return entry.name
+end
+
+-- Online/offline, via the player's actual in-game guild roster -- this
+-- works even for someone currently missing from group, unlike any
+-- group/raid-only API, as long as they're in the same real WoW guild (true
+-- for virtually every use of this addon, since it's built around a single
+-- guild's raid roster). Not the same thing as "in RaidLead's roster" to the
+-- game client, but they're the same set of people in every normal case.
+local onlineStatus = {} -- Ambiguate("short"):lower() -> true/false
+
+local function refreshOnlineStatus()
+  if not IsInGuild() then wipe(onlineStatus); return end
+  local numMembers = GetNumGuildMembers and GetNumGuildMembers() or 0
+  for i = 1, numMembers do
+    local name, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+    if name then
+      onlineStatus[Ambiguate(name, 'short'):lower()] = isOnline == true
+    end
+  end
+end
+
 -- Names currently in the player's group, as a lookup set of Ambiguate("short") names.
 local function currentGroupNameSet()
   local set = {}
@@ -65,11 +116,13 @@ function RaidLead.BuildRosterColumns()
     local col = columnFor(member)
     local shortName = member.name and Ambiguate(member.name, 'short'):lower() or ''
     table.insert(columns[col], {
-      name    = member.name,
-      class   = member.class,
-      inGroup = groupNames[shortName] == true,
+      name     = member.name,
+      class    = member.class,
+      server   = member.server,
+      inGroup  = groupNames[shortName] == true,
+      isOnline = onlineStatus[shortName],
     })
-    if member.name then table.insert(allNames, member.name) end
+    if member.name then table.insert(allNames, { name = member.name, server = member.server }) end
   end
 
   for _, col in pairs(columns) do
@@ -78,7 +131,8 @@ function RaidLead.BuildRosterColumns()
 
   local unavailable = {}
   for _, name in ipairs(plan.unavailable or {}) do
-    table.insert(unavailable, { name = name })
+    local shortName = Ambiguate(name, 'short'):lower()
+    table.insert(unavailable, { name = name, isOnline = onlineStatus[shortName] })
   end
 
   return {
@@ -103,13 +157,17 @@ function RaidLead.CanInvite()
   return UnitIsGroupLeader('player') or UnitIsGroupAssistant('player')
 end
 
-function RaidLead.InviteMissing(names)
+-- `entries` is a list of { name, server } tables (server may be nil).
+function RaidLead.InviteMissing(entries)
   if not RaidLead.CanInvite() then return end
-  for _, name in ipairs(names) do
-    if C_PartyInfo and C_PartyInfo.InviteUnit then
-      C_PartyInfo.InviteUnit(name)
-    elseif InviteUnit then
-      InviteUnit(name)
+  for _, entry in ipairs(entries) do
+    local target = inviteTargetFor(entry)
+    if target then
+      if C_PartyInfo and C_PartyInfo.InviteUnit then
+        C_PartyInfo.InviteUnit(target)
+      elseif InviteUnit then
+        InviteUnit(target)
+      end
     end
   end
 end
@@ -120,8 +178,9 @@ end
 -- permission (leader, or assistant in a raid); CanInvite() is reused as the
 -- gate for showing the button, same as Invite Missing, but the server is
 -- always the real authority -- an UninviteUnit call this player genuinely
--- can't make just does nothing.
-function RaidLead.DisbandAndReinvite(allNames)
+-- can't make just does nothing. `allEntries` is the same { name, server }
+-- shape InviteMissing takes -- passed straight through to it below.
+function RaidLead.DisbandAndReinvite(allEntries)
   if not RaidLead.CanInvite() then return end
 
   local myShortName = Ambiguate(UnitName('player'), 'short')
@@ -153,7 +212,7 @@ function RaidLead.DisbandAndReinvite(allNames)
 
   -- A short delay so the kicks actually process server-side before the
   -- re-invites go out, rather than racing a mid-disband group state.
-  C_Timer.After(1.5, function() RaidLead.InviteMissing(allNames or {}) end)
+  C_Timer.After(1.5, function() RaidLead.InviteMissing(allEntries or {}) end)
 end
 
 local function refresh()
@@ -164,13 +223,24 @@ end
 
 local eventFrame = CreateFrame('Frame')
 eventFrame:RegisterEvent('GROUP_ROSTER_UPDATE')
-eventFrame:SetScript('OnEvent', refresh)
+eventFrame:RegisterEvent('GUILD_ROSTER_UPDATE')
+eventFrame:SetScript('OnEvent', function(_, event)
+  if event == 'GUILD_ROSTER_UPDATE' then refreshOnlineStatus() end
+  refresh()
+end)
 
 function RaidLead.ToggleRosterFrame()
   if RaidLead.UI and RaidLead.UI.Toggle then
+    -- GuildRoster() just requests an update -- GUILD_ROSTER_UPDATE fires
+    -- (often near-instantly from cache) once it's actually ready, which is
+    -- what refreshes onlineStatus and re-renders above.
+    if IsInGuild() and C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
     refresh()
     RaidLead.UI.Toggle()
   end
 end
 
-RaidLead.RegisterOnPlayerLogin(refresh)
+RaidLead.RegisterOnPlayerLogin(function()
+  if IsInGuild() and C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
+  refresh()
+end)

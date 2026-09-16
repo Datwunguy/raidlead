@@ -4645,7 +4645,10 @@ async function wowSyncDownloadRoster(bridgeHandle) {
       updatedAt: planResp.plan.updated_at,
       members: (planResp.plan.raid_plan_members || [])
         .filter(m => m.characters)
-        .map(m => ({ name: m.characters.name, class: m.characters.class, primaryRole: m.characters.primary_role, assignedRole: m.assigned_role })),
+        .map(m => ({
+          name: m.characters.name, class: m.characters.class, primaryRole: m.characters.primary_role,
+          assignedRole: m.assigned_role, server: m.characters.server,
+        })),
       unavailable,
     };
   }

@@ -165,6 +165,12 @@ function RaidLead.HandleLootMessage(msg)
   local ok, err = pcall(function()
     local recipientName, itemLink, count = matchLootMessage(msg)
     if not recipientName or not itemLink then return end
+    -- Cross-realm raid members show up in loot chat as "Name-Realm", but
+    -- every name this addon/site ever compares against (the roster mirror,
+    -- the characters table) is stored bare -- without this, loot awarded to
+    -- anyone not on the looter's own realm silently failed to match a
+    -- roster character server-side and looked like it never happened.
+    recipientName = Ambiguate(recipientName, 'short')
 
     local itemId = tonumber(itemLink:match('item:(%d+)'))
     if not itemId then return end

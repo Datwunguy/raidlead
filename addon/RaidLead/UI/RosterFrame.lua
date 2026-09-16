@@ -35,7 +35,14 @@ local PILL_HEIGHT = 22
 local PILL_GAP = 4
 local SECTION_GAP = 20
 local COLUMN_WIDTH = 210
-local CONTENT_TOP = 74 -- leaves room for the title row + tab row above the content area
+local CONTENT_TOP = 74 -- leaves room for the title row + tab row above the content area; also what the Loot pane's own single top button uses
+-- The Roster pane additionally has its own button row (Invite Missing /
+-- Disband & Reinvite, moved here from the bottom -- see below for why) that
+-- the Loot pane doesn't need, so its columns start a bit further down than
+-- CONTENT_TOP alone would give.
+local ROSTER_CONTENT_TOP = CONTENT_TOP + 34
+local FRAME_MIN_HEIGHT = 300
+local FRAME_BOTTOM_PADDING = 20
 
 local frame
 
@@ -61,13 +68,39 @@ local function makePill(parent)
   text:SetTextColor(1, 1, 1)
   btn.text = text
 
+  -- Separate from `dot` above (which signals in-group via opacity) --
+  -- online/offline, from the real in-game guild roster, so someone missing
+  -- from the raid can be told apart from someone missing AND offline.
+  local statusDot = btn:CreateTexture(nil, 'OVERLAY')
+  statusDot:SetSize(7, 7)
+  statusDot:SetPoint('RIGHT', -8, 0)
+  statusDot:Hide() -- shown only once a real online/offline value is known
+  btn.statusDot = statusDot
+
   btn:SetScript('OnClick', function(self)
-    if self.missingName and RaidLead.CanInvite() then
-      RaidLead.InviteMissing({ self.missingName })
+    if self.missingEntry and RaidLead.CanInvite() then
+      RaidLead.InviteMissing({ self.missingEntry })
     end
   end)
 
   return btn
+end
+
+-- Green if online, red if offline, hidden entirely if unknown (e.g. this
+-- person isn't actually in the same in-game guild, or the guild roster
+-- hasn't loaded yet) -- an absent dot is a clearer "no data" signal than
+-- guessing a color.
+local function applyStatusDot(pill, isOnline)
+  if isOnline == nil then
+    pill.statusDot:Hide()
+    return
+  end
+  if isOnline then
+    pill.statusDot:SetColorTexture(0.25, 0.85, 0.3, 1)
+  else
+    pill.statusDot:SetColorTexture(0.85, 0.25, 0.25, 1)
+  end
+  pill.statusDot:Show()
 end
 
 -- A small pool so we're not creating/destroying frames every refresh.
@@ -88,7 +121,8 @@ local function releaseAllPills()
   for _, pill in ipairs(pillsInUse) do
     pill:Hide()
     pill:ClearAllPoints()
-    pill.missingName = nil
+    pill.missingEntry = nil
+    pill.statusDot:Hide()
     table.insert(pillPool, pill)
   end
   wipe(pillsInUse)
@@ -108,7 +142,8 @@ local function layoutSection(parent, header, entries)
     pill:SetBackdropColor(color.r, color.g, color.b, entry.inGroup and 0.35 or 0.85)
     pill.text:SetText(entry.name or '?')
     pill.dot:SetVertexColor(1, 1, 1, entry.inGroup and 0.35 or 1)
-    pill.missingName = (not entry.inGroup) and entry.name or nil
+    pill.missingEntry = (not entry.inGroup) and { name = entry.name, server = entry.server } or nil
+    applyStatusDot(pill, entry.isOnline)
 
     prevAnchor, prevRelPoint = pill, 'BOTTOMLEFT'
   end
@@ -189,29 +224,32 @@ local function ensureFrame()
   end)
   tabRoster:Disable() -- roster tab is the default view
 
+  -- Moved to the top of the pane (mirroring the Loot pane's own top button)
+  -- -- these used to sit at the bottom of the frame, directly on top of the
+  -- Out/Unavailable strip once that section had more than a couple of names.
   local inviteBtn = CreateFrame('Button', nil, rosterContent, 'UIPanelButtonTemplate')
   inviteBtn:SetSize(150, 22)
-  inviteBtn:SetPoint('BOTTOMRIGHT', frame, 'BOTTOM', -3, 14)
+  inviteBtn:SetPoint('TOPRIGHT', frame, 'TOPRIGHT', -16, -CONTENT_TOP + 3)
   inviteBtn:SetText('Invite Missing')
   inviteBtn:SetScript('OnClick', function()
-    RaidLead.InviteMissing(frame.missingNames or {})
+    RaidLead.InviteMissing(frame.missingEntries or {})
   end)
   frame.inviteBtn = inviteBtn
 
   local disbandBtn = CreateFrame('Button', nil, rosterContent, 'UIPanelButtonTemplate')
   disbandBtn:SetSize(150, 22)
-  disbandBtn:SetPoint('BOTTOMLEFT', frame, 'BOTTOM', 3, 14)
+  disbandBtn:SetPoint('RIGHT', inviteBtn, 'LEFT', -6, 0)
   disbandBtn:SetText('Disband & Reinvite')
   disbandBtn:SetScript('OnClick', function() StaticPopup_Show('RAIDLEAD_CONFIRM_DISBAND') end)
   frame.disbandBtn = disbandBtn
 
   local leftAnchor = CreateFrame('Frame', nil, rosterContent)
-  leftAnchor:SetPoint('TOPLEFT', 16, -CONTENT_TOP)
+  leftAnchor:SetPoint('TOPLEFT', 16, -ROSTER_CONTENT_TOP)
   leftAnchor:SetSize(1, 1)
   frame.leftAnchor = leftAnchor
 
   local rightAnchor = CreateFrame('Frame', nil, rosterContent)
-  rightAnchor:SetPoint('TOPLEFT', 16 + COLUMN_WIDTH + 20, -CONTENT_TOP)
+  rightAnchor:SetPoint('TOPLEFT', 16 + COLUMN_WIDTH + 20, -ROSTER_CONTENT_TOP)
   rightAnchor:SetSize(1, 1)
   frame.rightAnchor = rightAnchor
 
@@ -247,7 +285,7 @@ function UI.Update(data)
     f.meleeHeader:SetText('')
     f.rangedHeader:SetText('')
     f.outHeader:SetText('')
-    f.missingNames = {}
+    f.missingEntries = {}
     f.allNames = {}
     f.inviteBtn:Hide()
     f.disbandBtn:Hide()
@@ -256,10 +294,10 @@ function UI.Update(data)
 
   f.title:SetText(data.planName or 'Tonight\'s Roster')
 
-  local missingNames = {}
+  local missingEntries = {}
   local function collectMissing(entries)
     for _, e in ipairs(entries) do
-      if not e.inGroup then table.insert(missingNames, e.name) end
+      if not e.inGroup then table.insert(missingEntries, { name = e.name, server = e.server }) end
     end
   end
 
@@ -283,10 +321,10 @@ function UI.Update(data)
   local lastRightBottom = layoutSection(f.rosterContent, f.rangedHeader, data.columns.ranged)
   collectMissing(data.columns.ranged)
 
-  f.missingNames = missingNames
+  f.missingEntries = missingEntries
   f.allNames = data.allNames or {}
   local canInvite = RaidLead.CanInvite()
-  f.inviteBtn:SetShown(canInvite and #missingNames > 0)
+  f.inviteBtn:SetShown(canInvite and #missingEntries > 0)
   f.disbandBtn:SetShown(canInvite and #f.allNames > 0)
 
   -- Out/Unavailable strip, full width, anchored below whichever column
@@ -311,6 +349,15 @@ function UI.Update(data)
     pill:SetBackdropColor(0.3, 0.08, 0.08, 0.6)
     pill.text:SetText(entry.name or '?')
     pill.dot:SetColorTexture(0.7, 0.2, 0.2, 1)
+    applyStatusDot(pill, entry.isOnline)
     prevAnchor, prevRelPoint = pill, 'BOTTOMLEFT'
   end
+
+  -- The Out/Unavailable strip can run to any length depending on how many
+  -- people are marked out for a given night -- rather than clipping it or
+  -- building a full ScrollFrame, just grow the window to fit whatever got
+  -- laid out. CENTER-anchored, so growing shifts the frame slightly on
+  -- screen; accepted tradeoff for a much simpler implementation.
+  local lastBottom = prevAnchor:GetBottom() or lowestBottom
+  frame:SetHeight(math.max(FRAME_MIN_HEIGHT, (frameTop - lastBottom) + FRAME_BOTTOM_PADDING))
 end
