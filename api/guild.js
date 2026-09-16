@@ -2,7 +2,7 @@
 //  guild.js — handles guild + team actions
 //  Actions: get, create, addTeam, update, generateJoinCode,
 //           beginDiscordConnect, setDiscordGuildId, setWclCredentials,
-//           setRaidSchedule, transferOwner
+//           setWowauditApiKey, setRaidSchedule, transferOwner
 //
 //  A "guild" (name/server/region) is a lightweight shared identity that one
 //  or more "teams" attach to. Everything a team actually needs to operate
@@ -15,46 +15,47 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
 
-const TEAM_FIELDS = `id, name, guild_id, wowaudit_url, wcl_url, wcl_team_id, zone_id, zone_name,
+const TEAM_FIELDS = `id, name, guild_id, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
+  wowaudit_api_key_enc, wowaudit_api_key_hash,
   guilds ( id, name, server, region )`;
 
-// Strips the encrypted secret before a team row is ever sent to the client.
+// Strips encrypted secrets before a team row is ever sent to the client.
 function sanitizeTeam(team) {
   if (!team) return team;
   const t = { ...team };
   t.hasWclCredentials = !!t.wcl_client_secret_enc;
+  t.hasWowauditKey    = !!t.wowaudit_api_key_enc;
   delete t.wcl_client_secret_enc;
+  delete t.wowaudit_api_key_enc;
+  delete t.wowaudit_api_key_hash;
   return t;
 }
 
-// Two WowAudit URLs are "the same spreadsheet" if they point at the same Google
-// Sheets doc, regardless of trailing gid/edit-vs-view differences -- so compare
-// the sheet ID when present, and fall back to a normalized exact match otherwise.
-function wowauditKey(url) {
-  if (!url) return null;
-  const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-  if (m) return m[1];
-  return url.trim().toLowerCase().replace(/\/+$/, '');
+// Two WowAudit API keys are "the same source" if they hash the same -- catches
+// the same real mistake the old spreadsheet-URL dedup caught (two teams
+// accidentally pointed at one WowAudit team), just keyed on the key itself
+// since there's no URL to compare anymore. The hash is one-way and stored
+// alongside the encrypted key purely for this comparison.
+function hashWowauditKey(key) {
+  if (!key) return null;
+  return require('crypto').createHash('sha256').update(key).digest('hex');
 }
 
-// Looks for another team already tracking this same spreadsheet -- a strong
-// signal someone is accidentally re-creating a team that already exists,
-// rather than typing the URL for a genuinely new team.
-async function findDuplicateWowaudit(supabase, url, excludeTeamId) {
-  const key = wowauditKey(url);
-  if (!key) return null;
-  let query = supabase.from('teams').select('id, name, wowaudit_url, guilds ( name, server )');
+async function findDuplicateWowauditKey(supabase, apiKey, excludeTeamId) {
+  const hash = hashWowauditKey(apiKey);
+  if (!hash) return null;
+  let query = supabase.from('teams').select('id, name, wowaudit_api_key_hash, guilds ( name, server )').eq('wowaudit_api_key_hash', hash);
   if (excludeTeamId) query = query.neq('id', excludeTeamId);
   const { data: rows } = await query;
-  return (rows || []).find(row => wowauditKey(row.wowaudit_url) === key) || null;
+  return (rows || [])[0] || null;
 }
 
-function duplicateWowauditResponse(dup) {
+function duplicateWowauditKeyResponse(dup) {
   const where = dup.guilds ? ` (${dup.guilds.name} — ${dup.guilds.server})` : '';
   return {
-    error: 'WOWAUDIT_DUPLICATE',
-    message: `That spreadsheet is already registered to "${dup.name}"${where}. Continue anyway if that's intentional, or double check the URL.`,
+    error: 'WOWAUDIT_KEY_DUPLICATE',
+    message: `That WowAudit API key is already registered to "${dup.name}"${where}. Continue anyway if that's intentional, or double check the key.`,
     existingTeamName: dup.name,
     existingGuildName: dup.guilds?.name || null,
     existingGuildServer: dup.guilds?.server || null,
@@ -127,8 +128,8 @@ module.exports = async (req, res) => {
   // ── CREATE: create a brand-new guild+team, OR (with confirmNewTeam) a new
   // sibling team under a guild that already exists by name+server ──
   if (action === 'create') {
-    const { guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam, confirmDuplicateWowaudit } = req.body;
-    if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
+    const { guild, server, region, difficulty, teamName, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam } = req.body;
+    if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
 
     try {
       const normServer = server.trim().toLowerCase();
@@ -151,11 +152,6 @@ module.exports = async (req, res) => {
         });
       }
 
-      if (!confirmDuplicateWowaudit) {
-        const dup = await findDuplicateWowaudit(supabase, wowaudit);
-        if (dup) return res.status(409).json(duplicateWowauditResponse(dup));
-      }
-
       const guildId = existingGuild
         ? existingGuild.id
         : (await (async () => {
@@ -171,7 +167,6 @@ module.exports = async (req, res) => {
         .insert({
           guild_id:     guildId,
           name:         teamName || 'Main Team',
-          wowaudit_url: wowaudit,
           wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
           zone_id:      zoneId || null,
@@ -197,15 +192,10 @@ module.exports = async (req, res) => {
   // confirmNewTeam path above, just reached from a different starting point. ──
   if (action === 'addTeam') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, teamName, wowaudit, wclUrl, zoneId, wclTeamId, difficulty, raidDays, confirmDuplicateWowaudit } = req.body;
-    if (!teamId || !teamName || !wowaudit) return res.status(400).json({ error: 'teamId, teamName, and wowaudit are required' });
+    const { teamId, teamName, wclUrl, zoneId, wclTeamId, difficulty, raidDays } = req.body;
+    if (!teamId || !teamName) return res.status(400).json({ error: 'teamId and teamName are required' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
-
-      if (!confirmDuplicateWowaudit) {
-        const dup = await findDuplicateWowaudit(supabase, wowaudit);
-        if (dup) return res.status(409).json(duplicateWowauditResponse(dup));
-      }
 
       const { data: anchorTeam, error: anchorErr } = await supabase
         .from('teams').select('guild_id').eq('id', teamId).single();
@@ -216,7 +206,6 @@ module.exports = async (req, res) => {
         .insert({
           guild_id:     anchorTeam.guild_id,
           name:         teamName,
-          wowaudit_url: wowaudit,
           wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
           zone_id:      zoneId || null,
@@ -242,18 +231,13 @@ module.exports = async (req, res) => {
   if (action === 'update') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit } = req.body;
+      const { teamId, guild, server, region, wclUrl, zoneId, teamName, wclTeamId, raidDays } = req.body;
       if (!teamId) return res.status(400).json({ error: 'teamId required' });
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
-      if (!guild || !server || !wowaudit) return res.status(400).json({ error: 'Missing required fields' });
+      if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
 
       const { data: currentTeam } = await supabase.from('teams').select('guild_id').eq('id', teamId).single();
       if (!currentTeam) return res.status(404).json({ error: 'Team not found' });
-
-      if (!confirmDuplicateWowaudit) {
-        const dup = await findDuplicateWowaudit(supabase, wowaudit, teamId);
-        if (dup) return res.status(409).json(duplicateWowauditResponse(dup));
-      }
 
       if (guild && server) {
         await supabase.from('guilds').update({
@@ -265,7 +249,6 @@ module.exports = async (req, res) => {
         .from('teams')
         .update({
           name:         teamName || undefined,
-          wowaudit_url: wowaudit,
           wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
           zone_id:      zoneId || null,
@@ -386,6 +369,44 @@ module.exports = async (req, res) => {
       const { error } = await supabase.from('teams').update({
         wcl_client_id:         clientId,
         wcl_client_secret_enc: encrypt(clientSecret),
+      }).eq('id', teamId);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── SET WOWAUDIT API KEY: this team's WowAudit API key, used by
+  // api/wowaudit.js's import action to pull the roster on demand (officers+).
+  // Optional -- unlike the old spreadsheet URL, a team works fine with no key
+  // at all; officers can manage the roster entirely by hand instead. Encrypted
+  // at rest the same way the WCL secret is; only a hasWowauditKey boolean is
+  // ever sent back to the browser, never the key itself. ──
+  if (action === 'setWowauditApiKey') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    try {
+      const { teamId, wowauditApiKey, confirmDuplicateWowauditKey } = req.body;
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      const apiKey = (wowauditApiKey || '').trim() || null;
+
+      if (!apiKey) {
+        const { error } = await supabase.from('teams').update({
+          wowaudit_api_key_enc: null, wowaudit_api_key_hash: null,
+        }).eq('id', teamId);
+        if (error) throw error;
+        return res.status(200).json({ success: true, cleared: true });
+      }
+
+      if (!confirmDuplicateWowauditKey) {
+        const dup = await findDuplicateWowauditKey(supabase, apiKey, teamId);
+        if (dup) return res.status(409).json(duplicateWowauditKeyResponse(dup));
+      }
+
+      const { encrypt } = require('../lib/crypto');
+      const { error } = await supabase.from('teams').update({
+        wowaudit_api_key_enc:  encrypt(apiKey),
+        wowaudit_api_key_hash: hashWowauditKey(apiKey),
       }).eq('id', teamId);
       if (error) throw error;
 

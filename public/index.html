@@ -1660,12 +1660,6 @@
         </div>
         <div class="form-row">
           <div class="form-group full">
-            <label>Wowaudit Spreadsheet URL <span style="color:var(--text-mute);font-weight:400;">(e.g. docs.google.com/spreadsheets/d/...)</span></label>
-            <input type="text" id="inp-wowaudit" placeholder="https://docs.google.com/spreadsheets/d/..." />
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="inp-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
           </div>
@@ -1699,6 +1693,30 @@
             </div>
             <div id="wcl-creds-msg" class="status-msg" style="margin-top:6px;"></div>
             <div id="wcl-creds-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group full">
+            <label>WowAudit API Key <span style="color:var(--text-mute);font-weight:400;">(optional — powers the "Import from WowAudit" button on the Roster tab. Your roster is managed directly on RaidLead either way; this just saves typing everyone in by hand)</span></label>
+
+            <details style="margin-bottom:14px;">
+              <summary style="cursor:pointer; font-size:16px; color:var(--gold); text-transform:none; letter-spacing:0; font-weight:700;">How do I get this?</summary>
+              <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
+                <li>Open your team on WowAudit and go to Settings &gt; API.</li>
+                <li>Copy the API key shown there and paste it in below.</li>
+              </ol>
+            </details>
+
+            <div class="form-row" style="margin-bottom:0;">
+              <div class="form-group full">
+                <input type="password" id="inp-wowaudit-key" placeholder="Paste your WowAudit API key" autocomplete="off" />
+              </div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+              <button class="btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="saveWowauditKey()">Save</button>
+            </div>
+            <div id="wowaudit-key-msg" class="status-msg" style="margin-top:6px;"></div>
+            <div id="wowaudit-key-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
           </div>
         </div>
         <div class="form-row" id="multi-team-row">
@@ -1854,12 +1872,6 @@
         </div>
         <div class="form-row">
           <div class="form-group full">
-            <label>Wowaudit Spreadsheet URL <span style="color:var(--text-mute);font-weight:400;">(e.g. docs.google.com/spreadsheets/d/...)</span></label>
-            <input type="text" id="gs-wowaudit" placeholder="https://docs.google.com/spreadsheets/d/..." />
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group full">
             <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
             <input type="text" id="gs-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
           </div>
@@ -1969,6 +1981,8 @@
                 <span style="width:8px; height:8px; border-radius:50%; background:#888; opacity:0.4; display:inline-block;"></span> Pending
               </span>
             </div>
+            <button class="btn-secondary" onclick="openAddCharacterModal()" id="add-character-btn" style="display:none;">+ Add Character</button>
+            <button class="btn-secondary" onclick="importFromWowaudit()" id="wowaudit-import-btn" style="display:none;" title="Bulk-add/update characters from your team's WowAudit API key">⬇ Import from WowAudit</button>
             <button class="btn-secondary" onclick="refreshRoster()" id="refresh-btn">↻ Refresh</button>
           </div>
         </div>
@@ -2369,6 +2383,63 @@
         </div>
       </div>
 
+      <!-- ADD/EDIT CHARACTER MODAL -->
+      <div class="modal-overlay" id="character-modal">
+        <div class="modal" style="max-width:420px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;" id="character-modal-title">Add Character</div>
+            <button class="modal-close" onclick="closeCharacterModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <div class="form-group full">
+                <label>Character Name</label>
+                <input type="text" id="cm-name" placeholder="e.g. Thrallmar" autocomplete="off" oninput="checkCharacterRename()" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Class</label>
+                <select id="cm-class"></select>
+              </div>
+              <div class="form-group">
+                <label>Role</label>
+                <select id="cm-role">
+                  <option value="tank">Tank</option>
+                  <option value="heal">Healer</option>
+                  <option value="melee">Melee</option>
+                  <option value="ranged">Ranged</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Server</label>
+                <input type="text" id="cm-server" placeholder="e.g. Sargeras" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label>Rank</label>
+                <select id="cm-rank">
+                  <option value="Main">Main</option>
+                  <option value="Alt">Alt</option>
+                </select>
+              </div>
+            </div>
+            <div id="cm-rename-warning" style="display:none; font-size:12px; color:#ffb020; margin-top:4px;">
+              Renaming won't carry forward this character's past attendance history (it's tracked by name).
+            </div>
+            <div id="cm-msg" class="status-msg" style="margin-top:6px;"></div>
+            <div style="display:flex; justify-content:space-between; gap:10px; margin-top:16px;">
+              <button class="btn-secondary" id="cm-remove-btn" style="display:none; color:#ff6b6b;" onclick="removeCharacterFromModal()">Remove</button>
+              <div style="display:flex; gap:10px; margin-left:auto;">
+                <button class="btn-secondary" onclick="closeCharacterModal()">Cancel</button>
+                <button class="btn-primary" onclick="saveCharacterModal()">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ADD RAID NIGHT MODAL -->
       <div class="modal-overlay" id="add-raidnight-modal">
         <div class="modal" style="max-width:360px;">
@@ -2536,6 +2607,9 @@
             <span id="player-flex-melee-status" style="font-size:13px; color:var(--text-mute);">Can Flex Melee: —</span>
             <span id="player-flex-ranged-status" style="font-size:13px; color:var(--text-mute);">Can Flex Ranged: —</span>
           </div>
+          <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+            <button class="btn-secondary" style="padding:6px 14px; font-size:12px;" onclick="closeProfile(); openEditCharacterModal(CURRENT_PROFILE_PLAYER.id);">Edit Character</button>
+          </div>
         </div>
 
         <div style="font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--text-mute); margin-bottom:12px;">Boss Breakdown</div>
@@ -2663,7 +2737,6 @@ function loadSavedConfig() {
       server:     params.get('server')     || '',
       region:     params.get('region')     || 'us',
       difficulty: params.get('difficulty') || 'mythic',
-      wowaudit:   params.get('wowaudit')   || '',
       wclUrl:     params.get('wclUrl')     || '',
       wclTeamId:  params.get('wclTeamId') || null,
       zoneId:     parseInt(params.get('zoneId')) || null,
@@ -2683,7 +2756,6 @@ function generateShareUrl(config) {
     server:     config.server,
     region:     config.region,
     difficulty: config.difficulty,
-    wowaudit:   config.wowaudit,
     wclUrl:     config.wclUrl,
     wclTeamId:  config.wclTeamId || '',
     zoneId:     config.zoneId,
@@ -2773,7 +2845,6 @@ window.addEventListener('DOMContentLoaded', async () => {
           server:     inviteData.server,
           region:     inviteData.region,
           difficulty: inviteData.difficulty || 'mythic',
-          wowaudit:   inviteData.wowaudit,
           wclUrl:     inviteData.wclUrl || '',
           zoneId:     inviteData.zoneId || null,
           zoneName:   inviteData.zoneName || '',
@@ -2803,11 +2874,11 @@ window.addEventListener('DOMContentLoaded', async () => {
           if (joinData.role) applyRolePermissions(joinData.role);
         } catch(e) { console.warn('Could not join guild in DB:', e); }
 
-        try { await loadRosterFromWowaudit(); } catch(e) {}
-
         // Fetch fresh team data to populate teamId and claimedCharacter
         const freshData = await fetchGuildFromDB(joinedTeamId);
         if (freshData) applyGuildData(freshData);
+
+        try { await loadRosterFromDB(); } catch(e) {}
 
         // Gate: new members must claim a character before accessing the dashboard
         if (!STATE.claimedCharacter) {
@@ -2831,7 +2902,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   if (guildData && guildData.team) {
     applyGuildData(guildData);
-    await loadRosterFromWowaudit();
+    await loadRosterFromDB();
 
     // Gate: block access until this account has claimed a character
     if (!STATE.claimedCharacter) {
@@ -2849,7 +2920,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Fall back to localStorage config (share-link or pre-DB flow)
   const saved = loadSavedConfig();
-  if (saved && saved.guild && saved.wowaudit) {
+  if (saved && saved.guild) {
     STATE.config   = saved;
     // Restore wclTeamId from localStorage if not in saved config
     if (!STATE.config.wclTeamId) {
@@ -2869,7 +2940,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         } catch(e) {}
       }
 
-      await loadRosterFromWowaudit();
+      await loadRosterFromDB();
       showDashboard();
       loadCachedScores();
     } catch(e) {
@@ -3007,7 +3078,6 @@ function showSetup() {
     guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
 
     // Team-specific fields start blank -- this is a brand new team
-    set('inp-wowaudit', '');
     set('inp-wcl', '');
     set('inp-wcl-team', '');
     set('inp-team', '');
@@ -3037,13 +3107,13 @@ function showSetup() {
     set('inp-server',   s.server);
     set('inp-region',   s.region);
 
-    set('inp-wowaudit',  s.wowaudit);
     set('inp-wcl',       s.wclUrl);
     set('inp-wcl-team',  s.wclTeamId);
     set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
     set('inp-wcl-client-id', s.wclClientId);
     renderWclCredsStatus();
+    renderWowauditKeyStatus();
     setRaidDaysOn('inp-raid-days', s.raidDays);
 
     // Pre-populate team name if set
@@ -3082,15 +3152,14 @@ function showAddTeamScreen() {
   showSetup();
 }
 
-async function submitAddTeam(confirmDuplicateWowaudit) {
+async function submitAddTeam() {
   const teamName  = document.getElementById('inp-team').value.trim();
-  const wowaudit  = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl    = document.getElementById('inp-wcl').value.trim();
   const wclTeamId = document.getElementById('inp-wcl-team').value.trim() || null;
   const raidDays  = getRaidDaysFrom('inp-raid-days');
 
-  if (!teamName || !wowaudit) {
-    setStatus('Please fill in Team Name and Wowaudit URL.', 'error');
+  if (!teamName) {
+    setStatus('Please fill in Team Name.', 'error');
     return;
   }
 
@@ -3104,19 +3173,9 @@ async function submitAddTeam(confirmDuplicateWowaudit) {
     const resp = await fetch('/api/guild?action=addTeam', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, teamName, wowaudit, wclUrl, wclTeamId, zoneId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ teamId: STATE.teamId, teamName, wclUrl, wclTeamId, zoneId, raidDays }),
     });
     const data = await resp.json();
-
-    if (resp.status === 409 && data.error === 'WOWAUDIT_DUPLICATE') {
-      document.getElementById('load-btn').disabled = false;
-      const wantsToContinue = confirm(
-        `${data.message}\n\nClick OK to create this team anyway.\nClick Cancel to stop and double-check.`
-      );
-      if (wantsToContinue) return submitAddTeam(true);
-      setStatus('Team creation stopped -- check the Wowaudit URL.', '');
-      return;
-    }
 
     if (!resp.ok) throw new Error(data.error || 'Failed to create team');
 
@@ -3164,21 +3223,20 @@ function setRaidDaysOn(containerId, days) {
   });
 }
 
-async function loadGuild(confirmDuplicateWowaudit) {
+async function loadGuild() {
   if (STATE.addTeamMode) return submitAddTeam();
   const guild      = document.getElementById('inp-guild').value.trim();
   const server     = document.getElementById('inp-server').value.trim();
   const region     = document.getElementById('inp-region').value;
   const difficulty = 'mythic'; // difficulty is now set per-fetch in WCL Scores tab
-  const wowaudit   = document.getElementById('inp-wowaudit').value.trim();
   const wclUrl     = document.getElementById('inp-wcl').value.trim();
   const wclTeamId  = document.getElementById('inp-wcl-team').value.trim() || null;
   const multiTeam  = document.querySelector('input[name="inp-multi-team"]:checked')?.value === 'yes';
   const teamName   = (multiTeam ? document.getElementById('inp-team')?.value.trim() : '') || 'Main Team';
   const raidDays   = getRaidDaysFrom('inp-raid-days');
 
-  if (!guild || !server || !wowaudit) {
-    setStatus('Please fill in Guild Name, Server, and Wowaudit URL.', 'error'); return;
+  if (!guild || !server) {
+    setStatus('Please fill in Guild Name and Server.', 'error'); return;
   }
 
   const zoneMatch = wclUrl ? wclUrl.match(/zone=(\d+)/) : null;
@@ -3186,7 +3244,7 @@ async function loadGuild(confirmDuplicateWowaudit) {
 
   // Merge onto the existing config rather than replacing it outright -- fields this
   // form doesn't own (hasWclCredentials/wclClientId, zoneName, etc.) must survive a save.
-  STATE.config = { ...STATE.config, guild, server, region, difficulty, wowaudit, wclUrl, zoneId, wclTeamId, raidDays };
+  STATE.config = { ...STATE.config, guild, server, region, difficulty, wclUrl, zoneId, wclTeamId, raidDays };
   STATE.zoneId = zoneId;
 
   setStatus('Saving...', 'loading');
@@ -3197,25 +3255,15 @@ async function loadGuild(confirmDuplicateWowaudit) {
     const resp = await fetch('/api/guild?action=update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wowaudit, wclUrl, zoneId, teamName, wclTeamId, raidDays, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wclUrl, zoneId, teamName, wclTeamId, raidDays }),
     });
     const data = await resp.json();
-
-    if (resp.status === 409 && data.error === 'WOWAUDIT_DUPLICATE') {
-      document.getElementById('load-btn').disabled = false;
-      const wantsToContinue = confirm(
-        `${data.message}\n\nClick OK to save anyway.\nClick Cancel to stop and double-check.`
-      );
-      if (wantsToContinue) return loadGuild(true);
-      setStatus('Save stopped -- check the Wowaudit URL.', '');
-      return;
-    }
 
     if (!resp.ok) throw new Error(data.error || 'Failed to save changes');
     // Persist updated config to localStorage so refresh picks it up immediately
     localStorage.setItem('raidlead_config', JSON.stringify(STATE.config));
     STATE.teamName = data.team?.name || teamName;
-    await loadRosterFromWowaudit();
+    await loadRosterFromDB();
     saveConfig(STATE.config);
     showDashboard();
     updateRosterTitle();
@@ -3233,97 +3281,164 @@ function setStatus(msg, type='') {
 }
 
 // ─────────────────────────────────────────────
-//  WOWAUDIT — Fetch roster via public sheet CSV
+//  ROSTER — read from the characters table (the source of truth; officers
+//  add/edit/remove directly, and/or use "Import from WowAudit" to bulk-add).
+//  Item level comes back live from Raider.io, merged in server-side.
 // ─────────────────────────────────────────────
-async function loadRosterFromWowaudit() {
-  const url = STATE.config.wowaudit;
-  const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
-  if (!match) throw new Error('Invalid Wowaudit spreadsheet URL.');
-
-  const sheetId = match[1];
-
-  // Use JSON API instead of CSV — handles complex data correctly
-  // Fetch raw_data rows 1-101 (skip row 0 timestamp), columns A through DZ
-  const jsonUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=raw_data&range=A1:DZ101`;
-
-  const resp = await fetch(jsonUrl);
-  if (!resp.ok) throw new Error('Could not fetch Wowaudit data. Make sure the sheet is publicly viewable.');
-
-  const text = await resp.text();
-  STATE.players = parseWowauditJSON(text);
-
-  if (STATE.players.length === 0) throw new Error('No players found. Check that your Wowaudit sheet is public and has player data.');
+async function loadRosterFromDB(force) {
+  const url = `/api/roster?action=list&teamId=${encodeURIComponent(STATE.teamId)}` + (force ? '&force=true' : '');
+  const resp = await fetch(url);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Could not load the roster.');
+  STATE.players = data.players || [];
 }
 
-function parseWowauditJSON(text) {
-  // Strip Google callback wrapper: /*O_o*/\ngoogle.visualization.Query.setResponse({...});
-  const json = JSON.parse(text.substring(47, text.length - 2));
-  const rows = json.table.rows;
-
-  const validClasses = new Set(Object.keys(CLASS_COLORS));
-  const players = [];
-
-  // Row 0 is metadata/timestamp — skip it, start from row 1
-  // Confirmed column layout from JSON API:
-  // Col 0  = name
-  // Col 1  = class
-  // Col 2  = server
-  // Col 3  = ilvl
-  // Col 92 = role (column CO)
-  for (let i = 1; i < rows.length; i++) {
-    const cells = rows[i].c;
-    const val   = idx => (cells[idx]?.v != null ? String(cells[idx].v).trim() : '');
-
-    const name  = val(0);
-    const cls   = val(1).toLowerCase();
-
-    if (!name || !validClasses.has(cls)) continue;
-
-    const serverRaw = val(2);
-    const server = serverRaw.toLowerCase().replace(/\s+/g, '-').replace(/'/g, '').replace(/é/g, 'e').replace(/[^a-z0-9-]/g, '');
-    const serverDisplay = serverRaw.trim().replace(/\b\w/g, c => c.toUpperCase());
-    const ilvlRaw = val(3);
-    const ilvl    = ilvlRaw ? parseFloat(ilvlRaw) || 0 : 0;
-    const role   = val(92).toLowerCase();
-
-    players.push({
-      name,
-      serverDisplay,
-      class:         cls,
-      server,
-      role,
-      ilvl,
-      flex_tank:       false,  // officer-set, will come from DB
-      flex_heal:       false,  // officer-set, will come from DB
-      flex_melee:      false,  // officer-set, will come from DB
-      flex_ranged:     false,  // officer-set, will come from DB
-      can_flex_tank:   false,  // player-declared, will come from DB
-      can_flex_heal:   false,  // player-declared, will come from DB
-      can_flex_melee:  false,  // player-declared, will come from DB
-      can_flex_ranged: false,  // player-declared, will come from DB
+async function importFromWowaudit() {
+  const btn = document.getElementById('wowaudit-import-btn');
+  if (btn) { btn.textContent = 'Importing...'; btn.disabled = true; }
+  try {
+    const resp = await fetch('/api/wowaudit?action=import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId }),
     });
-  }
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Import failed');
 
-  return players;
+    await loadRosterFromDB(true);
+    renderRoster();
+    loadFlexData();
+    showToast(`Imported ${data.imported} character${data.imported === 1 ? '' : 's'} from WowAudit!`, 'success');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+  if (btn) { btn.textContent = '⬇ Import from WowAudit'; btn.disabled = false; }
 }
 
-function parseCSVLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      result.push(current);
-      current = '';
-    } else {
-      current += ch;
-    }
+// ── ADD/EDIT/REMOVE CHARACTER MODAL (officers only) ──
+let CHARACTER_MODAL_EDIT_ID     = null;
+let CHARACTER_MODAL_ORIGINAL_NAME = null;
+
+function populateClassDropdown(selectId, selected) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = Object.keys(CLASS_COLORS).map(c =>
+    `<option value="${c}">${c.replace(/\b\w/g, ch => ch.toUpperCase())}</option>`
+  ).join('');
+  if (selected) sel.value = selected;
+}
+
+function openAddCharacterModal() {
+  CHARACTER_MODAL_EDIT_ID = null;
+  CHARACTER_MODAL_ORIGINAL_NAME = null;
+  document.getElementById('character-modal-title').textContent = 'Add Character';
+  populateClassDropdown('cm-class');
+  document.getElementById('cm-name').value = '';
+  document.getElementById('cm-role').value = 'ranged';
+  document.getElementById('cm-server').value = STATE.config?.server || '';
+  document.getElementById('cm-rank').value = 'Main';
+  document.getElementById('cm-msg').textContent = '';
+  document.getElementById('cm-rename-warning').style.display = 'none';
+  document.getElementById('cm-remove-btn').style.display = 'none';
+  document.getElementById('character-modal').classList.add('open');
+}
+
+function openEditCharacterModal(characterId) {
+  const player = STATE.players.find(p => p.id === characterId);
+  if (!player) return;
+  CHARACTER_MODAL_EDIT_ID = characterId;
+  CHARACTER_MODAL_ORIGINAL_NAME = player.name;
+  document.getElementById('character-modal-title').textContent = 'Edit Character';
+  populateClassDropdown('cm-class', player.class);
+  document.getElementById('cm-name').value = player.name;
+  document.getElementById('cm-role').value = ['heal', 'healer'].includes(player.role) ? 'heal' : player.role;
+  document.getElementById('cm-server').value = player.serverDisplay || player.server || '';
+  document.getElementById('cm-rank').value = player.rank || 'Main';
+  document.getElementById('cm-msg').textContent = '';
+  document.getElementById('cm-rename-warning').style.display = 'none';
+  document.getElementById('cm-remove-btn').style.display = 'inline-block';
+  document.getElementById('character-modal').classList.add('open');
+}
+
+function closeCharacterModal() {
+  document.getElementById('character-modal').classList.remove('open');
+}
+
+// Renaming a character orphans its historical attendance rows (tracked by
+// name, no foreign key) -- warn, don't block.
+function checkCharacterRename() {
+  const warning = document.getElementById('cm-rename-warning');
+  if (!warning) return;
+  const nameNow = document.getElementById('cm-name').value.trim();
+  warning.style.display = (CHARACTER_MODAL_EDIT_ID && nameNow && nameNow !== CHARACTER_MODAL_ORIGINAL_NAME) ? 'block' : 'none';
+}
+
+async function saveCharacterModal() {
+  const name   = document.getElementById('cm-name').value.trim();
+  const cls    = document.getElementById('cm-class').value;
+  const role   = document.getElementById('cm-role').value;
+  const server = document.getElementById('cm-server').value.trim();
+  const rank   = document.getElementById('cm-rank').value;
+  const msg    = document.getElementById('cm-msg');
+
+  if (!name || !server) {
+    msg.textContent = 'Name and server are required.';
+    msg.className   = 'status-msg error';
+    return;
   }
-  result.push(current);
-  return result;
+
+  msg.textContent = 'Saving...';
+  msg.className   = 'status-msg loading';
+  try {
+    const action = CHARACTER_MODAL_EDIT_ID ? 'updateCharacter' : 'addCharacter';
+    const body = CHARACTER_MODAL_EDIT_ID
+      ? { teamId: STATE.teamId, characterId: CHARACTER_MODAL_EDIT_ID, name, class: cls, server, role, rank }
+      : { teamId: STATE.teamId, name, class: cls, server, role, rank };
+
+    const resp = await fetch(`/api/roster?action=${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to save character');
+
+    closeCharacterModal();
+    await loadRosterFromDB(true);
+    renderRoster();
+    loadFlexData();
+    showToast(CHARACTER_MODAL_EDIT_ID ? 'Character updated!' : 'Character added!', 'success');
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className   = 'status-msg error';
+  }
+}
+
+async function removeCharacterFromModal() {
+  if (!CHARACTER_MODAL_EDIT_ID) return;
+  if (!confirm(`Remove ${CHARACTER_MODAL_ORIGINAL_NAME} from the roster? Their loot/attendance history is kept, and this can be undone by an officer re-adding them.`)) return;
+
+  const msg = document.getElementById('cm-msg');
+  msg.textContent = 'Removing...';
+  msg.className   = 'status-msg loading';
+  try {
+    const resp = await fetch('/api/roster?action=removeCharacter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, characterId: CHARACTER_MODAL_EDIT_ID }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to remove character');
+
+    closeCharacterModal();
+    await loadRosterFromDB(true);
+    renderRoster();
+    loadFlexData();
+    showToast('Character removed.', 'success');
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className   = 'status-msg error';
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -3489,7 +3604,6 @@ function showDashboard() {
       applyGuildData(data);
       updateRosterTitle();
       if (STATE.config?.wclTeamId) localStorage.setItem('raidlead_wcl_team_id', STATE.config.wclTeamId);
-      syncRosterToDB();
       if (STATE.teamId) {
         loadFlexData();
         (async () => {
@@ -3777,6 +3891,54 @@ async function saveWclCredentials() {
     STATE.config.wclClientId       = data.cleared ? null : wclClientId;
     document.getElementById('inp-wcl-client-secret').value = '';
     renderWclCredsStatus();
+    msg.textContent = data.cleared ? 'Cleared.' : 'Saved!';
+    msg.className   = 'status-msg success';
+  } catch(e) {
+    msg.textContent = e.message;
+    msg.className   = 'status-msg error';
+  }
+}
+
+function renderWowauditKeyStatus() {
+  const el = document.getElementById('wowaudit-key-status');
+  if (!el) return;
+  el.innerHTML = STATE.config?.hasWowauditKey
+    ? `<span style="color:#1EFF00;">✓ Connected</span> <span style="color:var(--text-mute);">— the Import button on the Roster tab is ready to use.</span>`
+    : '<span style="color:var(--text-mute);">Not connected — you can still manage the roster by hand, or add a key to import from WowAudit instead.</span>';
+}
+
+async function saveWowauditKey(confirmDuplicateWowauditKey) {
+  const wowauditApiKey = document.getElementById('inp-wowaudit-key').value.trim();
+  const msg = document.getElementById('wowaudit-key-msg');
+
+  if (!wowauditApiKey && STATE.config?.hasWowauditKey) {
+    if (!confirm('Clear the saved WowAudit API key? The "Import from WowAudit" button will stop working until a new one is added.')) return;
+  }
+
+  msg.textContent = 'Saving...';
+  msg.className   = 'status-msg loading';
+  try {
+    const resp = await fetch('/api/guild?action=setWowauditApiKey', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, wowauditApiKey, confirmDuplicateWowauditKey: !!confirmDuplicateWowauditKey }),
+    });
+    const data = await resp.json();
+
+    if (resp.status === 409 && data.error === 'WOWAUDIT_KEY_DUPLICATE') {
+      const wantsToContinue = confirm(`${data.message}\n\nClick OK to save anyway.\nClick Cancel to stop and double-check.`);
+      if (wantsToContinue) return saveWowauditKey(true);
+      msg.textContent = 'Not saved -- check the key.';
+      msg.className   = 'status-msg';
+      return;
+    }
+
+    if (!resp.ok) throw new Error(data.error || 'Failed to save WowAudit API key');
+
+    STATE.config.hasWowauditKey = !data.cleared;
+    document.getElementById('inp-wowaudit-key').value = '';
+    renderWowauditKeyStatus();
+    updateWowauditImportBtn();
     msg.textContent = data.cleared ? 'Cleared.' : 'Saved!';
     msg.className   = 'status-msg success';
   } catch(e) {
@@ -4527,9 +4689,9 @@ async function loadLootTab() {
   if (!STATE.teamId) return;
   initWowSync();
   try {
-    // The real roster is STATE.players -- the live WowAudit-sourced Guild
-    // Roster tab, already loaded before any tab can be viewed (see
-    // loadRosterFromWowaudit(), called during the main boot sequence). Not
+    // The real roster is STATE.players -- the Guild Roster tab, sourced from
+    // the characters table and already loaded before any tab can be viewed
+    // (see loadRosterFromDB(), called during the main boot sequence). Not
     // the Raid Planner's published plan (that's one night's assignment, a
     // subset) and not api/members' claimed-characters list (that omits
     // anyone who hasn't linked an account yet). It has no database id of
@@ -4612,7 +4774,7 @@ function renderTierRoster() {
 
   const chars = STATE.teamRosterChars || [];
   if (chars.length === 0) {
-    el.innerHTML = '<div style="font-size:12px; color:var(--text-mute);">No guild roster loaded yet — check your Wowaudit setup in Guild Settings.</div>';
+    el.innerHTML = '<div style="font-size:12px; color:var(--text-mute);">No guild roster yet — add characters on the Roster tab, or import from WowAudit in Guild Settings.</div>';
     return;
   }
 
@@ -5161,10 +5323,8 @@ async function refreshRoster() {
   btn.textContent = '↻ Refreshing...';
   btn.disabled = true;
   try {
-    await loadRosterFromWowaudit();
+    await loadRosterFromDB(true);
     renderRoster();
-    // Re-sync characters to DB then reload flex designations
-    await syncRosterToDB();
     loadFlexData();
     showToast('Roster refreshed!', 'success');
   } catch(e) {
@@ -7379,7 +7539,7 @@ async function completeGuildJoin(guildName, server, joinCode) {
   const freshData = await fetchGuildFromDB(joinData.teamId);
   if (!freshData || !freshData.team) throw new Error('Joined, but could not load team data. Try refreshing the page.');
   applyGuildData(freshData);
-  await loadRosterFromWowaudit();
+  await loadRosterFromDB();
 
   if (!STATE.claimedCharacter) {
     showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
@@ -7460,7 +7620,7 @@ function toggleTeamName(radio) {
   }
 }
 
-async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
+async function createGuild(confirmNewTeam) {
   const guild      = document.getElementById('gs-guild').value.trim();
   const server     = document.getElementById('gs-server').value.trim();
   const region     = document.getElementById('gs-region').value;
@@ -7468,13 +7628,12 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
   const multiTeam = document.querySelector('input[name="multi-team"]:checked')?.value === 'yes';
   const teamNameEl = document.getElementById('gs-team');
   const teamName   = multiTeam && teamNameEl ? teamNameEl.value.trim() || 'Main Team' : 'Main Team';
-  const wowaudit   = document.getElementById('gs-wowaudit').value.trim();
   const wclUrl     = document.getElementById('gs-wcl').value.trim();
   const wclTeamId  = document.getElementById('gs-wcl-team').value.trim() || null;
   const raidDays   = getRaidDaysFrom('gs-raid-days');
 
-  if (!guild || !server || !wowaudit) {
-    document.getElementById('gs-status').textContent = 'Please fill in Guild Name, Server, and Wowaudit URL.';
+  if (!guild || !server) {
+    document.getElementById('gs-status').textContent = 'Please fill in Guild Name and Server.';
     document.getElementById('gs-status').className   = 'status-msg error';
     return;
   }
@@ -7491,7 +7650,7 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wowaudit, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam, confirmDuplicateWowaudit: !!confirmDuplicateWowaudit }),
+      body: JSON.stringify({ guild, server, region, difficulty, teamName, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
     });
 
     let data = {};
@@ -7511,18 +7670,6 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
       return;
     }
 
-    // The WowAudit spreadsheet is already tracked by another team -- probably
-    // means this guild/team already exists on RaidLead under a different name.
-    if (resp.status === 409 && data.error === 'WOWAUDIT_DUPLICATE') {
-      const wantsToContinue = confirm(
-        `${data.message}\n\nClick OK to create this team anyway.\nClick Cancel to stop and double-check.`
-      );
-      if (wantsToContinue) return createGuild(confirmNewTeam, true);
-      document.getElementById('gs-status').textContent = 'Guild creation stopped -- check the Wowaudit URL.';
-      document.getElementById('gs-status').className   = 'status-msg';
-      return;
-    }
-
     if (!resp.ok) throw new Error(data.error || 'Failed to create guild');
 
     // Populate full STATE (including the teams list) now that the team row exists
@@ -7530,10 +7677,12 @@ async function createGuild(confirmNewTeam, confirmDuplicateWowaudit) {
     if (!freshGuildData || !freshGuildData.team) throw new Error('Created, but could not load team data. Try refreshing the page.');
     applyGuildData(freshGuildData);
 
-    await loadRosterFromWowaudit();
+    await loadRosterFromDB();
 
-    // The brand-new owner hasn't claimed a character yet either — route through the gate
-    if (!STATE.claimedCharacter) {
+    // A brand-new guild has no roster yet (no WowAudit import or manual adds
+    // have happened), so there's nothing to claim from -- skip straight to
+    // the dashboard rather than showing a claim gate with nobody to pick.
+    if (!STATE.claimedCharacter && STATE.players.length > 0) {
       await showClaimGateScreen();
     } else {
       showDashboard();
@@ -7557,7 +7706,6 @@ function generateInviteCode() {
     guild:    STATE.config.guild,
     server:   STATE.config.server,
     region:   STATE.config.region,
-    wowaudit: STATE.config.wowaudit,
     wclUrl:   STATE.config.wclUrl,
     zoneId:   STATE.config.zoneId,
     invite:   true,
@@ -8229,7 +8377,6 @@ function applyGuildData(guildData) {
     server:      t.guilds?.server || null,
     region:      t.guilds?.region || 'us',
     difficulty:  t.difficulty || 'mythic',
-    wowaudit:    t.wowaudit_url,
     wclUrl:      t.wcl_url || '',
     wclTeamId:   t.wcl_team_id || null,
     zoneId:      t.zone_id || null,
@@ -8237,6 +8384,7 @@ function applyGuildData(guildData) {
     raidDays:    t.raid_days || [],
     hasWclCredentials: t.hasWclCredentials || false,
     wclClientId: t.wcl_client_id || null,
+    hasWowauditKey: t.hasWowauditKey || false,
   };
   STATE.config           = config;
   STATE.zoneId           = config.zoneId;
@@ -8284,7 +8432,7 @@ async function switchActiveTeam(teamId) {
   const guildData = await fetchGuildFromDB(teamId);
   if (!guildData || !guildData.team) { showToast('Could not switch teams', 'error'); return; }
   applyGuildData(guildData);
-  await loadRosterFromWowaudit();
+  await loadRosterFromDB();
   if (!STATE.claimedCharacter) { showClaimGateScreen(); return; }
   showDashboard();
   updateRosterTitle();
@@ -8424,31 +8572,21 @@ function applyRolePermissions(role) {
   // WCL refresh is officer-only; members read the latest saved scores.
   const fetchScoresBtn = document.getElementById('fetch-scores-btn');
   if (fetchScoresBtn) fetchScoresBtn.style.display = isOfficer ? 'inline-flex' : 'none';
+
+  // Roster management -- adding/importing/editing/removing characters is officer-only.
+  const addCharacterBtn = document.getElementById('add-character-btn');
+  if (addCharacterBtn) addCharacterBtn.style.display = isOfficer ? 'inline-flex' : 'none';
+  updateWowauditImportBtn();
 }
 
-// ─────────────────────────────────────────────
-//  ROSTER SYNC TO SUPABASE
-// ─────────────────────────────────────────────
-async function syncRosterToDB() {
-  const teamId = STATE.teamId;
-  if (!teamId || !STATE.players.length) return;
-
-  try {
-    const resp = await fetch('/api/roster?action=sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        teamId,
-        players: STATE.players.map(p => ({
-          name: p.name, class: p.class, server: p.server, role: p.role, ilvl: p.ilvl,
-        })),
-      }),
-    });
-    if (resp.ok) {
-      // Reload flex data from DB now that characters exist
-      loadFlexData();
-    }
-  } catch(e) { console.warn('Roster sync failed:', e); }
+// The Import button is officer-only AND needs a WowAudit key connected --
+// called both from applyRolePermissions (role changes) and after
+// saving/clearing the key in Guild Settings (STATE.config changes).
+function updateWowauditImportBtn() {
+  const btn = document.getElementById('wowaudit-import-btn');
+  if (!btn) return;
+  const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+  btn.style.display = (isOfficer && STATE.config?.hasWowauditKey) ? 'inline-flex' : 'none';
 }
 
 // ─────────────────────────────────────────────

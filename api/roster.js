@@ -1,13 +1,27 @@
 // ============================================================
 //  roster.js — handles roster/character/scores + WCL actions
-//  Actions: sync, getFlex, updateFlex, saveScores, getScores,
-//           wclZones, wclQuery
+//  Actions: list, addCharacter, updateCharacter, removeCharacter, getFlex,
+//           updateFlex, saveScores, getScores, wclZones, wclQuery
 //  (wcl.js is now consolidated here — wcl.js can be deleted)
+//
+//  The `characters` table is the roster's actual source of truth (populated
+//  via api/wowaudit.js's on-demand import, or added to by hand here) --
+//  `list` is the read side, merging in item level fetched live from
+//  Raider.io (never stored; it's a display stat, not roster identity).
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
+const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
+
+// Cache the merged (DB + live Raider.io ilvl) roster per team briefly, so
+// several people opening the Roster tab around the same time don't each
+// trigger a fresh batch of per-character Raider.io lookups. Any add/edit/
+// remove/import below invalidates a team's entry immediately, so this only
+// ever serves genuinely-unchanged data. Same pattern as wclTokenCache above.
+const rosterListCache = new Map(); // teamId -> { data, fetchedAt }
+const ROSTER_LIST_CACHE_MS = 10 * 60 * 1000;
 
 // Thrown when a request needs WCL access but the caller's guild hasn't connected its
 // own Warcraft Logs API client yet -- callers check err.wclNotConfigured to show a
@@ -915,44 +929,153 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── SYNC: write Wowaudit players to characters table ──
-  if (action === 'sync') {
-    const { teamId, players } = req.body;
-    if (!players?.length) return res.status(400).json({ error: 'teamId and players required' });
+  // ── LIST: the roster, read from `characters` (the source of truth), with
+  // live item level merged in from Raider.io per character. Any team member
+  // can view it; pass force=true (the Roster tab's "Refresh" button) to
+  // bypass the cache and re-pull ilvl fresh. ──
+  if (action === 'list') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    const force  = req.query.force === 'true' || req.body?.force === true;
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
+    try {
+      await assertTeamOwnership(teamId);
+
+      const cached = rosterListCache.get(teamId);
+      if (!force && cached && Date.now() - cached.fetchedAt < ROSTER_LIST_CACHE_MS) {
+        return res.status(200).json({ players: cached.data });
+      }
+
+      const { data: team } = await supabase
+        .from('teams').select('id, guilds ( region )').eq('id', teamId).single();
+      const region = team?.guilds?.region === 'oceanic' ? 'us' : (team?.guilds?.region || 'us');
+
+      const { data: chars, error } = await supabase
+        .from('characters')
+        .select(`id, name, class, server, primary_role, rank, account_id,
+          flex_tank, flex_heal, flex_melee, flex_ranged,
+          can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged`)
+        .eq('team_id', teamId)
+        .eq('active', true);
+      if (error) throw error;
+
+      // One Raider.io lookup per character, in parallel -- a 400 (character
+      // Raider.io hasn't indexed yet) or any network hiccup just leaves that
+      // one character's ilvl at 0 rather than failing the whole roster.
+      const players = await Promise.all((chars || []).map(async c => {
+        let ilvl = 0;
+        try {
+          const resp = await fetch(
+            `https://raider.io/api/v1/characters/profile?region=${encodeURIComponent(region)}` +
+            `&realm=${encodeURIComponent(c.server)}&name=${encodeURIComponent(c.name)}&fields=gear`
+          );
+          if (resp.ok) {
+            const data = await resp.json();
+            ilvl = data?.gear?.item_level_equipped || 0;
+          }
+        } catch (e) { /* leave ilvl at 0 */ }
+
+        return {
+          id:              c.id,
+          name:            c.name,
+          class:           c.class,
+          server:          c.server,
+          serverDisplay:   serverDisplayFromSlug(c.server),
+          role:            c.primary_role,
+          rank:            c.rank || 'Main',
+          account_id:      c.account_id,
+          ilvl,
+          flex_tank:       c.flex_tank       || false,
+          flex_heal:       c.flex_heal       || false,
+          flex_melee:      c.flex_melee      || false,
+          flex_ranged:     c.flex_ranged     || false,
+          can_flex_tank:   c.can_flex_tank   || false,
+          can_flex_heal:   c.can_flex_heal   || false,
+          can_flex_melee:  c.can_flex_melee  || false,
+          can_flex_ranged: c.can_flex_ranged || false,
+        };
+      }));
+
+      rosterListCache.set(teamId, { data: players, fetchedAt: Date.now() });
+      return res.status(200).json({ players });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── ADD CHARACTER (officer only): manually add one character to the roster ──
+  if (action === 'addCharacter') {
+    const { teamId, name, class: charClass, server, role, rank } = req.body;
+    if (!teamId || !name || !charClass || !server || !role) {
+      return res.status(400).json({ error: 'name, class, server, and role are required' });
+    }
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
-      const { data: existing } = await supabase
-        .from('characters')
-        .select('name, account_id, flex_tank, flex_heal, flex_melee, flex_ranged, can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged')
-        .eq('team_id', teamId);
-      const existingMap = {};
-      (existing || []).forEach(c => { existingMap[c.name.toLowerCase()] = c; });
 
-      const upsertData = players.map(p => {
-        const ex = existingMap[p.name.toLowerCase()];
-        return {
-          team_id:         teamId,
-          name:            p.name,
-          class:           p.class        || 'unknown',
-          server:          p.server       || '',
-          primary_role:    p.role         || 'ranged',
-          account_id:      ex?.account_id || null,
-          flex_tank:       ex?.flex_tank       || false,
-          flex_heal:       ex?.flex_heal       || false,
-          flex_melee:      ex?.flex_melee      || false,
-          flex_ranged:     ex?.flex_ranged     || false,
-          can_flex_tank:   ex?.can_flex_tank   || false,
-          can_flex_heal:   ex?.can_flex_heal   || false,
-          can_flex_melee:  ex?.can_flex_melee  || false,
-          can_flex_ranged: ex?.can_flex_ranged || false,
-        };
-      });
+      const { data: existing } = await supabase
+        .from('characters').select('id').eq('team_id', teamId).eq('active', true).ilike('name', name.trim()).maybeSingle();
+      if (existing) return res.status(409).json({ error: `${name.trim()} is already on this roster.` });
+
+      const { data, error } = await supabase
+        .from('characters')
+        .insert({
+          team_id:      teamId,
+          name:         name.trim(),
+          class:        charClass.toLowerCase().trim(),
+          server:       slugifyServer(server),
+          primary_role: role.toLowerCase().trim(),
+          rank:         rank || 'Main',
+          active:       true,
+        })
+        .select('id').single();
+      if (error) throw error;
+
+      rosterListCache.delete(teamId);
+      return res.status(200).json({ success: true, id: data.id });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── UPDATE CHARACTER (officer only): edit an existing roster row by id.
+  // Renaming won't carry forward historical attendance -- attendance_marks
+  // stores character_name as plain text with no foreign key to characters,
+  // so a rename orphans past attendance under the old name (surfaced as a
+  // warning in the UI, not blocked here). ──
+  if (action === 'updateCharacter') {
+    const { teamId, characterId, name, class: charClass, server, role, rank } = req.body;
+    if (!teamId || !characterId) return res.status(400).json({ error: 'teamId and characterId required' });
+    try {
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+
+      const updates = {};
+      if (name)      updates.name         = name.trim();
+      if (charClass) updates.class        = charClass.toLowerCase().trim();
+      if (server)    updates.server       = slugifyServer(server);
+      if (role)      updates.primary_role = role.toLowerCase().trim();
+      if (rank)      updates.rank         = rank;
 
       const { error } = await supabase
-        .from('characters')
-        .upsert(upsertData, { onConflict: 'team_id,name', ignoreDuplicates: false });
+        .from('characters').update(updates).eq('id', characterId).eq('team_id', teamId);
       if (error) throw error;
-      return res.status(200).json({ success: true, synced: upsertData.length });
+
+      rosterListCache.delete(teamId);
+      return res.status(200).json({ success: true });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── REMOVE CHARACTER (officer only): soft delete -- loot_drops references
+  // characters(id) with no ON DELETE clause, so a hard delete would fail for
+  // anyone with loot history; this also keeps past raid plans/attendance
+  // intact and lets a mistaken removal be undone. Clears account_id so that
+  // account is free to claim a different character, same as removeMember. ──
+  if (action === 'removeCharacter') {
+    const { teamId, characterId } = req.body;
+    if (!teamId || !characterId) return res.status(400).json({ error: 'teamId and characterId required' });
+    try {
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+
+      const { error } = await supabase
+        .from('characters').update({ active: false, account_id: null }).eq('id', characterId).eq('team_id', teamId);
+      if (error) throw error;
+
+      rosterListCache.delete(teamId);
+      return res.status(200).json({ success: true });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
