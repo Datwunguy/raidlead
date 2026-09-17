@@ -1414,6 +1414,17 @@
     .nav-btn { display: none; }
     .mobile-nav-menu { display: block; }
     #main-nav { overflow: visible; } /* see the mobile breakpoint below for why */
+
+    /* Roster tab's header (title + team name + flex legend + 3 buttons) is
+       the widest of any tab's -- past the true-mobile breakpoint below,
+       relying on the content to wrap itself produced a ragged, off-balance
+       layout (title getting squeezed/wrapped, second button row left over
+       from wherever the first row happened to run out of space). Force it
+       onto its own clean row here instead, at the same breakpoint used for
+       the nav hamburger above. */
+    #roster-header { flex-wrap: wrap; row-gap: 12px; }
+    #roster-header > .section-title { flex-shrink: 0; }
+    #roster-header > .roster-header-controls { flex-basis: 100%; justify-content: flex-start; }
   }
 
   @media (max-width: 900px) {
@@ -1961,9 +1972,9 @@
 
       <!-- ROSTER TAB -->
       <div class="tab-content active" id="tab-roster">
-        <div class="section-header">
+        <div class="section-header" id="roster-header">
           <div class="section-title">Guild Roster<span id="roster-team-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
-          <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+          <div class="roster-header-controls" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
             <div style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--text-mute); flex-wrap:wrap;">
               <span style="display:flex; align-items:center; gap:5px;">
                 <span style="width:8px; height:8px; border-radius:50%; background:#C79C6E; display:inline-block;"></span> Flex Tank
@@ -2013,7 +2024,7 @@
             <div class="stat-value" id="stat-ilvl">—</div>
             <div class="stat-sub">
               Equipped
-              <div style="margin-top:4px; font-size:11px; color:var(--text-mute); line-height:1.6;">
+              <div style="margin-top:4px; font-size:11px; color:var(--text-dim); line-height:1.6;">
                 <div>Top 20 Avg iLvl: <span id="stat-ilvl-top20">—</span></div>
                 <div>Top 10 Avg iLvl: <span id="stat-ilvl-top10">—</span></div>
               </div>
