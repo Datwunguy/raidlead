@@ -1,5 +1,5 @@
 -- ============================================================
--- Roster.lua — mirrors the published Raid Planner roster and keeps a live
+-- Roster.lua — mirrors the published Raid Night roster and keeps a live
 -- in-group/missing checklist. Purely a viewer: nothing here can edit the
 -- plan, only read what the companion app already mirrored down into
 -- RaidLeadCompanionDB. See UI/RosterFrame.lua for the actual frame.

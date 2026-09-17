@@ -1527,7 +1527,7 @@
     .checklist-item     { padding: 6px 10px; }
   }
 
-  /* Raid Planner responsive — stack columns on mobile */
+  /* Raid Night responsive — stack columns on mobile */
   @media (max-width: 900px) {
     #tab-planner .planner-4col {
       grid-template-columns: 1fr 1fr !important;
@@ -1568,7 +1568,7 @@
     </div>
     <nav id="main-nav" style="display:none;">
       <button class="nav-btn active" data-tab="roster" onclick="showTab('roster')">Roster</button>
-      <button class="nav-btn" data-tab="planner" onclick="showTab('planner')">Raid Planner</button>
+      <button class="nav-btn" data-tab="planner" onclick="showTab('planner')">Raid Night</button>
       <button class="nav-btn" data-tab="attendance" onclick="showTab('attendance')">Attendance</button>
       <button class="nav-btn" data-tab="progress" onclick="showTab('progress')">Progress</button>
       <button class="nav-btn" data-tab="scores" onclick="showTab('scores')">WCL Scores</button>
@@ -2151,10 +2151,10 @@
         </div>
       </div>
 
-      <!-- RAID PLANNER TAB -->
+      <!-- RAID NIGHT TAB (internally still "planner" -- tab id/JS names unchanged) -->
       <div class="tab-content" id="tab-planner">
         <div class="section-header" style="flex-wrap:wrap; gap:10px;">
-          <div class="section-title">Raid Planner</div>
+          <div class="section-title">Raid Night</div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <div id="planner-date-display" style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-mute);">
               <span>Planning for:</span>
@@ -2323,7 +2323,7 @@
                 • RaidLead Companion should just stay running in the background (it starts with Windows automatically) —
                 you never need to click anything inside it.
                 <br />
-                • <strong>Before a raid:</strong> publish your roster on Raid Planner. Companion picks it up within moments;
+                • <strong>Before a raid:</strong> publish your roster on Raid Night. Companion picks it up within moments;
                 <code>/reload</code> in-game to see it.
                 <br />
                 • <strong>After a raid:</strong> log out or <code>/reload</code> so WoW saves this session's loot to disk,
@@ -4593,7 +4593,7 @@ async function initWowSync() {
   }
 }
 
-// Shared by both Sync buttons (Loot tab and Raid Planner) so there's one
+// Shared by both Sync buttons (Loot tab and Raid Night) so there's one
 // place that actually does the work -- each caller just wires its own UI
 // feedback around it. Throws with `.needsConnect = true` when there's
 // nothing connected yet, so callers can point the user at the Loot tab
@@ -4631,7 +4631,7 @@ async function wowSyncNow() {
   }
 }
 
-// Raid Planner's "Sync to WoW" button -- same underlying sync, feedback via
+// Raid Night's "Sync to WoW" button -- same underlying sync, feedback via
 // toast instead of the Loot tab's status line since that element isn't on
 // this tab. Exists because publishing already auto-syncs the roster when a
 // folder's connected, but that's silent/best-effort (see
@@ -4773,7 +4773,7 @@ async function loadLootTab() {
     // The real roster is STATE.players -- the Guild Roster tab, sourced from
     // the characters table and already loaded before any tab can be viewed
     // (see loadRosterFromDB(), called during the main boot sequence). Not
-    // the Raid Planner's published plan (that's one night's assignment, a
+    // Raid Night's published plan (that's one night's assignment, a
     // subset) and not api/members' claimed-characters list (that omits
     // anyone who hasn't linked an account yet). It has no database id of
     // its own, so resolveCharacterIds ties each name to the character_id
@@ -6609,7 +6609,7 @@ function dismissZoneBanner() {
 }
 
 // ─────────────────────────────────────────────
-//  RAID PLANNER
+//  RAID NIGHT (internal names still say "planner" -- not user-facing)
 // ─────────────────────────────────────────────
 const PLANNER_KEY = 'raidlead_planner';
 
@@ -8702,7 +8702,7 @@ function applyRolePermissions(role) {
   const dropdownInviteBtn = document.getElementById('dropdown-invite-btn');
   if (dropdownInviteBtn) dropdownInviteBtn.style.display = isOfficer ? 'block' : 'none';
 
-  // Raid planner edit controls — officers only
+  // Raid Night edit controls — officers only
   const editBtn    = document.getElementById('planner-edit-btn');
   const publishBtn = document.getElementById('planner-publish-btn');
   const importBtn  = document.getElementById('planner-import-btn');

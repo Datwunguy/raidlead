@@ -1,6 +1,6 @@
 # RaidLead (WoW addon)
 
-Mirrors your RaidLead Raid Planner roster in-game with a live in-group/missing
+Mirrors your RaidLead Raid Night roster in-game with a live in-group/missing
 checklist, and records boss loot (+ tier-relevant BoEs) for RaidLead's Loot
 tab. The addon itself never talks to the network (no WoW addon can) — the
 bridge to RaidLead's server is the **WoW Sync** box on the site's Loot tab,
@@ -43,7 +43,7 @@ them on Desktop, orphaned scheduled tasks surviving even after being
    quietly in the background from then on (starts with Windows by default).
 3. On RaidLead's **Loot tab**, click **Connect Bridge Folder** and select
    the **RaidLead Docs** folder, wherever you put it.
-4. Click **Sync Now**. This queues your published Raid Planner roster for
+4. Click **Sync Now**. This queues your published Raid Night roster for
    Companion to pick up (and uploads any loot it already pulled out of WoW).
 5. Within moments, the roster lands in WoW's real files — `/reload` in-game
    to see it.
