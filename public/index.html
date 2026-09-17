@@ -367,14 +367,6 @@
     margin-bottom: 24px;
   }
 
-  /* Roster tab's header controls (flex legend + action buttons) -- flex:1
-     lets it claim the full width remaining next to the title, so its own
-     justify-content:space-between pins the legend to the left and the
-     buttons to the right edge, instead of the two clusters just sitting
-     adjacent to each other wherever they happen to end up. Overridden back
-     to a plain stacked layout below 1300px -- see the responsive section. */
-  .roster-header-controls { flex: 1 1 auto; justify-content: space-between; }
-
   .section-title {
     font-family: 'Cinzel', serif;
     font-size: 18px;
@@ -1983,7 +1975,7 @@
         <div class="section-header" id="roster-header">
           <div class="section-title">Guild Roster<span id="roster-team-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
           <div class="roster-header-controls" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-            <div class="roster-header-legend" style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--text-mute); flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--text-mute); flex-wrap:wrap;">
               <span style="display:flex; align-items:center; gap:5px;">
                 <span style="width:8px; height:8px; border-radius:50%; background:#C79C6E; display:inline-block;"></span> Flex Tank
               </span>
@@ -2000,11 +1992,9 @@
                 <span style="width:8px; height:8px; border-radius:50%; background:#888; opacity:0.4; display:inline-block;"></span> Pending
               </span>
             </div>
-            <div class="roster-header-buttons" style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-              <button class="btn-secondary" onclick="openAddCharacterModal()" id="add-character-btn" style="display:none;">+ Add Character</button>
-              <button class="btn-secondary" onclick="importFromWowaudit()" id="wowaudit-import-btn" style="display:none;" title="Bulk-add/update characters from your team's WowAudit API key">⬇ Import from WowAudit</button>
-              <button class="btn-secondary" onclick="refreshRoster()" id="refresh-btn">↻ Refresh</button>
-            </div>
+            <button class="btn-secondary" onclick="openAddCharacterModal()" id="add-character-btn" style="display:none;">+ Add Character</button>
+            <button class="btn-secondary" onclick="importFromWowaudit()" id="wowaudit-import-btn" style="display:none;" title="Bulk-add/update characters from your team's WowAudit API key">⬇ Import from WowAudit</button>
+            <button class="btn-secondary" onclick="refreshRoster()" id="refresh-btn">↻ Refresh</button>
           </div>
         </div>
 
