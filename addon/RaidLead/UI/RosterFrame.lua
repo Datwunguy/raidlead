@@ -142,7 +142,7 @@ local function layoutSection(parent, header, entries)
     pill:SetBackdropColor(color.r, color.g, color.b, entry.inGroup and 0.35 or 0.85)
     pill.text:SetText(entry.name or '?')
     pill.dot:SetVertexColor(1, 1, 1, entry.inGroup and 0.35 or 1)
-    pill.missingEntry = (not entry.inGroup) and { name = entry.name, server = entry.server } or nil
+    pill.missingEntry = (not entry.inGroup) and { name = entry.name, server = entry.server, realmName = entry.realmName } or nil
     applyStatusDot(pill, entry.isOnline)
 
     prevAnchor, prevRelPoint = pill, 'BOTTOMLEFT'
@@ -297,7 +297,7 @@ function UI.Update(data)
   local missingEntries = {}
   local function collectMissing(entries)
     for _, e in ipairs(entries) do
-      if not e.inGroup then table.insert(missingEntries, { name = e.name, server = e.server }) end
+      if not e.inGroup then table.insert(missingEntries, { name = e.name, server = e.server, realmName = e.realmName }) end
     end
   end
 

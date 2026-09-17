@@ -4647,7 +4647,7 @@ async function wowSyncDownloadRoster(bridgeHandle) {
         .filter(m => m.characters)
         .map(m => ({
           name: m.characters.name, class: m.characters.class, primaryRole: m.characters.primary_role,
-          assignedRole: m.assigned_role, server: m.characters.server,
+          assignedRole: m.assigned_role, server: m.characters.server, realmName: m.characters.realm_name,
         })),
       unavailable,
     };

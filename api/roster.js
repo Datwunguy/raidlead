@@ -951,7 +951,7 @@ module.exports = async (req, res) => {
 
       const { data: chars, error } = await supabase
         .from('characters')
-        .select(`id, name, class, server, primary_role, rank, account_id,
+        .select(`id, name, class, server, realm_name, primary_role, rank, account_id,
           flex_tank, flex_heal, flex_melee, flex_ranged,
           can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged`)
         .eq('team_id', teamId)
@@ -979,7 +979,7 @@ module.exports = async (req, res) => {
           name:            c.name,
           class:           c.class,
           server:          c.server,
-          serverDisplay:   serverDisplayFromSlug(c.server),
+          serverDisplay:   c.realm_name || serverDisplayFromSlug(c.server),
           role:            c.primary_role,
           rank:            c.rank || 'Main',
           account_id:      c.account_id,
@@ -1020,6 +1020,7 @@ module.exports = async (req, res) => {
           name:         name.trim(),
           class:        charClass.toLowerCase().trim(),
           server:       slugifyServer(server),
+          realm_name:   server.trim(),
           primary_role: role.toLowerCase().trim(),
           rank:         rank || 'Main',
           active:       true,
@@ -1047,6 +1048,7 @@ module.exports = async (req, res) => {
       if (name)      updates.name         = name.trim();
       if (charClass) updates.class        = charClass.toLowerCase().trim();
       if (server)    updates.server       = slugifyServer(server);
+      if (server)    updates.realm_name   = server.trim();
       if (role)      updates.primary_role = role.toLowerCase().trim();
       if (rank)      updates.rank         = rank;
 

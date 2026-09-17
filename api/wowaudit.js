@@ -78,6 +78,7 @@ module.exports = async (req, res) => {
         name:         c.name,
         class:        (c.class || 'unknown').toLowerCase(),
         server:       slugifyServer(c.realm),
+        realm_name:   (c.realm || '').trim(),
         primary_role: (c.role || 'ranged').toLowerCase(),
         rank:         c.rank || 'Main',
       })).filter(p => p.name);
@@ -99,6 +100,7 @@ module.exports = async (req, res) => {
           name:            p.name,
           class:           p.class,
           server:          p.server,
+          realm_name:      p.realm_name,
           primary_role:    p.primary_role,
           rank:            p.rank,
           active:          true,

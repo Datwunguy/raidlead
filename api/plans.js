@@ -154,7 +154,7 @@ module.exports = async (req, res) => {
       let query = supabase
         .from('raid_plans')
         .select(`id, name, published, updated_at, raid_date, swaps,
-          raid_plan_members ( assigned_role, characters ( id, name, class, primary_role, server ) )`)
+          raid_plan_members ( assigned_role, characters ( id, name, class, primary_role, server, realm_name ) )`)
         .eq('team_id', teamId);
 
       if (raidDate) {
@@ -186,7 +186,7 @@ module.exports = async (req, res) => {
       let query = supabase
         .from('raid_plans')
         .select(`id, name, published, updated_at, raid_date,
-          raid_plan_members ( assigned_role, characters ( id, name, class, primary_role, server ) )`)
+          raid_plan_members ( assigned_role, characters ( id, name, class, primary_role, server, realm_name ) )`)
         .eq('team_id', teamId)
         .not('raid_date', 'is', null);
 

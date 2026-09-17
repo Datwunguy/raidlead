@@ -49,11 +49,17 @@ end
 -- Builds whatever C_PartyInfo.InviteUnit actually needs to find this
 -- person -- a bare name only resolves same-realm (and connected realms);
 -- anyone else needs "Name-Realm" or the client reports "player not found"
--- even though they're a real roster member. Falls back to the bare name if
--- no server was synced down (shouldn't normally happen, but never worse
--- than the old always-bare-name behavior).
+-- even though they're a real roster member. Prefers entry.realmName (the
+-- real realm name as an officer typed it, e.g. "Kel'Thuzad") when synced
+-- down -- WoW's invite format only ever strips spaces, so that's lossless.
+-- Falls back to reconstructing from the slug (lossy for apostrophes/etc,
+-- see realmNameFromSlug above) for characters saved before realm_name
+-- existed, and to the bare name if neither is available.
 local function inviteTargetFor(entry)
   if not entry or not entry.name then return nil end
+  if entry.realmName and entry.realmName ~= '' then
+    return entry.name .. '-' .. (entry.realmName:gsub('%s+', ''))
+  end
   local realm = realmNameFromSlug(entry.server)
   if realm then return entry.name .. '-' .. realm end
   return entry.name
@@ -116,13 +122,16 @@ function RaidLead.BuildRosterColumns()
     local col = columnFor(member)
     local shortName = member.name and Ambiguate(member.name, 'short'):lower() or ''
     table.insert(columns[col], {
-      name     = member.name,
-      class    = member.class,
-      server   = member.server,
-      inGroup  = groupNames[shortName] == true,
-      isOnline = onlineStatus[shortName],
+      name      = member.name,
+      class     = member.class,
+      server    = member.server,
+      realmName = member.realmName,
+      inGroup   = groupNames[shortName] == true,
+      isOnline  = onlineStatus[shortName],
     })
-    if member.name then table.insert(allNames, { name = member.name, server = member.server }) end
+    if member.name then
+      table.insert(allNames, { name = member.name, server = member.server, realmName = member.realmName })
+    end
   end
 
   for _, col in pairs(columns) do
