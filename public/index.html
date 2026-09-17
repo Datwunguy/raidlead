@@ -873,6 +873,29 @@
     font-weight: 600;
   }
 
+  /* ── BOOT LOADING SCREEN ── */
+  #boot-loading-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+  }
+  .boot-loading-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+  }
+  .boot-loading-title {
+    font-family: 'Cinzel', serif;
+    font-size: 26px;
+    letter-spacing: 5px;
+    color: var(--gold);
+  }
+
   /* ── EMPTY STATE ── */
   .empty-state {
     display: flex;
@@ -1548,6 +1571,34 @@
 </head>
 <body>
 <div id="app">
+
+  <!-- BOOT LOADING SCREEN — visible immediately (no display:none), so
+       there's never a blank page or a flash of the wrong screen while the
+       session/guild/roster checks on boot are still in flight. Every
+       show*Screen()/showDashboard() hides this as its first step once it
+       knows what to actually show instead. -->
+  <div id="boot-loading-screen">
+    <div class="boot-loading-card">
+      <svg class="logo-icon" viewBox="0 0 86.6 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width:56px; height:64px;">
+        <defs>
+          <g id="logoSwordBoot" stroke="#1a1a1a" stroke-width="9" stroke-linejoin="round">
+            <polygon points="0,-266 28.5,-236 28.5,112 25,116 55,119 59.5,132 58,141 50,144 28.5,147 23.5,150 11,171 11,243 13,250 9,261 0,265 -9,261 -13,250 -11,243 -11,171 -23.5,150 -28.5,147 -50,144 -58,141 -59.5,132 -55,119 -25,116 -28.5,112 -28.5,-236" fill="#9aa0aa"/>
+            <line x1="0" y1="-225" x2="0" y2="105" stroke="#7d828a" stroke-width="5"/>
+            <line x1="-27" y1="114" x2="27" y2="114" stroke="#1a1a1a" stroke-width="9" stroke-linecap="round"/>
+          </g>
+        </defs>
+        <polygon points="43.3,0 86.6,25 86.6,75 43.3,100 0,75 0,25" fill="#c8a84b" stroke="#1a1a1a" stroke-width="1.5"/>
+        <use href="#logoSwordBoot" transform="translate(43.3,50) rotate(45) scale(0.1278)"/>
+        <use href="#logoSwordBoot" transform="translate(43.3,50) rotate(-45) scale(0.1278)"/>
+      </svg>
+      <div class="boot-loading-title">RAIDLEAD</div>
+      <div class="spinner"></div>
+      <div id="boot-loading-stuck" style="display:none; font-size:12px; color:var(--text-mute); text-align:center; max-width:260px;">
+        Taking longer than usual.
+        <a href="#" onclick="location.reload(); return false;" style="color:var(--gold-dim);">Click to reload</a>.
+      </div>
+    </div>
+  </div>
 
   <!-- HEADER -->
   <header>
@@ -2807,6 +2858,18 @@ function copyShareUrl() {
 }
 
 // Auth-aware page initialization
+// Safety net for the boot loading screen -- if something unexpected hangs
+// or throws partway through the boot sequence below (before it reaches any
+// showXScreen() call), don't leave the user staring at a spinner forever
+// with no way out.
+setTimeout(() => {
+  const el = document.getElementById('boot-loading-screen');
+  if (el && el.style.display !== 'none') {
+    const stuck = document.getElementById('boot-loading-stuck');
+    if (stuck) stuck.style.display = 'block';
+  }
+}, 15000);
+
 window.addEventListener('DOMContentLoaded', async () => {
   const urlParams = new URLSearchParams(window.location.search);
 
@@ -3324,14 +3387,37 @@ function setStatus(msg, type='') {
 // ─────────────────────────────────────────────
 //  ROSTER — read from the characters table (the source of truth; officers
 //  add/edit/remove directly, and/or use "Import from WowAudit" to bulk-add).
-//  Item level comes back live from Raider.io, merged in server-side.
+//  Item level is fetched separately (loadRosterIlvls below) and never
+//  blocks this -- see there for why.
 // ─────────────────────────────────────────────
 async function loadRosterFromDB(force) {
-  const url = `/api/roster?action=list&teamId=${encodeURIComponent(STATE.teamId)}` + (force ? '&force=true' : '');
+  const url = `/api/roster?action=list&teamId=${encodeURIComponent(STATE.teamId)}`;
   const resp = await fetch(url);
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Could not load the roster.');
   STATE.players = data.players || [];
+
+  // Item level comes from live Raider.io lookups, which can be slow or
+  // occasionally degraded (this app has hit real Raider.io outages before)
+  // -- fire this in the background rather than await it, so the roster
+  // itself (name/class/role, all from our own DB) never has to wait on an
+  // external service just to appear. Callers that already re-render after
+  // loadRosterFromDB will show ilvl as "—" for a moment, then this fills it
+  // in and re-renders the Roster tab if it's the one currently showing.
+  loadRosterIlvls(force);
+}
+
+async function loadRosterIlvls(force) {
+  if (!STATE.teamId) return;
+  try {
+    const url = `/api/roster?action=listIlvl&teamId=${encodeURIComponent(STATE.teamId)}` + (force ? '&force=true' : '');
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!resp.ok) return;
+    const ilvls = data.ilvls || {};
+    STATE.players.forEach(p => { if (p.name in ilvls) p.ilvl = ilvls[p.name]; });
+    if (document.getElementById('tab-roster')?.classList.contains('active')) renderRoster();
+  } catch (e) { /* ilvl just stays at 0/placeholder -- not critical */ }
 }
 
 async function importFromWowaudit() {
@@ -3516,6 +3602,7 @@ function updateRosterTitle() {
 let CLAIM_GATE_UNCLAIMED = [];
 
 async function showClaimGateScreen() {
+  hideBootLoader();
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('dashboard').style.display          = 'none';
   document.getElementById('login-screen').style.display       = 'none';
@@ -3599,6 +3686,7 @@ async function claimMyCharacter(characterName) {
 }
 
 function showDashboard() {
+  hideBootLoader();
   document.getElementById('setup-screen').style.display = 'none';
   document.getElementById('dashboard').style.display    = 'block';
   document.getElementById('main-nav').style.display     = 'flex';
@@ -7554,7 +7642,18 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Hides the boot loading screen -- called first thing by every function
+// below that shows a real screen, so it never lingers once we know what to
+// actually display. Idempotent (safe to call repeatedly / after it's
+// already hidden), and does nothing on tab switches after boot since the
+// element is gone from the flow by then.
+function hideBootLoader() {
+  const el = document.getElementById('boot-loading-screen');
+  if (el) el.style.display = 'none';
+}
+
 function showLoginScreen() {
+  hideBootLoader();
   document.getElementById('login-screen').style.display       = 'flex';
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
@@ -7569,6 +7668,7 @@ function showLoginScreen() {
 }
 
 function showGuildSetup() {
+  hideBootLoader();
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'flex';
@@ -7587,6 +7687,7 @@ function showGuildSetup() {
 }
 
 function showLandingChoice() {
+  hideBootLoader();
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
@@ -7606,6 +7707,7 @@ function showLandingChoice() {
 }
 
 function showJoinGuildScreen() {
+  hideBootLoader();
   document.getElementById('login-screen').style.display          = 'none';
   document.getElementById('setup-screen').style.display          = 'none';
   document.getElementById('guild-setup-screen').style.display    = 'none';

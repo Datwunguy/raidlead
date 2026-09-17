@@ -1,13 +1,15 @@
 // ============================================================
 //  roster.js — handles roster/character/scores + WCL actions
-//  Actions: list, addCharacter, updateCharacter, removeCharacter, getFlex,
-//           updateFlex, saveScores, getScores, wclZones, wclQuery
+//  Actions: list, listIlvl, addCharacter, updateCharacter, removeCharacter,
+//           getFlex, updateFlex, saveScores, getScores, wclZones, wclQuery
 //  (wcl.js is now consolidated here — wcl.js can be deleted)
 //
 //  The `characters` table is the roster's actual source of truth (populated
-//  via api/wowaudit.js's on-demand import, or added to by hand here) --
-//  `list` is the read side, merging in item level fetched live from
-//  Raider.io (never stored; it's a display stat, not roster identity).
+//  via api/wowaudit.js's on-demand import, or added to by hand here). `list`
+//  is the read side -- a plain DB read, always fast. Item level is
+//  deliberately NOT fetched there: it comes from a separate `listIlvl` call
+//  (live Raider.io lookups, one per character), so a slow or degraded
+//  Raider.io never blocks the roster itself from loading. See listIlvl.
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
@@ -15,13 +17,12 @@ const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
 
-// Cache the merged (DB + live Raider.io ilvl) roster per team briefly, so
-// several people opening the Roster tab around the same time don't each
-// trigger a fresh batch of per-character Raider.io lookups. Any add/edit/
-// remove/import below invalidates a team's entry immediately, so this only
-// ever serves genuinely-unchanged data. Same pattern as wclTokenCache above.
-const rosterListCache = new Map(); // teamId -> { data, fetchedAt }
-const ROSTER_LIST_CACHE_MS = 10 * 60 * 1000;
+// Cache listIlvl's live Raider.io results per team briefly, so several
+// people opening the Roster tab around the same time don't each trigger a
+// fresh batch of per-character lookups. A character's gear doesn't change
+// fast enough to justify hitting Raider.io on every page load either way.
+const ilvlCache = new Map(); // teamId -> { data: {name: ilvl}, fetchedAt }
+const ILVL_CACHE_MS = 10 * 60 * 1000;
 
 // Thrown when a request needs WCL access but the caller's guild hasn't connected its
 // own Warcraft Logs API client yet -- callers check err.wclNotConfigured to show a
@@ -929,25 +930,17 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── LIST: the roster, read from `characters` (the source of truth), with
-  // live item level merged in from Raider.io per character. Any team member
-  // can view it; pass force=true (the Roster tab's "Refresh" button) to
-  // bypass the cache and re-pull ilvl fresh. ──
+  // ── LIST: the roster, read straight from `characters` (the source of
+  // truth) -- a plain DB read, always fast regardless of how many
+  // characters there are or what Raider.io is doing. ilvl comes back as 0
+  // placeholder here; the frontend backfills it via a separate listIlvl
+  // call so this never has to wait on an external service. Any team member
+  // can view it. ──
   if (action === 'list') {
     const teamId = req.query.teamId || req.body?.teamId;
-    const force  = req.query.force === 'true' || req.body?.force === true;
     if (!teamId) return res.status(400).json({ error: 'teamId required' });
     try {
       await assertTeamOwnership(teamId);
-
-      const cached = rosterListCache.get(teamId);
-      if (!force && cached && Date.now() - cached.fetchedAt < ROSTER_LIST_CACHE_MS) {
-        return res.status(200).json({ players: cached.data });
-      }
-
-      const { data: team } = await supabase
-        .from('teams').select('id, guilds ( region )').eq('id', teamId).single();
-      const region = team?.guilds?.region === 'oceanic' ? 'us' : (team?.guilds?.region || 'us');
 
       const { data: chars, error } = await supabase
         .from('characters')
@@ -958,10 +951,58 @@ module.exports = async (req, res) => {
         .eq('active', true);
       if (error) throw error;
 
-      // One Raider.io lookup per character, in parallel -- a 400 (character
-      // Raider.io hasn't indexed yet) or any network hiccup just leaves that
-      // one character's ilvl at 0 rather than failing the whole roster.
-      const players = await Promise.all((chars || []).map(async c => {
+      const players = (chars || []).map(c => ({
+        id:              c.id,
+        name:            c.name,
+        class:           c.class,
+        server:          c.server,
+        serverDisplay:   c.realm_name || serverDisplayFromSlug(c.server),
+        role:            c.primary_role,
+        rank:            c.rank || 'Main',
+        account_id:      c.account_id,
+        ilvl:            0, // filled in by listIlvl
+        flex_tank:       c.flex_tank       || false,
+        flex_heal:       c.flex_heal       || false,
+        flex_melee:      c.flex_melee      || false,
+        flex_ranged:     c.flex_ranged     || false,
+        can_flex_tank:   c.can_flex_tank   || false,
+        can_flex_heal:   c.can_flex_heal   || false,
+        can_flex_melee:  c.can_flex_melee  || false,
+        can_flex_ranged: c.can_flex_ranged || false,
+      }));
+
+      return res.status(200).json({ players });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── LIST ILVL: live item level per character from Raider.io, deliberately
+  // split out of `list` above -- one Raider.io lookup per character, in
+  // parallel, so a slow or degraded Raider.io (verified live this project
+  // has hit both) only delays the ilvl numbers, never the roster itself.
+  // Cached ~10 min; pass force=true (the Roster tab's "Refresh" button) to
+  // bypass the cache. A 400 (character Raider.io hasn't indexed yet) or any
+  // network hiccup just leaves that one character's ilvl at 0. ──
+  if (action === 'listIlvl') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    const force  = req.query.force === 'true' || req.body?.force === true;
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
+    try {
+      await assertTeamOwnership(teamId);
+
+      const cached = ilvlCache.get(teamId);
+      if (!force && cached && Date.now() - cached.fetchedAt < ILVL_CACHE_MS) {
+        return res.status(200).json({ ilvls: cached.data });
+      }
+
+      const { data: team } = await supabase
+        .from('teams').select('id, guilds ( region )').eq('id', teamId).single();
+      const region = team?.guilds?.region === 'oceanic' ? 'us' : (team?.guilds?.region || 'us');
+
+      const { data: chars, error } = await supabase
+        .from('characters').select('name, server').eq('team_id', teamId).eq('active', true);
+      if (error) throw error;
+
+      const entries = await Promise.all((chars || []).map(async c => {
         let ilvl = 0;
         try {
           const resp = await fetch(
@@ -973,30 +1014,12 @@ module.exports = async (req, res) => {
             ilvl = data?.gear?.item_level_equipped || 0;
           }
         } catch (e) { /* leave ilvl at 0 */ }
-
-        return {
-          id:              c.id,
-          name:            c.name,
-          class:           c.class,
-          server:          c.server,
-          serverDisplay:   c.realm_name || serverDisplayFromSlug(c.server),
-          role:            c.primary_role,
-          rank:            c.rank || 'Main',
-          account_id:      c.account_id,
-          ilvl,
-          flex_tank:       c.flex_tank       || false,
-          flex_heal:       c.flex_heal       || false,
-          flex_melee:      c.flex_melee      || false,
-          flex_ranged:     c.flex_ranged     || false,
-          can_flex_tank:   c.can_flex_tank   || false,
-          can_flex_heal:   c.can_flex_heal   || false,
-          can_flex_melee:  c.can_flex_melee  || false,
-          can_flex_ranged: c.can_flex_ranged || false,
-        };
+        return [c.name, ilvl];
       }));
 
-      rosterListCache.set(teamId, { data: players, fetchedAt: Date.now() });
-      return res.status(200).json({ players });
+      const ilvls = Object.fromEntries(entries);
+      ilvlCache.set(teamId, { data: ilvls, fetchedAt: Date.now() });
+      return res.status(200).json({ ilvls });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
@@ -1028,7 +1051,6 @@ module.exports = async (req, res) => {
         .select('id').single();
       if (error) throw error;
 
-      rosterListCache.delete(teamId);
       return res.status(200).json({ success: true, id: data.id });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
@@ -1056,7 +1078,6 @@ module.exports = async (req, res) => {
         .from('characters').update(updates).eq('id', characterId).eq('team_id', teamId);
       if (error) throw error;
 
-      rosterListCache.delete(teamId);
       return res.status(200).json({ success: true });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
@@ -1076,7 +1097,6 @@ module.exports = async (req, res) => {
         .from('characters').update({ active: false, account_id: null }).eq('id', characterId).eq('team_id', teamId);
       if (error) throw error;
 
-      rosterListCache.delete(teamId);
       return res.status(200).json({ success: true });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
