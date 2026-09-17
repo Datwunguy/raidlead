@@ -1,8 +1,9 @@
 // ============================================================
 //  members.js — handles member/attendance actions, all team-scoped
 //  Actions: get, updateRole, updateDisplayName, setMemberDiscordId,
-//           generateDiscordLinkCode, claimCharacter, removeMember, diagKey,
-//           getAttendance, markAttendance, addRaidNight, removeRaidNight
+//           generateDiscordLinkCode, claimCharacter, unclaimCharacter,
+//           removeMember, diagKey, getAttendance, markAttendance,
+//           addRaidNight, removeRaidNight
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
@@ -39,8 +40,9 @@ module.exports = async (req, res) => {
 
       const { data: chars } = await supabase
         .from('characters')
-        .select('id, name, class, primary_role, account_id')
+        .select('id, name, class, primary_role, rank, account_id')
         .eq('team_id', teamId)
+        .eq('active', true)
         .not('account_id', 'is', null);
       const characterMap = {};
       (chars || []).forEach(c => { if (!characterMap[c.account_id]) characterMap[c.account_id] = []; characterMap[c.account_id].push(c); });
@@ -192,6 +194,32 @@ module.exports = async (req, res) => {
       console.error('[claimCharacter] error:', err.message, { characterName, teamId });
       return res.status(err.status || 500).json({ error: err.message });
     }
+  }
+
+  // ── UNCLAIM CHARACTER: release a character claim -- self-service for your
+  // own characters (so claiming a Main and Alt(s) doesn't lock you into
+  // never being able to undo one), officers can release anyone's. ──
+  if (action === 'unclaimCharacter') {
+    const { characterName, teamId } = req.body;
+    if (!characterName || !teamId) return res.status(400).json({ error: 'characterName and teamId required' });
+
+    try {
+      const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      const isOfficer = isOfficerRole(myRole);
+
+      const { data: char } = await supabase
+        .from('characters').select('account_id').eq('team_id', teamId).eq('name', characterName).maybeSingle();
+      if (!char) return res.status(404).json({ error: 'Character not found' });
+      if (!isOfficer && char.account_id !== session.id) {
+        return res.status(403).json({ error: 'You can only release your own characters' });
+      }
+
+      const { error } = await supabase
+        .from('characters').update({ account_id: null }).eq('team_id', teamId).eq('name', characterName);
+      if (error) throw error;
+
+      return res.status(200).json({ success: true });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
   // ── REMOVE MEMBER ──

@@ -89,7 +89,7 @@ module.exports = async (req, res) => {
       const requestedTeamId = req.query.teamId || req.body?.teamId || null;
       const activeTeamId = requestedTeamId || (myTeams.length === 1 ? myTeams[0].teamId : null);
 
-      let team = null, role = null, claimedCharacter = null;
+      let team = null, role = null, claimedCharacter = null, claimedCharacters = [];
       if (activeTeamId) {
         const membership = myTeams.find(t => t.teamId === activeTeamId);
         if (!membership) return res.status(403).json({ error: 'You are not a member of that team' });
@@ -108,11 +108,16 @@ module.exports = async (req, res) => {
 
         team = sanitizeTeam(teamRow);
 
-        const { data: charRow } = await supabase
-          .from('characters').select('name')
+        // An account can claim more than one character (e.g. a Main and an
+        // Alt) -- return all of them; claimedCharacter (singular) stays as
+        // the first one for the many call sites that only need a yes/no or a
+        // default name (the attendance gate, etc).
+        const { data: charRows } = await supabase
+          .from('characters').select('id, name, class, primary_role, rank')
           .eq('account_id', session.id).eq('team_id', activeTeamId)
-          .limit(1).maybeSingle();
-        claimedCharacter = charRow?.name || null;
+          .eq('active', true);
+        claimedCharacters = charRows || [];
+        claimedCharacter = claimedCharacters[0]?.name || null;
       }
 
       return res.status(200).json({
@@ -121,6 +126,7 @@ module.exports = async (req, res) => {
         role,
         team,
         claimedCharacter,
+        claimedCharacters,
       });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }

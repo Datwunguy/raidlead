@@ -1963,8 +1963,8 @@
       <div class="tab-content active" id="tab-roster">
         <div class="section-header">
           <div class="section-title">Guild Roster<span id="roster-team-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
-          <div style="display:flex; align-items:center; gap:16px;">
-            <div style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--text-mute);">
+          <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:12px; font-size:11px; color:var(--text-mute); flex-wrap:wrap;">
               <span style="display:flex; align-items:center; gap:5px;">
                 <span style="width:8px; height:8px; border-radius:50%; background:#C79C6E; display:inline-block;"></span> Flex Tank
               </span>
@@ -1987,6 +1987,15 @@
           </div>
         </div>
 
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+          <span style="font-size:11px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">Show:</span>
+          <div class="role-filter" id="roster-rank-filter">
+            <button class="filter-btn active" onclick="setRosterRankFilter('all', this)">All</button>
+            <button class="filter-btn" onclick="setRosterRankFilter('main', this)">Mains</button>
+            <button class="filter-btn" onclick="setRosterRankFilter('alt', this)">Alts</button>
+          </div>
+        </div>
+
         <!-- Stat cards -->
         <div class="stat-grid" id="stat-grid">
           <div class="stat-card">
@@ -2002,7 +2011,13 @@
           <div class="stat-card">
             <div class="stat-label">Avg iLvl</div>
             <div class="stat-value" id="stat-ilvl">—</div>
-            <div class="stat-sub">Equipped</div>
+            <div class="stat-sub">
+              Equipped
+              <div style="margin-top:4px; font-size:11px; color:var(--text-mute); line-height:1.6;">
+                <div>Top 20 Avg iLvl: <span id="stat-ilvl-top20">—</span></div>
+                <div>Top 10 Avg iLvl: <span id="stat-ilvl-top10">—</span></div>
+              </div>
+            </div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Zone</div>
@@ -2216,6 +2231,12 @@
         <div id="attendance-legend" style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:12px; color:var(--text-mute);">
           <span style="display:flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:2px; background:rgba(200,168,75,0.18); border:1px solid var(--gold-dim); display:inline-block;"></span> Raid Day</span>
           <span style="display:flex; align-items:center; gap:5px;"><span style="width:10px; height:10px; border-radius:2px; background:#FF3333; display:inline-block;"></span> You're Marked Unavailable</span>
+        </div>
+
+        <!-- Only shown when the account has claimed more than one character (a Main and Alt(s)) -->
+        <div id="attendance-acting-as" style="display:none; align-items:center; gap:8px; margin-bottom:12px; font-size:12px; color:var(--text-mute);">
+          <span>Marking attendance as:</span>
+          <select id="attendance-acting-as-select" class="themed-select" onchange="setAttendanceActingAs(this.value)" style="font-size:12px; padding:4px 10px;"></select>
         </div>
 
         <div id="attendance-calendar-wrap" style="margin-top:8px;">
@@ -2629,6 +2650,7 @@
 const STATE = {
   config:       null,
   players:      [],
+  rosterRankFilter: 'all', // 'all' | 'main' | 'alt' -- which characters the Roster tab shows/computes stats over
   scores:       [],
   bossNames:    [],
   zoneId:       null,
@@ -2656,7 +2678,9 @@ const STATE = {
   mitigationMap:     {},            // per-player per-boss mitigation % from guild reports
   mitigationFetched: false,          // whether mitigation data has been fetched
   mitigationMapDifficulty: null,    // difficulty STATE.mitigationMap was fetched/loaded for
-  claimedCharacter:  null,           // the character this logged-in account has claimed
+  claimedCharacter:  null,           // the first character this logged-in account has claimed (back-compat; see claimedCharacters for the full list)
+  claimedCharacters: [],             // every character this logged-in account has claimed on the active team (Main + Alt(s))
+  attendanceActingAs: null,          // which of claimedCharacters attendance is currently being marked for
   attendanceExtraDays: [],           // one-off raid nights, array of 'YYYY-MM-DD' strings
   attendanceMarks:     [],           // [{character_name, raid_date, status}]
   attendanceMonth:     new Date(new Date().getFullYear(), new Date().getMonth(), 1), // first-of-month Date being viewed
@@ -3551,6 +3575,10 @@ async function claimMyCharacter(characterName) {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Claim failed');
     STATE.claimedCharacter = characterName;
+    STATE.claimedCharacters = [{
+      id: null, name: characterName, class: player?.class || 'unknown',
+      primary_role: player?.role || 'ranged', rank: player?.rank || 'Main',
+    }];
     showToast('Character claimed: ' + characterName, 'success');
     showDashboard();
     updateRosterTitle();
@@ -3703,9 +3731,41 @@ function isRaidDay(date) {
   return recurring || extra;
 }
 
+// Only relevant once an account has claimed more than one character (a Main
+// and Alt(s)) -- attendance is inherently per-character (raid slots are),
+// so someone with multiple claims needs to say which one they're marking.
+// Hidden entirely for the common single-claim case.
+function renderAttendanceCharacterPicker() {
+  const wrap   = document.getElementById('attendance-acting-as');
+  const select = document.getElementById('attendance-acting-as-select');
+  if (!wrap || !select) return;
+
+  const chars = STATE.claimedCharacters || [];
+  if (chars.length <= 1) {
+    wrap.style.display = 'none';
+    STATE.attendanceActingAs = chars[0]?.name || null;
+    return;
+  }
+
+  if (!STATE.attendanceActingAs || !chars.some(c => c.name === STATE.attendanceActingAs)) {
+    STATE.attendanceActingAs = chars[0].name;
+  }
+  select.innerHTML = chars.map(c =>
+    `<option value="${escapeHtml(c.name)}" ${c.name === STATE.attendanceActingAs ? 'selected' : ''}>${escapeHtml(c.name)}${c.rank ? ' (' + escapeHtml(c.rank) + ')' : ''}</option>`
+  ).join('');
+  wrap.style.display = 'flex';
+}
+
+function setAttendanceActingAs(name) {
+  STATE.attendanceActingAs = name;
+  renderAttendanceCalendar();
+}
+
 function renderAttendanceCalendar() {
   const wrap = document.getElementById('attendance-calendar-wrap');
   if (!wrap) return;
+
+  renderAttendanceCharacterPicker();
 
   const viewMonth = STATE.attendanceMonth;
   const year  = viewMonth.getFullYear();
@@ -3722,7 +3782,7 @@ function renderAttendanceCalendar() {
   const today = new Date();
   const todayStr = attendanceDateStr(today);
 
-  const myChar = STATE.claimedCharacter;
+  const myChar = STATE.attendanceActingAs || STATE.claimedCharacter;
   const myUnavailableDates = new Set(
     (STATE.attendanceMarks || [])
       .filter(m => m.character_name === myChar && m.status === 'unavailable')
@@ -3773,15 +3833,16 @@ function renderAttendanceCalendar() {
 }
 
 async function toggleMyAttendance(dateStr) {
-  if (!STATE.claimedCharacter || !STATE.teamId) return;
+  const myChar = STATE.attendanceActingAs || STATE.claimedCharacter;
+  if (!myChar || !STATE.teamId) return;
   const currentlyUnavailable = (STATE.attendanceMarks || [])
-    .some(m => m.character_name === STATE.claimedCharacter && m.raid_date === dateStr && m.status === 'unavailable');
+    .some(m => m.character_name === myChar && m.raid_date === dateStr && m.status === 'unavailable');
 
   // Optimistic update
   if (currentlyUnavailable) {
-    STATE.attendanceMarks = STATE.attendanceMarks.filter(m => !(m.character_name === STATE.claimedCharacter && m.raid_date === dateStr));
+    STATE.attendanceMarks = STATE.attendanceMarks.filter(m => !(m.character_name === myChar && m.raid_date === dateStr));
   } else {
-    STATE.attendanceMarks.push({ character_name: STATE.claimedCharacter, raid_date: dateStr, status: 'unavailable' });
+    STATE.attendanceMarks.push({ character_name: myChar, raid_date: dateStr, status: 'unavailable' });
   }
   renderAttendanceCalendar();
 
@@ -3791,7 +3852,7 @@ async function toggleMyAttendance(dateStr) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         teamId: STATE.teamId,
-        characterName: STATE.claimedCharacter,
+        characterName: myChar,
         raidDate: dateStr,
         unavailable: !currentlyUnavailable,
       }),
@@ -5048,8 +5109,17 @@ function renderResources() {
 // ─────────────────────────────────────────────
 //  ROSTER RENDER
 // ─────────────────────────────────────────────
+function setRosterRankFilter(value, btn) {
+  STATE.rosterRankFilter = value;
+  document.querySelectorAll('#roster-rank-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRoster();
+}
+
 function renderRoster() {
-  const players = STATE.players;
+  const players = STATE.rosterRankFilter === 'all'
+    ? STATE.players
+    : STATE.players.filter(p => (p.rank || 'Main').toLowerCase() === STATE.rosterRankFilter);
 
   // Stats
   document.getElementById('stat-total').textContent = players.length;
@@ -5057,10 +5127,19 @@ function renderRoster() {
   document.getElementById('stat-zone').textContent  = zoneDisplay;
   document.getElementById('stat-difficulty').textContent = 'Zone ' + STATE.zoneId;
 
-  const ilvls = players.filter(p => p.ilvl > 0).map(p => p.ilvl);
+  // Avg iLvl, plus the average of just the top 20 / top 10 equipped ilvls --
+  // a closer read on raid-ready strength than a whole-roster average, which
+  // gets diluted by alts and undergeared members.
+  const ilvls = players.filter(p => p.ilvl > 0).map(p => p.ilvl).sort((a, b) => b - a);
   document.getElementById('stat-ilvl').textContent = ilvls.length
     ? (ilvls.reduce((a,b) => a+b, 0) / ilvls.length).toFixed(0)
     : '—';
+  const avgOfTopN = n => {
+    const top = ilvls.slice(0, n);
+    return top.length ? (top.reduce((a,b) => a+b, 0) / top.length).toFixed(0) : '—';
+  };
+  document.getElementById('stat-ilvl-top20').textContent = avgOfTopN(20);
+  document.getElementById('stat-ilvl-top10').textContent = avgOfTopN(10);
 
   // Raid buffs
   renderRaidBuffs(players);
@@ -7899,6 +7978,10 @@ function showMembersModal() {
   });
 }
 
+// Shows every character this account has claimed on the team (a Main and
+// any Alt(s)) with a release button each, plus a persistent "claim another"
+// button -- claiming is additive (see api/members.js's claimCharacter),
+// not a single replaceable slot.
 function renderMemberClaimSection(members) {
   const claimedEl = document.getElementById('member-claimed-char');
   const pickerEl  = document.getElementById('member-claim-picker');
@@ -7906,20 +7989,55 @@ function renderMemberClaimSection(members) {
 
   const me = (members || []).find(m => m.account_id === AUTH.session?.id);
   const chars = Array.isArray(me?.characters) ? me.characters : (me?.characters ? [me.characters] : []);
-  const myChar = chars[0];
 
-  if (myChar) {
-    const color = CLASS_COLORS[myChar.class] || '#888';
-    claimedEl.innerHTML = `<span style="color:${color}; font-weight:700; font-size:16px;">${myChar.name}</span> <span style="color:var(--text-mute); font-size:12px;">${myChar.class} · ${myChar.primary_role}</span>`;
-    pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter('${AUTH.session?.id}')">Change Character</button>`;
+  if (chars.length === 0) {
+    claimedEl.textContent = 'No character claimed yet — claim one below:';
   } else {
-    claimedEl.textContent = 'No character claimed yet — select yours below:';
-    const claimed = (members || []).flatMap(m => Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : [])).map(c => c.name?.toLowerCase()).filter(Boolean);
-    const available = STATE.players.filter(p => !claimed.includes(p.name.toLowerCase()));
-    pickerEl.innerHTML = available.map(p => {
-      const color = CLASS_COLORS[p.class] || '#888';
-      return `<span onclick="claimCharacter('${p.name}')" style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px; cursor:pointer;">${p.name}</span>`;
+    claimedEl.innerHTML = chars.map(c => {
+      const color = CLASS_COLORS[c.class] || '#888';
+      const rankBadge = c.rank ? `<span style="color:var(--text-mute); font-size:11px; text-transform:uppercase; letter-spacing:1px;">${escapeHtml(c.rank)}</span>` : '';
+      return `<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+        <span style="color:${color}; font-weight:700; font-size:16px;">${escapeHtml(c.name)}</span>
+        <span style="color:var(--text-mute); font-size:12px;">${escapeHtml(c.class)} · ${escapeHtml(c.primary_role)}</span>
+        ${rankBadge}
+        <button onclick="releaseCharacterClaim('${escapeHtml(c.name)}')" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>
+      </div>`;
     }).join('');
+  }
+
+  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter('${AUTH.session?.id}')">+ Claim ${chars.length ? 'Another ' : 'a '}Character</button>`;
+}
+
+async function releaseCharacterClaim(characterName) {
+  if (!confirm(`Release ${characterName}? You can claim it again later if needed.`)) return;
+  try {
+    const resp = await fetch('/api/members?action=unclaimCharacter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ characterName, teamId: STATE.teamId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to release character');
+    showToast(`${characterName} released.`, 'success');
+    fetchMembersFromDB().then(data => {
+      const members = data?.members || [];
+      CURRENT_MEMBERS = members;
+      renderMemberClaimSection(members);
+      if (['owner','officer'].includes(STATE.myRole)) {
+        renderMembersListFromDB(members);
+        renderUnclaimedListFromDB(members);
+      }
+    });
+    // My own claimed-characters list changed -- refresh STATE so attendance/
+    // the claim gate reflect it without needing a full page reload.
+    const guildData = await fetchGuildFromDB(STATE.teamId);
+    if (guildData) {
+      STATE.claimedCharacter  = guildData.claimedCharacter || null;
+      STATE.claimedCharacters = guildData.claimedCharacters || [];
+      renderAttendanceCharacterPicker();
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
   }
 }
 
@@ -7980,9 +8098,9 @@ function renderMembersListFromDB(members) {
     const acct = Array.isArray(m.accounts) ? m.accounts[0] : m.accounts;
     const bt          = acct?.battletag || 'Unknown';
     const displayName = acct?.display_name || null;
-    // characters may also be array
+    // characters may also be array -- a member can claim more than one (Main + Alt(s))
     const chars = Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []);
-    const char  = chars[0]?.name || null;
+    const charNames = chars.map(c => c.name).filter(Boolean);
     const accountId = m.account_id;
     const isSelf = AUTH.session?.id === accountId;
     const discordId = acct?.discord_id || null;
@@ -7995,18 +8113,18 @@ function renderMembersListFromDB(members) {
           ${isSelf ? '<span style="font-size:10px; color:var(--text-mute);"> · you</span>' : ''}
         </div>
         <div style="font-size:12px; color:var(--text-mute); margin-top:2px;">
-          ${char
-            ? `<span style="color:var(--text-dim);">Character: <strong>${char}</strong></span>`
+          ${charNames.length
+            ? `<span style="color:var(--text-dim);">Character${charNames.length > 1 ? 's' : ''}: <strong>${charNames.join(', ')}</strong></span>`
             : `<span style="color:#ff6b6b;">No character claimed</span>`
           }
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
-        ${isSelf && !char ? `<button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;">Claim Character</button>` : ''}
+        ${isSelf ? `<button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;">+ Claim ${charNames.length ? 'Another' : 'Character'}</button>` : ''}
         ${isOfficer && !isSelf ? `
           <div style="display:flex; align-items:center; gap:6px;">
             <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — click to change' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
-            ${isOfficer ? `<button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="${char ? 'Reassign character' : 'Assign character'}">${char ? '⇄' : '+ Assign'}</button>` : ''}
+            <button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
             ${m.role === 'owner'
               ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Change ownership from Guild Settings">Owner</span>`
               : `<select onchange="updateRoleFromDB('${accountId}', this.value)"
@@ -8110,11 +8228,13 @@ function showClaimCharacter(accountId) {
     </div>`;
   }).join('');
 
-  // Insert claim picker into members modal (remove any prior one first so repeated
-  // clicks on +Assign don't stack up duplicate pickers)
+  // Insert claim picker right after the (always-visible, even for non-officers)
+  // claim section -- NOT anchored to #members-list, which lives inside
+  // officer-members-section and is display:none for regular members, so a
+  // self-claim picker anchored there would render invisibly for them.
   document.getElementById('claim-picker')?.remove();
-  const el = document.getElementById('members-list');
-  el.insertAdjacentHTML('beforebegin', `
+  const el = document.getElementById('member-claim-section');
+  el.insertAdjacentHTML('afterend', `
     <div id="claim-picker" style="background:var(--bg3); border:1px solid var(--gold-dim); border-radius:6px; padding:16px; margin-bottom:16px;">
       <div style="font-size:13px; font-weight:700; color:var(--gold); margin-bottom:12px;">Select your character:</div>
       <div style="max-height:300px; overflow-y:auto;">${options}</div>
@@ -8146,9 +8266,23 @@ async function claimCharacter(characterName) {
     fetchMembersFromDB().then(data => {
       const members = data?.members || [];
       CURRENT_MEMBERS = members;
-      renderMembersListFromDB(members);
-      renderUnclaimedListFromDB(members);
+      renderMemberClaimSection(members);
+      if (['owner','officer'].includes(STATE.myRole)) {
+        renderMembersListFromDB(members);
+        renderUnclaimedListFromDB(members);
+      }
     });
+    // Only my own claim (not an officer assigning someone else's) changes
+    // what's mine to act as -- refresh STATE so attendance/the claim gate
+    // reflect a first-ever claim without needing a full page reload.
+    if (!claimingAccountId || claimingAccountId === AUTH.session?.id) {
+      const guildData = await fetchGuildFromDB(STATE.teamId);
+      if (guildData) {
+        STATE.claimedCharacter  = guildData.claimedCharacter || null;
+        STATE.claimedCharacters = guildData.claimedCharacters || [];
+        renderAttendanceCharacterPicker();
+      }
+    }
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
   }
@@ -8405,7 +8539,8 @@ function applyGuildData(guildData) {
   STATE.progressCache    = {}; // may be a different team/region/raid than what was cached
   STATE.progressRaidsList = null;
   STATE.progressRaidSlug  = null;
-  STATE.claimedCharacter = guildData.claimedCharacter || null;
+  STATE.claimedCharacter  = guildData.claimedCharacter || null;
+  STATE.claimedCharacters = guildData.claimedCharacters || [];
   STATE.joinCode         = t.join_code || null;
   STATE.discordGuildId   = t.discord_guild_id || null;
   STATE.myRole           = guildData.role || 'member';
