@@ -57,6 +57,11 @@ local function makePill(parent)
   btn:SetSize(COLUMN_WIDTH, PILL_HEIGHT)
   btn:SetBackdrop({ bgFile = 'Interface\\Buttons\\WHITE8x8' })
 
+  -- Online/offline, from the real in-game guild roster (see applyStatusDot
+  -- below) -- in-group vs. missing is already conveyed by the pill's own
+  -- background color/brightness, so this single dot doesn't need to also
+  -- encode that; a second dot for it was redundant and, per feedback,
+  -- confusing to look at with two dots per row.
   local dot = btn:CreateTexture(nil, 'ARTWORK')
   dot:SetSize(6, 6)
   dot:SetPoint('LEFT', 8, 0)
@@ -68,15 +73,6 @@ local function makePill(parent)
   text:SetTextColor(1, 1, 1)
   btn.text = text
 
-  -- Separate from `dot` above (which signals in-group via opacity) --
-  -- online/offline, from the real in-game guild roster, so someone missing
-  -- from the raid can be told apart from someone missing AND offline.
-  local statusDot = btn:CreateTexture(nil, 'OVERLAY')
-  statusDot:SetSize(7, 7)
-  statusDot:SetPoint('RIGHT', -8, 0)
-  statusDot:Hide() -- shown only once a real online/offline value is known
-  btn.statusDot = statusDot
-
   btn:SetScript('OnClick', function(self)
     if self.missingEntry and RaidLead.CanInvite() then
       RaidLead.InviteMissing({ self.missingEntry })
@@ -86,21 +82,17 @@ local function makePill(parent)
   return btn
 end
 
--- Green if online, red if offline, hidden entirely if unknown (e.g. this
+-- Green if online, red if offline, neutral white if unknown (e.g. this
 -- person isn't actually in the same in-game guild, or the guild roster
--- hasn't loaded yet) -- an absent dot is a clearer "no data" signal than
--- guessing a color.
+-- hasn't loaded yet).
 local function applyStatusDot(pill, isOnline)
   if isOnline == nil then
-    pill.statusDot:Hide()
-    return
-  end
-  if isOnline then
-    pill.statusDot:SetColorTexture(0.25, 0.85, 0.3, 1)
+    pill.dot:SetColorTexture(1, 1, 1, 0.6)
+  elseif isOnline then
+    pill.dot:SetColorTexture(0.25, 0.85, 0.3, 1)
   else
-    pill.statusDot:SetColorTexture(0.85, 0.25, 0.25, 1)
+    pill.dot:SetColorTexture(0.85, 0.25, 0.25, 1)
   end
-  pill.statusDot:Show()
 end
 
 -- A small pool so we're not creating/destroying frames every refresh.
@@ -122,7 +114,6 @@ local function releaseAllPills()
     pill:Hide()
     pill:ClearAllPoints()
     pill.missingEntry = nil
-    pill.statusDot:Hide()
     table.insert(pillPool, pill)
   end
   wipe(pillsInUse)
@@ -141,7 +132,6 @@ local function layoutSection(parent, header, entries)
     local color = entry.inGroup and RaidLead.GetMutedClassColor(entry.class) or RaidLead.GetClassColor(entry.class)
     pill:SetBackdropColor(color.r, color.g, color.b, entry.inGroup and 0.35 or 0.85)
     pill.text:SetText(entry.name or '?')
-    pill.dot:SetVertexColor(1, 1, 1, entry.inGroup and 0.35 or 1)
     pill.missingEntry = (not entry.inGroup) and { name = entry.name, server = entry.server, realmName = entry.realmName } or nil
     applyStatusDot(pill, entry.isOnline)
 
@@ -348,7 +338,6 @@ function UI.Update(data)
     pill:SetPoint('TOPLEFT', prevAnchor, prevRelPoint, 0, -PILL_GAP)
     pill:SetBackdropColor(0.3, 0.08, 0.08, 0.6)
     pill.text:SetText(entry.name or '?')
-    pill.dot:SetColorTexture(0.7, 0.2, 0.2, 1)
     applyStatusDot(pill, entry.isOnline)
     prevAnchor, prevRelPoint = pill, 'BOTTOMLEFT'
   end
