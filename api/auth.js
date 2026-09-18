@@ -129,56 +129,32 @@ module.exports = async (req, res) => {
   }
 
   // ── JOIN-GUILD: create a team_members row for a specific team ──
-  // Joining is by team, not by guild -- a guild with more than one team can
-  // only be joined by code, since a name+server match can't say which team
-  // you mean. A single-team guild can still be found by name+server, same
-  // as before, since there's no ambiguity yet.
+  // A join code is always required -- this used to also accept a bare
+  // guildName+server match for unambiguous (single-team) guilds, but a
+  // guild's name and server aren't secret (they're public on Raider.io/WCL),
+  // so that path let any authenticated RaidLead account join any single-team
+  // guild's roster with zero proof they actually belong to it. Every team
+  // always has a join code available (auto-generated at creation, see
+  // api/guild.js), so this doesn't remove any real capability -- officers
+  // share that code instead of a name.
   if (action === 'join-guild') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     const session = getSession(req);
     if (!session) return res.status(401).json({ error: 'Not authenticated' });
 
-    const { guildName, server, joinCode } = req.body;
-    if (!guildName && !joinCode) return res.status(400).json({ error: 'Guild name or join code required' });
+    const { joinCode } = req.body;
+    if (!joinCode) return res.status(400).json({ error: 'Join code required' });
 
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
     try {
-      let team;
-      if (joinCode) {
-        const { data, error: codeErr } = await supabase
-          .from('teams')
-          .select('id, name')
-          .eq('join_code', joinCode.trim().toUpperCase())
-          .maybeSingle();
-        if (codeErr) throw codeErr;
-        if (!data) return res.status(404).json({ error: 'Invalid join code.' });
-        team = data;
-      } else {
-        let query = supabase.from('guilds').select('id, name, server').ilike('name', guildName.trim());
-        if (server) query = query.ilike('server', server.trim());
-        const { data: guilds, error: findErr } = await query;
-        if (findErr) throw findErr;
-        if (!guilds || guilds.length === 0) {
-          return res.status(404).json({ error: 'No guild found with that name/server. Double-check the spelling, or ask an officer for a join code.' });
-        }
-        if (guilds.length > 1) {
-          return res.status(409).json({ error: 'Multiple guilds match that name — please also enter the server.' });
-        }
-
-        const { data: teams, error: teamsErr } = await supabase
-          .from('teams').select('id, name').eq('guild_id', guilds[0].id);
-        if (teamsErr) throw teamsErr;
-        if (!teams || teams.length === 0) {
-          return res.status(404).json({ error: 'That guild has no teams yet.' });
-        }
-        if (teams.length > 1) {
-          return res.status(409).json({
-            error: `"${guilds[0].name}" has more than one team (${teams.map(t => t.name).join(', ')}) — ask an officer of the one you want to join for its join code.`,
-          });
-        }
-        team = teams[0];
-      }
+      const { data: team, error: codeErr } = await supabase
+        .from('teams')
+        .select('id, name')
+        .eq('join_code', joinCode.trim().toUpperCase())
+        .maybeSingle();
+      if (codeErr) throw codeErr;
+      if (!team) return res.status(404).json({ error: 'Invalid join code.' });
 
       const { data: existing } = await supabase
         .from('team_members')

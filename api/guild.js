@@ -32,6 +32,24 @@ function sanitizeTeam(team) {
   return t;
 }
 
+// A short, DB-unique join code -- every team gets one at creation time (see
+// create/addTeam below) so there's always a valid code to share, and
+// generateJoinCode reuses this to let officers rotate it. Ambiguous
+// characters (0/O, 1/I/L) are excluded since these get read aloud/typed by
+// hand a lot more than a typical random ID does.
+async function generateUniqueJoinCode(supabase) {
+  const { randomInt } = require('crypto');
+  const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const genCode = () => Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = genCode();
+    const { data: clash } = await supabase.from('teams').select('id').eq('join_code', candidate).maybeSingle();
+    if (!clash) return candidate;
+  }
+  return null;
+}
+
 // Two WowAudit API keys are "the same source" if they hash the same -- catches
 // the same real mistake the old spreadsheet-URL dedup caught (two teams
 // accidentally pointed at one WowAudit team), just keyed on the key itself
@@ -178,6 +196,7 @@ module.exports = async (req, res) => {
           zone_id:      zoneId || null,
           difficulty:   difficulty || 'mythic',
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          join_code:    await generateUniqueJoinCode(supabase),
         })
         .select(TEAM_FIELDS)
         .single();
@@ -217,6 +236,7 @@ module.exports = async (req, res) => {
           zone_id:      zoneId || null,
           difficulty:   difficulty || 'mythic',
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          join_code:    await generateUniqueJoinCode(supabase),
         })
         .select(TEAM_FIELDS)
         .single();
@@ -269,24 +289,16 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── GENERATE JOIN CODE: short, DB-backed code others use to join THIS team (officers+) ──
+  // ── GENERATE JOIN CODE: short, DB-backed code others use to join THIS team
+  // (officers+). Every team already gets one at creation time, so this is
+  // really "rotate" -- used when an old code leaked or should stop working. ──
   if (action === 'generateJoinCode') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
       const { teamId } = req.body;
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
-      // Skip visually ambiguous characters (0/O, 1/I/L)
-      const { randomInt } = require('crypto');
-      const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-      const genCode = () => Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
-
-      let code = null;
-      for (let attempt = 0; attempt < 5 && !code; attempt++) {
-        const candidate = genCode();
-        const { data: clash } = await supabase.from('teams').select('id').eq('join_code', candidate).maybeSingle();
-        if (!clash) code = candidate;
-      }
+      const code = await generateUniqueJoinCode(supabase);
       if (!code) return res.status(500).json({ error: 'Could not generate a unique join code — try again' });
 
       const { error } = await supabase.from('teams').update({ join_code: code }).eq('id', teamId);
