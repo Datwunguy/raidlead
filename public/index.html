@@ -4590,16 +4590,24 @@ function renderBossList(data) {
 const PROGRESS_PULLS_BRACKET_SIZE = 50;
 const PROGRESS_PULLS_BRACKET_COUNT = 20;
 
-function progressDefaultBracketStart(worldRank) {
-  const maxStart = (PROGRESS_PULLS_BRACKET_COUNT - 1) * PROGRESS_PULLS_BRACKET_SIZE + 1;
-  if (!worldRank || worldRank < 1) return 1;
-  // Clamp so a guild ranked beyond what the dropdown offers still gets a
-  // real, matching selection (the last bracket) instead of a start value no
-  // <option> has -- which would show "Rank 1-50" as selected by the
-  // browser's own fallback while silently fetching a bracket further out.
-  return Math.min(maxStart, Math.floor((worldRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1);
+// The bracket a given world rank actually falls in, with no upper bound --
+// a guild ranked 4,200th on a brutal new tier is real and shouldn't get
+// clamped to whatever the standard dropdown list happens to cover.
+function progressRankBracketStart(worldRank) {
+  return Math.floor((worldRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1;
 }
 
+function progressDefaultBracketStart(worldRank) {
+  if (!worldRank || worldRank < 1) return 1;
+  return progressRankBracketStart(worldRank);
+}
+
+// Always offers the standard top-1000 brackets (useful as a fixed comparison
+// point regardless of your own rank), plus -- if your guild's rank falls
+// outside that range -- one extra option for the bracket it's actually in,
+// inserted in order and clearly marked, so the dropdown's default selection
+// always matches a real option instead of silently falling back to the
+// browser's "first option" behavior for a start value nothing lists.
 function progressPullsBracketOptions(worldRank) {
   const opts = [];
   for (let i = 0; i < PROGRESS_PULLS_BRACKET_COUNT; i++) {
@@ -4607,6 +4615,12 @@ function progressPullsBracketOptions(worldRank) {
     const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
     const isYours = worldRank && worldRank >= start && worldRank <= end;
     opts.push({ start, label: `Rank ${start}-${end}${isYours ? ' (Your Rank)' : ''}` });
+  }
+  const maxStandardStart = (PROGRESS_PULLS_BRACKET_COUNT - 1) * PROGRESS_PULLS_BRACKET_SIZE + 1;
+  if (worldRank && worldRank > maxStandardStart + PROGRESS_PULLS_BRACKET_SIZE - 1) {
+    const start = progressRankBracketStart(worldRank);
+    const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
+    opts.push({ start, label: `Rank ${start}-${end} (Your Rank)` });
   }
   return opts;
 }
