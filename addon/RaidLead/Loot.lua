@@ -1,14 +1,33 @@
 -- ============================================================
 -- Loot.lua — encounter tracking + loot capture + BoE filtering.
 --
--- NEEDS LIVE-CLIENT VERIFICATION (flagged in the implementation plan):
--- this captures raid-wide Personal Loot via CHAT_MSG_LOOT, which is a
--- long-standing, well-documented chat event that fires for every raid
--- member's loot, not just your own -- that part is solid. What's NOT
--- yet verified against a live client is whether a more direct API (the
--- in-game Group Loot History panel) would be a cleaner primary source;
--- if so, this file is where to add it. CHAT_MSG_LOOT should be treated
--- as the reliable baseline either way.
+-- Two independent capture paths, since a raid's chosen loot method
+-- decides which one ever actually fires -- Personal Loot and Group Loot
+-- are mutually exclusive per-raid, but different runs (or a guild vs. a
+-- pug) may use either, so both paths are kept live rather than picking one:
+--
+-- 1. Personal Loot -- via CHAT_MSG_LOOT, a long-standing, well-documented
+--    chat event that fires for every raid member's loot, not just your
+--    own. Solid, been in production use.
+--
+-- 2. Group Loot (Need/Greed roll, highest roll wins) -- via the
+--    C_LootHistory API and LOOT_HISTORY_UPDATE_DROP event (see below).
+--    NEEDS LIVE-CLIENT VERIFICATION: the API shape here is drawn from
+--    Warcraft Wiki documentation (C_LootHistory.GetSortedDropsForEncounter/
+--    GetSortedInfoForDrop, EncounterLootDropInfo/EncounterLootDropRollInfo),
+--    cross-checked against multiple pages, but has NOT been exercised
+--    against a live client. Specifically unverified: (a) that
+--    LOOT_HISTORY_UPDATE_DROP actually fires for every raid member's
+--    client and not just the loot master/raid leader -- if it turns out
+--    to be leader-only, an officer's game session becomes a hard
+--    requirement for this data to get captured at all; (b) that `winner`
+--    is nil until the roll truly resolves and never populated
+--    prematurely; (c) the exact Enum.EncounterLootDropRollState values
+--    (assumed below: 0 NeedMainSpec, 1 NeedOffSpec, 2 Transmog, 3 Greed,
+--    4 NoRoll, 5 Pass). Test in a 5-man with Group Loot set as the loot
+--    method before trusting this in a real raid -- kill anything that
+--    drops a rollable item, roll Need, and confirm a record appears with
+--    lootMethod="roll" and the right winner/rollType/rollValue.
 --
 -- Parsing loot chat text: Blizzard ships the exact format strings used to
 -- build these messages (LOOT_ITEM, LOOT_ITEM_MULTIPLE, LOOT_ITEM_SELF,
@@ -83,10 +102,28 @@ local PATTERNS = {
 local currentEncounter = nil
 local ENCOUNTER_GRACE_SECONDS = 45
 
+-- Enum.EncounterLootDropRollState -- see the file header note above on why
+-- this needs live-client confirmation before being trusted.
+local ROLL_STATE_NAMES = {
+  [0] = 'need',        -- NeedMainSpec
+  [1] = 'need-offspec', -- NeedOffSpec
+  [2] = 'transmog',
+  [3] = 'greed',
+  [4] = 'no-roll',
+  [5] = 'pass',
+}
+
+-- lootListID isn't globally unique on its own (it resets per encounter), so
+-- dedupe on "encounterID-lootListID" -- LOOT_HISTORY_UPDATE_DROP fires
+-- repeatedly as a roll progresses (new roller, then resolution), and
+-- recordLoot must only run once a drop actually has a winner.
+local recordedRollDrops = {}
+
 local eventFrame = CreateFrame('Frame')
 eventFrame:RegisterEvent('ENCOUNTER_START')
 eventFrame:RegisterEvent('ENCOUNTER_END')
 eventFrame:RegisterEvent('CHAT_MSG_LOOT')
+eventFrame:RegisterEvent('LOOT_HISTORY_UPDATE_DROP')
 
 eventFrame:SetScript('OnEvent', function(_, event, ...)
   if event == 'ENCOUNTER_START' then
@@ -108,6 +145,8 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
     end
   elseif event == 'CHAT_MSG_LOOT' then
     RaidLead.HandleLootMessage(...)
+  elseif event == 'LOOT_HISTORY_UPDATE_DROP' then
+    RaidLead.HandleLootHistoryDrop(...)
   end
 end)
 
@@ -133,8 +172,15 @@ local function matchLootMessage(msg)
   return nil
 end
 
-local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, isBoe, itemMeta)
+-- `encounterOverride` lets the Group Loot path (below) supply the
+-- encounterID straight from LOOT_HISTORY_UPDATE_DROP, since a roll can take
+-- long enough to resolve that currentEncounter's grace window has already
+-- expired by then; personal loot keeps using currentEncounter as before by
+-- passing nothing. `rollInfo`, when present, marks this record as won via
+-- a Group Loot roll rather than Personal Loot.
+local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, isBoe, itemMeta, rollInfo, encounterOverride)
   itemMeta = itemMeta or {}
+  local encounter = encounterOverride or currentEncounter
   local id = string.format('%s-%d-%d-%s', RaidLead.sessionId, time(), itemId, recipientName)
   RaidLeadDB.lootRecords[id] = {
     addonRecordId  = id,
@@ -142,9 +188,9 @@ local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken
     likelyPug      = RaidLead.IsLikelyPug(),
     capturedAt     = time(),
     raidDate       = date('%Y-%m-%d'),
-    encounterId    = currentEncounter and currentEncounter.id or nil,
-    bossName       = currentEncounter and currentEncounter.name or nil,
-    difficulty     = currentEncounter and currentEncounter.difficulty or nil,
+    encounterId    = encounter and encounter.id or nil,
+    bossName       = encounter and encounter.name or nil,
+    difficulty     = encounter and encounter.difficulty or nil,
     itemId         = itemId,
     itemName       = itemName,
     isTierToken    = isTierToken,
@@ -155,9 +201,40 @@ local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken
     upgradeLevelMax = itemMeta.upgradeLevelMax,
     itemSlot       = itemMeta.itemSlot,
     armorType      = itemMeta.armorType,
+    lootMethod     = rollInfo and 'roll' or 'personal',
+    rollType       = rollInfo and rollInfo.rollType or nil,
+    rollValue      = rollInfo and rollInfo.rollValue or nil,
+    rollParticipants = rollInfo and rollInfo.participants or nil,
   }
   RaidLead.RefreshExport()
   if RaidLead.UI and RaidLead.UI.RefreshLoot then RaidLead.UI.RefreshLoot() end
+end
+
+-- Resolves an item link's cached info plus our extra metadata (upgrade
+-- track/slot/armor type), waiting on the item data cache if needed. Shared
+-- by both the Personal Loot and Group Loot capture paths below so there's
+-- one implementation of this, not two that can drift apart.
+-- callback(itemName, itemQuality, itemLevel, itemClassID, itemMeta) --
+-- itemMeta is always a table (fields nil where not applicable/found).
+local function resolveItemMetaAsync(itemLink, callback)
+  local item = Item:CreateFromItemLink(itemLink)
+  item:ContinueOnItemLoad(function()
+    local itemName, _, itemQuality, itemLevel, _, _, itemSubType, _, itemEquipLoc, _, _, itemClassID = GetItemInfo(itemLink)
+    if not itemQuality then return end
+
+    -- itemEquipLoc is an internal token (e.g. "INVTYPE_HEAD") -- Blizzard
+    -- ships a matching global string for each one that's already the
+    -- human-readable, localized slot name ("Head"), same trick this addon
+    -- already relies on for LOOT_ITEM/etc. above.
+    local itemSlot = itemEquipLoc and itemEquipLoc ~= '' and (_G[itemEquipLoc] or nil) or nil
+    local armorType = (itemClassID == ITEM_CLASS_ARMOR) and itemSubType or nil
+    local qualityTrack, upgradeLevel, upgradeLevelMax = GetUpgradeTrackInfo(itemLink)
+    local itemMeta = {
+      itemSlot = itemSlot, armorType = armorType,
+      qualityTrack = qualityTrack, upgradeLevel = upgradeLevel, upgradeLevelMax = upgradeLevelMax,
+    }
+    callback(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
+  end)
 end
 
 -- Exposed for the OnEvent handler above.
@@ -175,23 +252,7 @@ function RaidLead.HandleLootMessage(msg)
     local itemId = tonumber(itemLink:match('item:(%d+)'))
     if not itemId then return end
 
-    local item = Item:CreateFromItemLink(itemLink)
-    item:ContinueOnItemLoad(function()
-      local itemName, _, itemQuality, itemLevel, _, _, itemSubType, _, itemEquipLoc, _, _, itemClassID = GetItemInfo(itemLink)
-      if not itemQuality then return end
-
-      -- itemEquipLoc is an internal token (e.g. "INVTYPE_HEAD") -- Blizzard
-      -- ships a matching global string for each one that's already the
-      -- human-readable, localized slot name ("Head"), same trick this addon
-      -- already relies on for LOOT_ITEM/etc. above.
-      local itemSlot = itemEquipLoc and itemEquipLoc ~= '' and (_G[itemEquipLoc] or nil) or nil
-      local armorType = (itemClassID == ITEM_CLASS_ARMOR) and itemSubType or nil
-      local qualityTrack, upgradeLevel, upgradeLevelMax = GetUpgradeTrackInfo(itemLink)
-      local itemMeta = {
-        itemSlot = itemSlot, armorType = armorType,
-        qualityTrack = qualityTrack, upgradeLevel = upgradeLevel, upgradeLevelMax = upgradeLevelMax,
-      }
-
+    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
       local isBossLoot  = currentEncounter ~= nil
 
@@ -213,5 +274,75 @@ function RaidLead.HandleLootMessage(msg)
   if not ok then
     -- Never let a malformed/unexpected loot message take down the addon.
     -- (uncomment while debugging: print('|cffff4444RaidLead loot parse error|r: ' .. tostring(err)))
+  end
+end
+
+-- Exposed for the OnEvent handler above. Group Loot: fires as a roll's
+-- state changes (a new roller, then resolution) -- potentially several
+-- times per drop, so this only acts once `winner` is actually populated,
+-- and recordedRollDrops makes sure it only records once per drop even if
+-- the event fires again afterward (e.g. someone opening the loot history
+-- panel re-triggers a refresh).
+function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
+  local ok, err = pcall(function()
+    if not encounterID or not lootListID then return end
+    local dedupeKey = encounterID .. '-' .. lootListID
+    if recordedRollDrops[dedupeKey] then return end
+
+    local drops = C_LootHistory.GetSortedDropsForEncounter(encounterID)
+    if not drops then return end
+
+    local drop
+    for _, d in ipairs(drops) do
+      if d.lootListID == lootListID then drop = d; break end
+    end
+    if not drop or not drop.winner then return end -- roll not resolved yet
+
+    recordedRollDrops[dedupeKey] = true
+
+    local itemLink = drop.itemHyperlink
+    if not itemLink then return end
+    local itemId = tonumber(itemLink:match('item:(%d+)'))
+    if not itemId then return end
+
+    -- Same cross-realm normalization as the Personal Loot path above.
+    local winnerName = Ambiguate(drop.winner.playerName, 'short')
+    local rollType   = ROLL_STATE_NAMES[drop.winner.state]
+    local rollValue  = drop.winner.roll
+
+    local participants = {}
+    for _, r in ipairs(drop.rollInfos or {}) do
+      table.insert(participants, {
+        name      = Ambiguate(r.playerName, 'short'),
+        rollType  = ROLL_STATE_NAMES[r.state],
+        rollValue = r.roll,
+        isWinner  = r.isWinner and true or false,
+      })
+    end
+
+    -- A slow roll can resolve after currentEncounter's grace window has
+    -- already expired -- use the event's own encounterID either way, and
+    -- fall back to the Encounter Journal for the boss name only if
+    -- currentEncounter doesn't already have it. Best-effort: boss_name is
+    -- a nullable column, and EJ_GetEncounterInfo can return nil if the
+    -- Encounter Journal addon hasn't been loaded this session.
+    local encounterName, difficulty
+    if currentEncounter and currentEncounter.id == encounterID then
+      encounterName = currentEncounter.name
+      difficulty = currentEncounter.difficulty
+    elseif EJ_GetEncounterInfo then
+      encounterName = EJ_GetEncounterInfo(encounterID)
+    end
+
+    resolveItemMetaAsync(itemLink, function(itemName, _, _, _, itemMeta)
+      local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
+      recordLoot(winnerName, itemLink, itemId, itemName, isTierToken, false, itemMeta,
+        { rollType = rollType, rollValue = rollValue, participants = participants },
+        { id = encounterID, name = encounterName, difficulty = difficulty })
+    end)
+  end)
+  if not ok then
+    -- Never let a malformed/unexpected loot-history update take down the addon.
+    -- (uncomment while debugging: print('|cffff4444RaidLead loot-roll parse error|r: ' .. tostring(err)))
   end
 end
