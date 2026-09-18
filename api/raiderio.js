@@ -150,6 +150,20 @@ function deriveBossOrder(rankedGuilds, encounters) {
   return slugOrder.map(slug => bySlug[slug]).filter(Boolean);
 }
 
+// A 429 from Raider.io was previously indistinguishable from "raid not
+// found" or "no guilds share this data" -- every failure path just
+// degraded to an empty-looking result with nothing logged anywhere. Vercel's
+// live function logs are the only visibility we have into this today (no
+// persisted metrics store), so at minimum a rate-limit hit should show up
+// there clearly instead of looking identical to unrelated no-data cases.
+function logIfRateLimited(action, resp) {
+  if (resp.status === 429) {
+    console.error(`[raiderio] 429 rate-limited on ${action}: ${resp.url}`);
+    return true;
+  }
+  return false;
+}
+
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
@@ -197,9 +211,14 @@ module.exports = async (req, res) => {
       // 504s under load) mean their service is struggling, not that the raid
       // is wrong -- those need a different message, or "couldn't match your
       // zone" reads as a RaidLead bug when it's actually Raider.io's outage.
+      // A 429 is a third, distinct case (we're sending too many requests)
+      // that used to fall into RAID_NOT_FOUND right alongside a genuinely
+      // bad slug -- checked first since it's also >= 400 like RAID_NOT_FOUND.
       const resp = await fetch(rankingsUrl);
       if (!resp.ok) {
-        const reason = resp.status >= 500 ? 'RAIDERIO_UNAVAILABLE' : 'RAID_NOT_FOUND';
+        const reason = logIfRateLimited('progress/instance-rankings', resp)
+          ? 'RAIDERIO_RATE_LIMITED'
+          : (resp.status >= 500 ? 'RAIDERIO_UNAVAILABLE' : 'RAID_NOT_FOUND');
         return res.status(200).json({ configured: false, reason, zoneName });
       }
       const data = await resp.json();
@@ -362,7 +381,10 @@ module.exports = async (req, res) => {
           `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(raiderioRegion)}` +
           `&realm=all&page=${page}&faction=&recent=false&limit=0`;
         const resp = await fetch(rankingsUrl);
-        if (!resp.ok) return res.status(200).json({ pullsBySlug: {}, bracketSize: 0 });
+        if (!resp.ok) {
+          const rateLimited = logIfRateLimited('progressPulls/instance-rankings', resp);
+          return res.status(200).json({ pullsBySlug: {}, bracketSize: 0, rateLimited });
+        }
         const rankData = await resp.json();
         rankedGuilds = rankData?.raidRankings?.rankedGuilds || [];
         pullsPageCache.set(cacheKey, { data: rankedGuilds, fetchedAt: Date.now() });
@@ -429,20 +451,30 @@ module.exports = async (req, res) => {
         `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(raiderioRegion)}` +
         `&realm=all&page=0&faction=&recent=false&limit=0`;
       const rankResp = await fetch(rankingsUrl);
-      if (!rankResp.ok) return res.status(200).json({ composition: null, sampleSize: 0, sampleOf: 0 });
+      if (!rankResp.ok) {
+        const rateLimited = logIfRateLimited('progressComposition/instance-rankings', rankResp);
+        return res.status(200).json({ composition: null, sampleSize: 0, sampleOf: 0, rateLimited });
+      }
       const rankData = await rankResp.json();
       const topGuilds = (rankData?.raidRankings?.rankedGuilds || []).slice(0, COMP_SAMPLE_SIZE);
 
       // One boss-kill lookup per sampled guild, in parallel -- a guild with
       // raidComps privacy off, or that simply hasn't killed this boss yet,
-      // just contributes nothing rather than failing the whole batch.
+      // just contributes nothing rather than failing the whole batch. This
+      // is also the single riskiest spot in this file for tripping a rate
+      // limit (up to COMP_SAMPLE_SIZE requests fired at once), so a 429 here
+      // is worth logging even though the composition itself degrades
+      // gracefully by just averaging over however many guilds responded.
       const rosters = await Promise.all(topGuilds.map(async g => {
         try {
           const url = `https://raider.io/api/v1/guilds/boss-kill?region=${encodeURIComponent(g.guild?.region?.slug || raiderioRegion)}` +
             `&realm=${encodeURIComponent(g.guild?.realm?.slug || '')}&guild=${encodeURIComponent(g.guild?.name || '')}` +
             `&raid=${encodeURIComponent(raidSlug)}&boss=${encodeURIComponent(bossSlug)}&difficulty=${encodeURIComponent(difficulty)}`;
           const r = await fetch(url);
-          if (!r.ok) return null;
+          if (!r.ok) {
+            logIfRateLimited('progressComposition/boss-kill', r);
+            return null;
+          }
           const kill = await r.json();
           return Array.isArray(kill.roster) && kill.roster.length ? kill.roster : null;
         } catch (e) { return null; }

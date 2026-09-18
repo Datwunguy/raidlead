@@ -4431,19 +4431,22 @@ function renderProgress(data) {
     document.getElementById('progress-raid-name').textContent = '';
     subtitle.textContent = '';
     const isOutage = data.reason === 'RAIDERIO_UNAVAILABLE';
-    const title = isOutage ? "Raider.io is having issues" : "Progress isn't available yet";
-    const icon = isOutage ? '⏳' : '🗺';
-    const message = isOutage
-      ? "Raider.io's servers are temporarily unavailable, so we can't pull rankings right now. This is on their end, not RaidLead -- try again in a few minutes."
-      : data.reason === 'RAID_NOT_FOUND'
-        ? `Couldn't match your zone ("${data.zoneName || STATE.config?.zoneName || ''}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
-        : 'The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.';
+    const isRateLimited = data.reason === 'RAIDERIO_RATE_LIMITED';
+    const title = isRateLimited ? "Raider.io is rate-limiting us" : isOutage ? "Raider.io is having issues" : "Progress isn't available yet";
+    const icon = (isRateLimited || isOutage) ? '⏳' : '🗺';
+    const message = isRateLimited
+      ? "We're sending Raider.io more requests than it wants right now, so it's temporarily throttling us. This isn't a configuration problem -- it should clear up on its own in a few minutes."
+      : isOutage
+        ? "Raider.io's servers are temporarily unavailable, so we can't pull rankings right now. This is on their end, not RaidLead -- try again in a few minutes."
+        : data.reason === 'RAID_NOT_FOUND'
+          ? `Couldn't match your zone ("${data.zoneName || STATE.config?.zoneName || ''}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
+          : 'The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.';
     content.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">${icon}</div>
         <h3>${title}</h3>
         <p>${message}</p>
-        ${(!isOutage && data.reason !== 'RAID_NOT_FOUND') ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
+        ${(!isRateLimited && !isOutage && data.reason !== 'RAID_NOT_FOUND') ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
       </div>`;
     return;
   }
@@ -4667,7 +4670,9 @@ async function loadProgressPulls(data, rankStart) {
     });
     data.pullsLoaded = true;
     renderBossList(data);
-    if (note) note.textContent = pullsData.bracketSize ? `${pullsData.bracketSize} guilds in this bracket` : 'No guilds found in this bracket';
+    if (note) note.textContent = pullsData.rateLimited
+      ? 'Raider.io is rate-limiting us right now -- try again shortly'
+      : pullsData.bracketSize ? `${pullsData.bracketSize} guilds in this bracket` : 'No guilds found in this bracket';
   } catch (e) {
     data.pullsLoaded = true; // stop showing spinners -- boss.pullSampleSize is still 0/undefined, so rows just show nothing
     renderBossList(data);
@@ -4719,9 +4724,12 @@ async function loadProgressComposition(data, bossSlugOverride) {
       : ' — your next boss (click any boss above to plan ahead)';
 
     if (!compData.composition) {
+      const noDataMessage = compData.rateLimited
+        ? `Raider.io is rate-limiting us right now, so we couldn't pull a recommended comp for ${escapeHtml(bossInfo?.name || 'this boss')}. Try again shortly.`
+        : `Not enough guilds share composition data for ${escapeHtml(bossInfo?.name || 'this boss')} yet to show a recommended comp.${subtitleTail}`;
       card.innerHTML = `
         <div style="background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 18px;">
-          <div style="font-size:13px; color:var(--text-mute);">Not enough guilds share composition data for ${escapeHtml(bossInfo?.name || 'this boss')} yet to show a recommended comp.${subtitleTail}</div>
+          <div style="font-size:13px; color:var(--text-mute);">${noDataMessage}</div>
         </div>
       `;
       return;
