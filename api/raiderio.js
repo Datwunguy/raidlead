@@ -61,10 +61,11 @@ const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 const COMP_SAMPLE_SIZE = 20;
 
 // Avg-pulls rank brackets (see progressPulls below) are this many guilds
-// wide -- comparing a rank-470 guild's pulls against the world's top 20 is
-// a misleading gap, so the frontend lets a guild pick (or defaults to,
-// based on yourGuild.worldRank) whichever 50-guild bracket it actually
-// belongs in instead.
+// wide -- comparing a rank-470 guild's pulls against the top 20 is a
+// misleading gap, so the frontend lets a guild pick (or defaults to, based
+// on yourGuild.regionRank -- rankedGuilds here is scoped to the team's own
+// region, same pool that rank is computed from) whichever 50-guild bracket
+// it actually belongs in instead.
 const PULLS_BRACKET_SIZE = 50;
 const pullsPageCache = new Map(); // "raidSlug|difficulty|region|pageN" -> { data: rankedGuilds, fetchedAt }
 const PULLS_PAGE_CACHE_MS = 30 * 60 * 1000;

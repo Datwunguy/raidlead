@@ -4512,15 +4512,22 @@ function renderProgress(data) {
   content.appendChild(compCard);
 
   // ── Avg Pulls bracket selector -- defaults to whichever 50-guild bracket
-  // this guild's own world rank falls in, so a rank-470 guild isn't
-  // compared against the world's top 20 by default. ──
+  // this guild's own rank falls in. Deliberately keyed off regionRank, not
+  // worldRank: the rankedGuilds list progressPulls slices brackets from
+  // comes from instance-rankings scoped to this team's own region (see the
+  // "region: US" wording in the subtitle above), so a rank position within
+  // it only lines up with the guild's REGION rank -- worldRank comes from a
+  // genuinely different, all-regions-combined Raider.io pool (verified live:
+  // instance-rankings?region=world mixes in EU/CN/etc guilds that never
+  // appear in the region=us list), and using it here picked a bracket that
+  // didn't match the guild's real position in this data at all. ──
   const bracketRow = document.createElement('div');
   bracketRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;';
-  const defaultBracketStart = progressDefaultBracketStart(data.yourGuild?.worldRank);
+  const defaultBracketStart = progressDefaultBracketStart(data.yourGuild?.regionRank);
   bracketRow.innerHTML = `
     <span style="font-size:11px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">Avg Pulls vs:</span>
     <select id="progress-pulls-bracket" class="themed-select" onchange="onProgressPullsBracketChange()">
-      ${progressPullsBracketOptions(data.yourGuild?.worldRank).map(o =>
+      ${progressPullsBracketOptions(data.yourGuild?.regionRank).map(o =>
         `<option value="${o.start}" ${o.start === defaultBracketStart ? 'selected' : ''}>${o.label}</option>`
       ).join('')}
     </select>
@@ -4590,16 +4597,16 @@ function renderBossList(data) {
 const PROGRESS_PULLS_BRACKET_SIZE = 50;
 const PROGRESS_PULLS_BRACKET_COUNT = 20;
 
-// The bracket a given world rank actually falls in, with no upper bound --
+// The bracket a given region rank actually falls in, with no upper bound --
 // a guild ranked 4,200th on a brutal new tier is real and shouldn't get
 // clamped to whatever the standard dropdown list happens to cover.
-function progressRankBracketStart(worldRank) {
-  return Math.floor((worldRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1;
+function progressRankBracketStart(regionRank) {
+  return Math.floor((regionRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1;
 }
 
-function progressDefaultBracketStart(worldRank) {
-  if (!worldRank || worldRank < 1) return 1;
-  return progressRankBracketStart(worldRank);
+function progressDefaultBracketStart(regionRank) {
+  if (!regionRank || regionRank < 1) return 1;
+  return progressRankBracketStart(regionRank);
 }
 
 // Always offers the standard top-1000 brackets (useful as a fixed comparison
@@ -4608,19 +4615,19 @@ function progressDefaultBracketStart(worldRank) {
 // inserted in order and clearly marked, so the dropdown's default selection
 // always matches a real option instead of silently falling back to the
 // browser's "first option" behavior for a start value nothing lists.
-function progressPullsBracketOptions(worldRank) {
+function progressPullsBracketOptions(regionRank) {
   const opts = [];
   for (let i = 0; i < PROGRESS_PULLS_BRACKET_COUNT; i++) {
     const start = i * PROGRESS_PULLS_BRACKET_SIZE + 1;
     const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
-    const isYours = worldRank && worldRank >= start && worldRank <= end;
-    opts.push({ start, label: `Rank ${start}-${end}${isYours ? ' (Your Rank)' : ''}` });
+    const isYours = regionRank && regionRank >= start && regionRank <= end;
+    opts.push({ start, label: `Rank ${start}-${end}${isYours ? ' (Your Region Rank)' : ''}` });
   }
   const maxStandardStart = (PROGRESS_PULLS_BRACKET_COUNT - 1) * PROGRESS_PULLS_BRACKET_SIZE + 1;
-  if (worldRank && worldRank > maxStandardStart + PROGRESS_PULLS_BRACKET_SIZE - 1) {
-    const start = progressRankBracketStart(worldRank);
+  if (regionRank && regionRank > maxStandardStart + PROGRESS_PULLS_BRACKET_SIZE - 1) {
+    const start = progressRankBracketStart(regionRank);
     const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
-    opts.push({ start, label: `Rank ${start}-${end} (Your Rank)` });
+    opts.push({ start, label: `Rank ${start}-${end} (Your Region Rank)` });
   }
   return opts;
 }
