@@ -4434,6 +4434,7 @@ function renderProgress(data) {
   // against.
   STATE.progressData = data;
   STATE.progressCompBossSlug = data.currentBossSlug;
+  data.pullsLoaded = false; // avg pulls always come from loadProgressPulls -- see renderBossList
 
   // ── Your Guild summary ──
   const yourCard = document.createElement('div');
@@ -4534,8 +4535,12 @@ function renderBossList(data) {
         ${boss.guildsDefeated.toLocaleString()}
         <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">guilds</div>
       </div>
-      ${boss.pullSampleSize > 0 ? `
-        <div style="font-size:16px; font-weight:700; color:var(--text); flex-shrink:0; text-align:right; min-width:70px;" title="Averaged from ${boss.pullSampleSize} guilds in this bracket that share pull counts">
+      ${!data.pullsLoaded ? `
+        <div style="font-size:12px; color:var(--text-mute); flex-shrink:0; text-align:right; min-width:70px;">
+          <div class="spinner" style="width:12px; height:12px; border-width:2px; display:inline-block;"></div>
+        </div>
+      ` : boss.pullSampleSize > 0 ? `
+        <div style="font-size:16px; font-weight:700; color:var(--text); flex-shrink:0; text-align:right; min-width:70px;" title="Averaged from ${boss.pullSampleSize} guilds in this bracket that share a real pull count">
           ${boss.avgPulls.toLocaleString()}
           <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">avg pulls</div>
         </div>
@@ -4551,8 +4556,13 @@ const PROGRESS_PULLS_BRACKET_SIZE = 50;
 const PROGRESS_PULLS_BRACKET_COUNT = 20;
 
 function progressDefaultBracketStart(worldRank) {
+  const maxStart = (PROGRESS_PULLS_BRACKET_COUNT - 1) * PROGRESS_PULLS_BRACKET_SIZE + 1;
   if (!worldRank || worldRank < 1) return 1;
-  return Math.floor((worldRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1;
+  // Clamp so a guild ranked beyond what the dropdown offers still gets a
+  // real, matching selection (the last bracket) instead of a start value no
+  // <option> has -- which would show "Rank 1-50" as selected by the
+  // browser's own fallback while silently fetching a bracket further out.
+  return Math.min(maxStart, Math.floor((worldRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1);
 }
 
 function progressPullsBracketOptions(worldRank) {
@@ -4578,6 +4588,11 @@ function onProgressPullsBracketChange() {
 async function loadProgressPulls(data, rankStart) {
   const note = document.getElementById('progress-pulls-bracket-note');
   if (note) note.textContent = 'Loading...';
+  // Shows a spinner per boss row (see renderBossList) instead of leaving
+  // whatever bracket's numbers were already there -- otherwise switching
+  // brackets to a similar average can look like nothing happened.
+  data.pullsLoaded = false;
+  renderBossList(data);
   try {
     const url = `/api/raiderio?action=progressPulls&teamId=${encodeURIComponent(STATE.teamId)}` +
       `&raidSlug=${encodeURIComponent(data.raidSlug)}&difficulty=${encodeURIComponent(data.difficulty)}` +
@@ -4595,9 +4610,12 @@ async function loadProgressPulls(data, rankStart) {
       boss.avgPulls       = p ? p.avgPulls   : null;
       boss.pullSampleSize = p ? p.sampleSize : 0;
     });
+    data.pullsLoaded = true;
     renderBossList(data);
     if (note) note.textContent = pullsData.bracketSize ? `${pullsData.bracketSize} guilds in this bracket` : 'No guilds found in this bracket';
   } catch (e) {
+    data.pullsLoaded = true; // stop showing spinners -- boss.pullSampleSize is still 0/undefined, so rows just show nothing
+    renderBossList(data);
     if (note) note.textContent = '';
   }
 }

@@ -55,11 +55,9 @@ const { ensureZoneName } = require('../lib/wclZone');
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
 // How many of the top (by overall progress) rankedGuilds to sample for the
-// "recommended comp" stat and the initial (pre-bracket-selection) pull
-// count shown before the frontend picks a rank-appropriate bracket -- a
-// starting point, easy to raise (more representative, slower/more
-// Raider.io calls for comp) or filter by region later once we've seen how
-// this sample size looks live.
+// "recommended comp" stat -- a starting point, easy to raise (more
+// representative, slower/more Raider.io calls) or filter by region later
+// once we've seen how this sample size looks live.
 const COMP_SAMPLE_SIZE = 20;
 
 // Avg-pulls rank brackets (see progressPulls below) are this many guilds
@@ -287,34 +285,20 @@ module.exports = async (req, res) => {
         await Promise.all([profilePromise, bossRankPromise]);
       }
 
-      // Average pull count per boss, from the top COMP_SAMPLE_SIZE guilds
-      // (by overall progress -- the same rankedGuilds already fetched above,
-      // no extra request needed). Guilds with raidPulls privacy off simply
-      // have no `attempts` field for that boss, so they're naturally
-      // skipped rather than averaged in as 0.
-      const topGuildsForStats = (rr.rankedGuilds || []).slice(0, COMP_SAMPLE_SIZE);
-
-      const bosses = encounters.map((enc, i) => {
-        const pullSamples = topGuildsForStats
-          .map(g => (g.encountersDefeated || []).find(e => e.slug === enc.slug))
-          .filter(e => e && typeof e.attempts === 'number');
-        const avgPulls = pullSamples.length
-          ? Math.round(pullSamples.reduce((sum, e) => sum + e.attempts, 0) / pullSamples.length)
-          : null;
-
-        return {
-          name:           enc.name,
-          slug:           enc.slug,
-          iconUrl:        enc.iconUrl ? `https://cdn.raiderio.net${enc.iconUrl}` : null,
-          guildsDefeated: atLeastByProgress[i + 1] || 0,
-          // Only meaningful once this boss is actually killed -- Raider.io also
-          // returns entries for bosses that are merely attempted (best pull %),
-          // which isn't a kill rank. The frontend gates display on youKilled.
-          yourRegionRank: bossRankBySlug[enc.slug]?.region ?? null,
-          avgPulls,
-          pullSampleSize: pullSamples.length,
-        };
-      });
+      // Avg pull count per boss is fetched separately (see progressPulls
+      // below) for whichever rank bracket the frontend has selected -- not
+      // computed here, so there's exactly one implementation of that math
+      // instead of two that can quietly drift apart.
+      const bosses = encounters.map((enc, i) => ({
+        name:           enc.name,
+        slug:           enc.slug,
+        iconUrl:        enc.iconUrl ? `https://cdn.raiderio.net${enc.iconUrl}` : null,
+        guildsDefeated: atLeastByProgress[i + 1] || 0,
+        // Only meaningful once this boss is actually killed -- Raider.io also
+        // returns entries for bosses that are merely attempted (best pull %),
+        // which isn't a kill rank. The frontend gates display on youKilled.
+        yourRegionRank: bossRankBySlug[enc.slug]?.region ?? null,
+      }));
 
       // "Current" boss for the composition recommendation below -- the next
       // one this guild hasn't killed yet, clamped to the last boss once
@@ -387,7 +371,15 @@ module.exports = async (req, res) => {
       const pullsBySlug = {};
       bracketGuilds.forEach(g => {
         (g.encountersDefeated || []).forEach(e => {
-          if (typeof e.attempts !== 'number') return;
+          // Raider.io returns attempts: 0 (not null, not omitted) for a kill
+          // it has no real pull-count telemetry for -- verified live against
+          // their own rankings page, which renders that same case as "-".
+          // A boss can't be killed in zero pulls, so 0 always means "no
+          // data" here, never "a lucky first pull"; counting it as real
+          // dragged the average down hard (a top-50 sample with mostly
+          // untelemetered kills showed avg 9 instead of the true ~35 from
+          // just the guilds that actually reported a count).
+          if (typeof e.attempts !== 'number' || e.attempts <= 0) return;
           if (!pullsBySlug[e.slug]) pullsBySlug[e.slug] = { total: 0, count: 0 };
           pullsBySlug[e.slug].total += e.attempts;
           pullsBySlug[e.slug].count += 1;
