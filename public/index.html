@@ -1835,7 +1835,7 @@
               </div>
             </div>
             <div id="settings-wcl-team-row" style="display:none; margin-top:14px;">
-              <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
+              <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(Found in the URL when filtering guild reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
               <input type="text" id="inp-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
             </div>
           </div>
@@ -1962,7 +1962,7 @@
               </div>
             </div>
             <div id="gs-wcl-team-row" style="display:none; margin-top:14px;">
-              <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(optional, but matters here — your team shares a WCL guild archive with another team, and this is what lets WCL Scores pull only this team's reports instead of both teams'. Found in the URL when filtering reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
+              <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(Found in the URL when filtering guild reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
               <input type="text" id="gs-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
             </div>
           </div>
@@ -4620,14 +4620,13 @@ function progressPullsBracketOptions(regionRank) {
   for (let i = 0; i < PROGRESS_PULLS_BRACKET_COUNT; i++) {
     const start = i * PROGRESS_PULLS_BRACKET_SIZE + 1;
     const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
-    const isYours = regionRank && regionRank >= start && regionRank <= end;
-    opts.push({ start, label: `Rank ${start}-${end}${isYours ? ' (Your Region Rank)' : ''}` });
+    opts.push({ start, label: `Rank ${start}-${end}` });
   }
   const maxStandardStart = (PROGRESS_PULLS_BRACKET_COUNT - 1) * PROGRESS_PULLS_BRACKET_SIZE + 1;
   if (regionRank && regionRank > maxStandardStart + PROGRESS_PULLS_BRACKET_SIZE - 1) {
     const start = progressRankBracketStart(regionRank);
     const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
-    opts.push({ start, label: `Rank ${start}-${end} (Your Region Rank)` });
+    opts.push({ start, label: `Rank ${start}-${end}` });
   }
   return opts;
 }
