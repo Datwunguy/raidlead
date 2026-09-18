@@ -2015,26 +2015,9 @@
     <div class="setup-card" style="max-width:520px;">
       <div class="setup-header">
         <h1>Join a Guild</h1>
-        <p>Join by searching for your guild's name and server, or paste a join code from an officer.</p>
+        <p>Ask an officer for a join code or invite link to join their team.</p>
       </div>
       <div class="setup-body">
-        <div style="font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--text-mute); margin-bottom:12px;">By Guild Name &amp; Server</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label>Guild Name</label>
-            <input type="text" id="jg-guild" placeholder="Threat Level Midnight" />
-          </div>
-          <div class="form-group">
-            <label>Server</label>
-            <input type="text" id="jg-server" placeholder="Sargeras" />
-          </div>
-        </div>
-        <div class="setup-footer" style="padding:0; border:none; justify-content:flex-end; margin-bottom:28px;">
-          <span class="status-msg" id="jg-status"></span>
-          <button class="btn-primary" onclick="joinGuildByNameServer()">Join Guild</button>
-        </div>
-
-        <div style="font-size:11px; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--text-mute); margin-bottom:12px; border-top:1px solid var(--border); padding-top:20px;">Have a Join Code?</div>
         <div class="form-row">
           <div class="form-group full">
             <label>Join Code or Invite Link</label>
@@ -2966,65 +2949,43 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Check for pending invite FIRST — before checking saved config
-  // This ensures first-time invite users skip guild setup entirely
+  // This ensures first-time invite users skip guild setup entirely.
+  // pendingInvite is just the team's join code (see checkInviteParam) --
+  // join-guild resolves it server-side, so there's nothing to trust from
+  // localStorage here beyond "try this code once."
   const pendingInvite = localStorage.getItem('raidlead_pending_invite');
   if (pendingInvite) {
-    try {
-      const inviteData = JSON.parse(atob(pendingInvite));
-      if (inviteData.exp > Date.now() && inviteData.invite && inviteData.guild) {
-        const config = {
-          guild:      inviteData.guild,
-          server:     inviteData.server,
-          region:     inviteData.region,
-          difficulty: inviteData.difficulty || 'mythic',
-          wclUrl:     inviteData.wclUrl || '',
-          zoneId:     inviteData.zoneId || null,
-          zoneName:   inviteData.zoneName || '',
-        };
-        STATE.config   = config;
-        STATE.zoneId   = config.zoneId;
-        STATE.zoneName = config.zoneName;
-        saveConfig(config);
-        localStorage.removeItem('raidlead_pending_invite');
-
-        // Register in team_members
-        let joinedTeamId = null;
-        try {
-          const joinResp = await fetch('/api/auth?action=join-guild', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              guildName: inviteData.guild,
-              server:    inviteData.server,
-              region:    inviteData.region,
-            }),
-          });
-          const joinData = await joinResp.json();
-          joinedTeamId = joinData.teamId || null;
-          if (joinData.role) applyRolePermissions(joinData.role);
-        } catch(e) { console.warn('Could not join guild in DB:', e); }
-
-        // Fetch fresh team data to populate teamId and claimedCharacter
-        const freshData = await fetchGuildFromDB(joinedTeamId);
-        if (freshData) applyGuildData(freshData);
-
-        try { await loadRosterFromDB(); } catch(e) {}
-
-        // Gate: new members must claim a character before accessing the dashboard
-        if (!STATE.claimedCharacter) {
-          showToast('Welcome to ' + inviteData.guild + '! Please claim your character to continue.', 'success');
-          await showClaimGateScreen();
-        } else {
-          showDashboard();
-          loadCachedScores();
-          showToast('Welcome to ' + inviteData.guild + '! You have joined as a Member.', 'success');
-        }
-        return;
-      }
-    } catch(e) {}
     localStorage.removeItem('raidlead_pending_invite');
+    try {
+      const joinResp = await fetch('/api/auth?action=join-guild', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ joinCode: pendingInvite }),
+      });
+      const joinData = await joinResp.json();
+      if (!joinResp.ok) throw new Error(joinData.error || 'That invite is no longer valid.');
+      if (joinData.role) applyRolePermissions(joinData.role);
+
+      // Fetch fresh team data to populate config, teamId, and claimedCharacter
+      const freshData = await fetchGuildFromDB(joinData.teamId);
+      if (!freshData || !freshData.team) throw new Error('Joined, but could not load team data.');
+      applyGuildData(freshData);
+
+      try { await loadRosterFromDB(); } catch(e) {}
+
+      // Gate: new members must claim a character before accessing the dashboard
+      if (!STATE.claimedCharacter) {
+        showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
+        await showClaimGateScreen();
+      } else {
+        showDashboard();
+        loadCachedScores();
+        showToast('Welcome to ' + STATE.config.guild + '!', 'success');
+      }
+      return;
+    } catch(e) {
+      showToast(e.message || 'Could not use that invite link.', 'error');
+    }
   }
 
   // Supabase is always the source of truth — fetch the active team once, fall
@@ -3685,10 +3646,10 @@ function renderClaimGateList() {
     .sort((a,b) => a.name.localeCompare(b.name))
     .map(p => {
       const color = CLASS_COLORS[p.class] || '#888';
-      return `<div onclick="claimMyCharacter('${p.name}')" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
+      return `<div onclick="claimMyCharacter(${jsAttr(p.name)})" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
         <div style="width:10px; height:10px; border-radius:50%; background:${color};"></div>
-        <span style="color:${color}; font-weight:700; font-size:14px;">${p.name}</span>
-        <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${p.class} · ${p.serverDisplay || p.server}</span>
+        <span style="color:${color}; font-weight:700; font-size:14px;">${escapeHtml(p.name)}</span>
+        <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${escapeHtml(p.class)} · ${escapeHtml(p.serverDisplay || p.server)}</span>
       </div>`;
     }).join('');
 }
@@ -3795,18 +3756,16 @@ function showDashboard() {
         })();
       }
     } else if (STATE.config && STATE.config.guild) {
-      try {
-        const joinResp = await fetch('/api/auth?action=join-guild', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ guildName: STATE.config.guild, server: STATE.config.server }),
-        });
-        const joinData = await joinResp.json();
-        const role = joinData.role || 'owner';
-        localStorage.setItem('raidlead_my_role', role);
-        if (joinData.guildId) localStorage.setItem('raidlead_guild_id', joinData.guildId);
-        applyRolePermissions(role);
-      } catch(e) { applyRolePermissions('owner'); }
+      // A saved local config with no matching team_members row -- can only
+      // happen for a pre-database config that never actually completed
+      // joining/creating a team in Supabase. This used to silently re-join
+      // by guild name+server (defaulting to an assumed 'owner' role even on
+      // failure), which both re-opened the access-control gap join-guild
+      // now closes and, on failure, left the UI showing owner controls that
+      // every real API call would then 403 on. Send them through setup
+      // instead of guessing.
+      showToast("Couldn't find your team -- please set up your guild or join one.", 'error');
+      showLandingChoice();
     }
   });
 }
@@ -5249,7 +5208,7 @@ function renderTierRoster() {
             return `
               <label style="display:flex; align-items:center; gap:6px; padding:3px 0; font-size:12px; ${isOfficer ? 'cursor:pointer;' : ''}">
                 <input type="checkbox" ${checked ? 'checked' : ''} ${isOfficer ? '' : 'disabled'} ${c.id ? `onchange="toggleTierCheck('${c.id}', this.checked)"` : 'disabled'} />
-                <span style="color:${color};">${c.name}</span>
+                <span style="color:${color};">${escapeHtml(c.name)}</span>
                 ${recorded ? `<span title="${recorded} tier token drop recorded by the addon" style="color:var(--gold); font-size:11px;">🎁</span>` : ''}
               </label>
             `;
@@ -5555,7 +5514,7 @@ function renderRoster() {
         <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:8px;">
           <div style="flex:1; min-width:0;">
             <div class="player-name" style="display:flex; align-items:center; gap:6px;">
-              ${player.name}
+              ${escapeHtml(player.name)}
               ${player.flex_tank ? `<span title="Flex Tank" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#C79C6E; flex-shrink:0;"></span>` : ''}
               ${player.flex_heal ? `<span title="Flex Healer" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#1EFF00; flex-shrink:0;"></span>` : ''}
               ${player.flex_melee ? `<span title="Flex Melee" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#FF8000; flex-shrink:0;"></span>` : ''}
@@ -5566,8 +5525,8 @@ function renderRoster() {
               ${player.can_flex_ranged && !player.flex_ranged ? `<span title="Can flex Ranged (pending)" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#69CCF0; opacity:0.4; flex-shrink:0;"></span>` : ''}
             </div>
             <div class="player-meta">
-              <span class="player-class">${player.class}</span>
-              ${player.server ? `<span>·</span><span style="font-size:11px;color:var(--text-mute);">${player.serverDisplay || player.server}</span>` : ''}
+              <span class="player-class">${escapeHtml(player.class)}</span>
+              ${player.server ? `<span>·</span><span style="font-size:11px;color:var(--text-mute);">${escapeHtml(player.serverDisplay || player.server)}</span>` : ''}
             </div>
           </div>
           ${player.ilvl ? `<div style="font-size:13px; font-weight:700; color:var(--gold); flex-shrink:0; padding-top:2px;">${Math.round(player.ilvl)}</div>` : ''}
@@ -5748,7 +5707,7 @@ function renderRoster() {
       const card = document.createElement('div');
       card.className = 'player-card';
       card.style.setProperty('--class-color', color);
-      card.innerHTML = `<div class="player-name">${player.name}</div>`;
+      card.innerHTML = `<div class="player-name">${escapeHtml(player.name)}</div>`;
       card.onclick = () => openProfile(player);
       grid.appendChild(card);
     });
@@ -6222,10 +6181,10 @@ function renderScoresTable(roleFilter) {
             <div class="player-name-cell">
               <div class="class-dot" style="background:${color};"></div>
               <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName('${p.name}')">${p.name}</span>
+                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
             </div>
           </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${p.serverDisplay || p.server || '—'}</td>
+          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
           ${summaryCols}${bossCols}
         </tr>`;
         return;
@@ -6251,10 +6210,10 @@ function renderScoresTable(roleFilter) {
             <div class="player-name-cell">
               <div class="class-dot" style="background:${color};"></div>
               <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName('${p.name}')">${p.name}</span>
+                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
             </div>
           </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${p.serverDisplay || p.server || '—'}</td>
+          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
           ${summaryCols}${bossCols}
         </tr>`;
         return;
@@ -6284,10 +6243,10 @@ function renderScoresTable(roleFilter) {
             <div class="player-name-cell">
               <div class="class-dot" style="background:${color};"></div>
               <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName('${p.name}')">${p.name}</span>
+                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
             </div>
           </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${p.serverDisplay || p.server || '—'}</td>
+          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
           ${summaryCols}
           ${bossCols}
         </tr>`;
@@ -6331,10 +6290,10 @@ function renderScoresTable(roleFilter) {
             <div class="player-name-cell">
               <div class="class-dot" style="background:${color};"></div>
               <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName('${p.name}')">${p.name}</span>
+                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
             </div>
           </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${p.serverDisplay || p.server || '—'}</td>
+          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
           ${summaryCols}
           ${bossCols}
         </tr>`;
@@ -7032,6 +6991,16 @@ function escapeHtml(str) {
   }[c]));
 }
 
+// Safely embeds a value as an argument in an inline HTML event-handler
+// attribute, e.g. `onclick="fn(${jsAttr(name)})"`. JSON.stringify makes it a
+// correctly-escaped JS string literal (handles quotes/backslashes for the JS
+// context); escapeHtml on top of that stops the literal's own quotes from
+// closing the surrounding double-quoted HTML attribute early. Verified this
+// round-trips real names correctly and neutralizes injected HTML/JS alike.
+function jsAttr(value) {
+  return escapeHtml(JSON.stringify(String(value)));
+}
+
 // Helper — detect if a hex color is light (needs dark text)
 function isLightColor(hex) {
   const r = parseInt(hex.slice(1,3),16);
@@ -7240,7 +7209,7 @@ function renderOutUnavailableSection() {
     pill.style.background = 'transparent';
     pill.style.border = `1px solid #FF333366`;
     pill.style.opacity = '0.7';
-    pill.innerHTML = `<div class="class-dot" style="background:${color}; border:1px solid ${color};"></div><span style="color:${color};">${p.name}</span><span style="margin-left:auto; font-size:10px; color:#FF6666; text-transform:uppercase; letter-spacing:1px;">Out</span>`;
+    pill.innerHTML = `<div class="class-dot" style="background:${color}; border:1px solid ${color};"></div><span style="color:${color};">${escapeHtml(p.name)}</span><span style="margin-left:auto; font-size:10px; color:#FF6666; text-transform:uppercase; letter-spacing:1px;">Out</span>`;
     pill.title = `${p.name} marked themselves unavailable for this raid night`;
     pillsWrap.appendChild(pill);
   });
@@ -7554,7 +7523,7 @@ function renderPlannerChecklist() {
         : '';
       item.innerHTML = `
         <div class="checklist-checkbox">${checkedHere ? '✓' : ''}</div>
-        <div class="checklist-name" style="color:${takenElsewhere ? 'var(--text-mute)' : color};">${player.name}</div>
+        <div class="checklist-name" style="color:${takenElsewhere ? 'var(--text-mute)' : color};">${escapeHtml(player.name)}</div>
         ${outTag}
       `;
       if (!isDisabled) item.onclick = () => togglePlannerPlayer(player.name, slotType);
@@ -7698,7 +7667,7 @@ function renderPlannerRoster() {
         pill.style.background = color;
         pill.style.border = `1px solid ${color}`;
         const textColor = isLightColor(color) ? '#000000' : '#ffffff';
-        pill.innerHTML = `<div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div><span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${p.name}</span>`;
+        pill.innerHTML = `<div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div><span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${escapeHtml(p.name)}</span>`;
         pill.title = 'Click to remove';
         pill.onclick = () => togglePlannerPlayer(p.name);
         col.appendChild(pill);
@@ -7991,19 +7960,17 @@ function showJoinGuildScreen() {
   if (_shareBtnSetup) _shareBtnSetup.style.display = 'none';
   document.getElementById('account-menu').style.display       = 'flex';
   document.getElementById('join-guild-screen').style.display  = 'flex';
-  document.getElementById('jg-status').textContent = '';
-  document.getElementById('jg-status').className   = 'status-msg';
   document.getElementById('jg-code-status').textContent = '';
   document.getElementById('jg-code-status').className   = 'status-msg';
 }
 
-// Completes joining a guild (via name+server or a join code) — hydrates STATE
-// from the DB and routes to either the claim gate or the dashboard.
-async function completeGuildJoin(guildName, server, joinCode) {
+// Completes joining a guild by join code — hydrates STATE from the DB and
+// routes to either the claim gate or the dashboard.
+async function completeGuildJoin(joinCode) {
   const joinResp = await fetch('/api/auth?action=join-guild', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ guildName, server, joinCode }),
+    body: JSON.stringify({ joinCode }),
   });
   const joinData = await joinResp.json();
   if (!joinResp.ok) throw new Error(joinData.error || 'Failed to join guild');
@@ -8020,25 +7987,6 @@ async function completeGuildJoin(guildName, server, joinCode) {
     showDashboard();
     loadCachedScores();
     showToast('Welcome to ' + STATE.config.guild + '!', 'success');
-  }
-}
-
-async function joinGuildByNameServer() {
-  const guildName = document.getElementById('jg-guild').value.trim();
-  const server    = document.getElementById('jg-server').value.trim();
-  const statusEl  = document.getElementById('jg-status');
-  if (!guildName || !server) {
-    statusEl.textContent = 'Please enter both guild name and server.';
-    statusEl.className   = 'status-msg error';
-    return;
-  }
-  statusEl.textContent = 'Joining...';
-  statusEl.className   = 'status-msg loading';
-  try {
-    await completeGuildJoin(guildName, server);
-  } catch(e) {
-    statusEl.textContent = 'Error: ' + e.message;
-    statusEl.className   = 'status-msg error';
   }
 }
 
@@ -8060,17 +8008,14 @@ async function joinGuildByCode() {
       if (inviteParam) raw = inviteParam;
     } catch(e) { /* not a URL — treat input as the raw code */ }
 
-    // Short DB-backed join codes are 6 characters from a fixed alphabet; anything
-    // longer is the legacy self-contained invite-link blob (base64 JSON).
-    if (raw.length <= 8) {
-      await completeGuildJoin(null, null, raw);
-    } else {
-      let data;
-      try { data = JSON.parse(atob(raw)); } catch(e) { throw new Error('That doesn\'t look like a valid join code.'); }
-      if (!data.invite || !data.guild) throw new Error('That doesn\'t look like a valid join code.');
-      if (data.exp && data.exp < Date.now()) throw new Error('This join code has expired — ask an officer for a new one.');
-      await completeGuildJoin(data.guild, data.server);
+    // Old invite links carried a long, self-contained base64 blob instead of
+    // a real join code -- no longer accepted (see api/auth.js's join-guild),
+    // so this explains rather than sending an inevitably-invalid code.
+    if (raw.length > 10) {
+      throw new Error("That's an outdated invite link — ask an officer for a new one.");
     }
+
+    await completeGuildJoin(raw);
   } catch(e) {
     statusEl.textContent = 'Error: ' + e.message;
     statusEl.className   = 'status-msg error';
@@ -8171,29 +8116,36 @@ async function createGuild(confirmNewTeam) {
 //  INVITE & ROLE MANAGEMENT
 // ─────────────────────────────────────────────
 
-function generateInviteCode() {
-  if (!STATE.config) return null;
-  // Encode guild info + timestamp into a shareable token
-  const data = {
-    guild:    STATE.config.guild,
-    server:   STATE.config.server,
-    region:   STATE.config.region,
-    wclUrl:   STATE.config.wclUrl,
-    zoneId:   STATE.config.zoneId,
-    invite:   true,
-    exp:      Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 day invite expiry
-  };
-  return btoa(JSON.stringify(data));
+// The invite link is just the team's real join code in URL form -- both are
+// backed by the same server-verified teams.join_code, so there's exactly one
+// mechanism to join by (see api/auth.js's join-guild), not a second,
+// unverified one built from guild name/server. A team with no code yet
+// (created before this existed) gets one generated automatically here.
+async function ensureJoinCode() {
+  if (STATE.joinCode) return STATE.joinCode;
+  const resp = await fetch('/api/guild?action=generateJoinCode', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamId: STATE.teamId }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Failed to generate a join code');
+  STATE.joinCode = data.joinCode;
+  return STATE.joinCode;
 }
 
-function showInviteModal() {
-  const code    = generateInviteCode();
-  const baseUrl = window.location.origin + window.location.pathname;
-  const link    = code ? `${baseUrl}?invite=${encodeURIComponent(code)}` : 'Could not generate link';
-  document.getElementById('invite-link-input').value = link;
+async function showInviteModal() {
+  const linkInput = document.getElementById('invite-link-input');
+  linkInput.value = 'Generating...';
   document.getElementById('invite-copy-msg').style.display = 'none';
-  renderJoinCodeUI();
   document.getElementById('invite-modal').classList.add('open');
+  try {
+    const code    = await ensureJoinCode();
+    const baseUrl = window.location.origin + window.location.pathname;
+    linkInput.value = `${baseUrl}?invite=${code}`;
+  } catch (e) {
+    linkInput.value = 'Could not generate link';
+  }
+  renderJoinCodeUI();
 }
 
 function closeInviteModal() {
@@ -8280,26 +8232,26 @@ function toggleSettingsTeam(radio) {
   }
 }
 
-// Handle invite link on page load
+// Handle invite link on page load -- the ?invite= value is just the team's
+// join code (see showInviteModal/ensureJoinCode), stashed until login
+// finishes since a brand-new visitor hits Battle.net's OAuth redirect first.
 function checkInviteParam() {
   const params = new URLSearchParams(window.location.search);
   const invite = params.get('invite');
   if (!invite) return false;
+  window.history.replaceState({}, '', '/');
 
-  try {
-    const data = JSON.parse(atob(invite));
-    if (data.exp < Date.now()) {
-      showToast('This invite link has expired.', 'error');
-      return false;
-    }
-    if (data.invite && data.guild) {
-      // Store invite data and save as config after login
-      localStorage.setItem('raidlead_pending_invite', invite);
-      window.history.replaceState({}, '', '/');
-      return true;
-    }
-  } catch(e) {}
-  return false;
+  // Old invite links carried a self-contained (unsigned) base64 blob of
+  // guild info instead of a real join code -- no longer accepted (see
+  // api/auth.js's join-guild), so this explains rather than silently
+  // failing on an invite that will just never resolve to anything.
+  if (invite.length > 10) {
+    showToast('This invite link is outdated -- ask an officer for a new one.', 'error');
+    return false;
+  }
+
+  localStorage.setItem('raidlead_pending_invite', invite.toUpperCase());
+  return true;
 }
 
 // ─────────────────────────────────────────────
@@ -8542,7 +8494,7 @@ function renderUnclaimedListFromDB(members) {
 
   el.innerHTML = unclaimed.map(p => {
     const color = CLASS_COLORS[p.class] || '#888';
-    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;">${p.name}</span>`;
+    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;">${escapeHtml(p.name)}</span>`;
   }).join('');
 }
 
@@ -8604,10 +8556,10 @@ function showClaimCharacter(accountId) {
 
   const options = available.map(p => {
     const color = CLASS_COLORS[p.class] || '#888';
-    return `<div onclick="claimCharacter('${p.name}')" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
+    return `<div onclick="claimCharacter(${jsAttr(p.name)})" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
       <div style="width:10px; height:10px; border-radius:50%; background:${color};"></div>
-      <span style="color:${color}; font-weight:700; font-size:14px;">${p.name}</span>
-      <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${p.class} · ${p.serverDisplay || p.server}</span>
+      <span style="color:${color}; font-weight:700; font-size:14px;">${escapeHtml(p.name)}</span>
+      <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${escapeHtml(p.class)} · ${escapeHtml(p.serverDisplay || p.server)}</span>
     </div>`;
   }).join('');
 
@@ -8685,13 +8637,13 @@ function renderMembersList() {
   el.innerHTML = members.map(m => `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:var(--bg3); border:1px solid var(--border); border-radius:6px; margin-bottom:8px;">
       <div>
-        <div style="font-size:14px; font-weight:700; color:var(--gold);">${m.battletag}</div>
+        <div style="font-size:14px; font-weight:700; color:var(--gold);">${escapeHtml(m.battletag)}</div>
         <div style="font-size:12px; color:var(--text-mute);">
-          ${m.character ? `<span style="color:var(--text-dim);">Playing: ${m.character}</span>` : '<span style="color:#ff6b6b;">No character claimed</span>'}
+          ${m.character ? `<span style="color:var(--text-dim);">Playing: ${escapeHtml(m.character)}</span>` : '<span style="color:#ff6b6b;">No character claimed</span>'}
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
-        <select onchange="updateMemberRole('${m.battletag}', this.value)"
+        <select onchange="updateMemberRole(${jsAttr(m.battletag)}, this.value)"
           style="background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:13px; padding:4px 8px; cursor:pointer;">
           <option value="viewer"  ${m.role === 'viewer'  ? 'selected' : ''}>Viewer</option>
           <option value="member"  ${m.role === 'member'  ? 'selected' : ''}>Member</option>
@@ -8717,7 +8669,7 @@ function renderUnclaimedList() {
 
   el.innerHTML = unclaimed.map(p => {
     const color = CLASS_COLORS[p.class] || '#888';
-    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;">${p.name}</span>`;
+    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;">${escapeHtml(p.name)}</span>`;
   }).join('');
 }
 
