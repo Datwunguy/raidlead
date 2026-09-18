@@ -4463,6 +4463,13 @@ function renderProgress(data) {
   }
   content.appendChild(yourCard);
 
+  // Populated a moment later by loadProgressComposition() below, once its
+  // background fetch resolves -- kept as an empty placeholder here so the
+  // rest of the tab never waits on it (up to 20 extra Raider.io calls).
+  const compCard = document.createElement('div');
+  compCard.id = 'progress-comp-card';
+  content.appendChild(compCard);
+
   const list = document.createElement('div');
   list.style.cssText = 'display:flex; flex-direction:column; gap:10px;';
 
@@ -4485,11 +4492,87 @@ function renderProgress(data) {
         ${boss.guildsDefeated.toLocaleString()}
         <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">guilds</div>
       </div>
+      ${boss.pullSampleSize > 0 ? `
+        <div style="font-size:16px; font-weight:700; color:var(--text); flex-shrink:0; text-align:right; min-width:70px;" title="Averaged from ${boss.pullSampleSize} of the top ${data.compSampleSize} guilds that share pull counts">
+          ${boss.avgPulls.toLocaleString()}
+          <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">avg pulls</div>
+        </div>
+      ` : ''}
     `;
     list.appendChild(row);
   });
 
   content.appendChild(list);
+
+  loadProgressComposition(data);
+}
+
+// Background-loads the "Recommended Comp" card for the current tier's next
+// unkilled boss (see currentBossSlug from the progress response) -- fired
+// after renderProgress() already finished, never blocking it, since this
+// costs up to compSampleSize extra Raider.io calls (one per sampled guild's
+// kill roster) versus the single call everything else above needed.
+async function loadProgressComposition(data) {
+  const card = document.getElementById('progress-comp-card');
+  if (!card) return;
+  if (!data.currentBossSlug) { card.innerHTML = ''; return; }
+
+  const bossInfo = data.bosses.find(b => b.slug === data.currentBossSlug);
+  card.innerHTML = `
+    <div style="background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 18px; display: flex; align-items: center; gap: 12px;">
+      <div class="spinner" style="width:20px; height:20px; border-width:2px; flex-shrink:0;"></div>
+      <div style="font-size:13px; color:var(--text-mute);">Loading recommended comp for ${escapeHtml(bossInfo?.name || 'the next boss')}...</div>
+    </div>
+  `;
+
+  try {
+    const url = `/api/raiderio?action=progressComposition&teamId=${encodeURIComponent(STATE.teamId)}` +
+      `&raidSlug=${encodeURIComponent(data.raidSlug)}&bossSlug=${encodeURIComponent(data.currentBossSlug)}` +
+      `&difficulty=${encodeURIComponent(data.difficulty)}&region=${encodeURIComponent(data.region)}`;
+    const resp = await fetch(url);
+    const compData = await resp.json();
+    if (!resp.ok) throw new Error(compData.error || 'Failed to load composition');
+
+    // Still the same Progress view the user is looking at? A raid/difficulty
+    // switch while this was in flight would make this stale.
+    if (!document.getElementById('progress-comp-card')) return;
+    if (STATE.progressRaidSlug && STATE.progressRaidSlug !== data.raidSlug) return;
+
+    if (!compData.composition) {
+      card.innerHTML = `
+        <div style="background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 18px;">
+          <div style="font-size:13px; color:var(--text-mute);">Not enough guilds share composition data for ${escapeHtml(bossInfo?.name || 'this boss')} yet to show a recommended comp.</div>
+        </div>
+      `;
+      return;
+    }
+
+    const c = compData.composition;
+    const pill = (label, value, color) => `
+      <div style="text-align:center;">
+        <div style="font-size:22px; font-weight:700; color:${color};">${value}</div>
+        <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">${label}</div>
+      </div>
+    `;
+    card.innerHTML = `
+      <div style="background: var(--bg2); border: 1px solid var(--gold-dim); border-radius: 6px; padding: 14px 16px; margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+        <div>
+          <div style="font-size:15px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Recommended Comp</div>
+          <div style="font-size:13px; color:var(--text-mute); margin-top:2px;">
+            ${escapeHtml(bossInfo?.name || '')} — averaged from ${compData.sampleSize} of the top ${compData.sampleOf} world guilds
+          </div>
+        </div>
+        <div style="display:flex; gap:20px;">
+          ${pill('Tanks', c.tank, '#C79C6E')}
+          ${pill('Healers', c.healer, '#1EFF00')}
+          ${pill('Melee', c.melee, '#FF8000')}
+          ${pill('Ranged', c.ranged, '#69CCF0')}
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    card.innerHTML = '';
+  }
 }
 
 // ─────────────────────────────────────────────

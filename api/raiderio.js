@@ -30,10 +30,21 @@
 //     the guild profile page's "Raid Progression" table calls. This is
 //     the one that actually gives a rank PER BOSS (world/region/realm),
 //     keyed by boss slug.
+//   - /api/v1/guilds/boss-kill -- documented (their swagger.json), public,
+//     no auth needed. Given region/realm/guild/raid/boss/difficulty, returns
+//     the full kill roster with each character's spec.role ("tank"/
+//     "healer"/"dps") and spec.is_melee already classified -- no need to
+//     hand-maintain a spec->role table, or to go through Warcraft Logs at
+//     all (which would need per-team WCL credentials just to look at other
+//     guilds' public data, and doesn't classify melee/ranged for you).
+//     Gated per-guild by their raidComps privacy setting; guilds with it
+//     off simply return no roster, handled as "skip this guild" everywhere
+//     it's used. See progressComposition below.
 //  All are public data with no auth of their own; proxied server-side
 //  only to avoid depending on Raider.io's CORS policy.
 //
-//  Action: progress (teamId, difficulty)
+//  Actions: progress (teamId, difficulty), progressComposition (teamId,
+//  raidSlug, bossSlug, difficulty), listRaids (teamId)
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
@@ -42,11 +53,25 @@ const { ensureZoneName } = require('../lib/wclZone');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
+// How many of the top (by overall progress) rankedGuilds to sample for the
+// "average pulls"/"recommended comp" stats -- a starting point, easy to
+// raise (more representative, slower/more Raider.io calls for comp) or
+// filter by region later once we've seen how this sample size looks live.
+const COMP_SAMPLE_SIZE = 20;
+
 // Module-scope cache for listRaids' "current expansion" lookup -- see where
 // it's used below. Persists across invocations on the same warm serverless
 // instance, same pattern as roster.js's WCL token cache.
 let currentExpansionIdCache = { id: null, fetchedAt: 0 };
 const EXPANSION_ID_CACHE_MS = 60 * 60 * 1000; // 1 hour -- this basically never changes
+
+// Composition is the expensive one (COMP_SAMPLE_SIZE separate Raider.io
+// calls, one per sampled guild's boss-kill roster), so it's cached longer
+// and behind its own action -- see progressComposition below. Keyed by
+// raid+difficulty+boss+region since that's everything that changes the
+// result.
+const compositionCache = new Map(); // key -> { data, fetchedAt }
+const COMPOSITION_CACHE_MS = 30 * 60 * 1000; // 30 min -- the top guilds' comps for a boss don't shift minute to minute
 
 // "Oceanic" is a RaidLead-only region choice -- Blizzard/WCL/Raider.io's
 // realm-region system has no such thing, Oceanic realms are still part of
@@ -250,16 +275,41 @@ module.exports = async (req, res) => {
         await Promise.all([profilePromise, bossRankPromise]);
       }
 
-      const bosses = encounters.map((enc, i) => ({
-        name:           enc.name,
-        slug:           enc.slug,
-        iconUrl:        enc.iconUrl ? `https://cdn.raiderio.net${enc.iconUrl}` : null,
-        guildsDefeated: atLeastByProgress[i + 1] || 0,
-        // Only meaningful once this boss is actually killed -- Raider.io also
-        // returns entries for bosses that are merely attempted (best pull %),
-        // which isn't a kill rank. The frontend gates display on youKilled.
-        yourRegionRank: bossRankBySlug[enc.slug]?.region ?? null,
-      }));
+      // Average pull count per boss, from the top COMP_SAMPLE_SIZE guilds
+      // (by overall progress -- the same rankedGuilds already fetched above,
+      // no extra request needed). Guilds with raidPulls privacy off simply
+      // have no `attempts` field for that boss, so they're naturally
+      // skipped rather than averaged in as 0.
+      const topGuildsForStats = (rr.rankedGuilds || []).slice(0, COMP_SAMPLE_SIZE);
+
+      const bosses = encounters.map((enc, i) => {
+        const pullSamples = topGuildsForStats
+          .map(g => (g.encountersDefeated || []).find(e => e.slug === enc.slug))
+          .filter(e => e && typeof e.attempts === 'number');
+        const avgPulls = pullSamples.length
+          ? Math.round(pullSamples.reduce((sum, e) => sum + e.attempts, 0) / pullSamples.length)
+          : null;
+
+        return {
+          name:           enc.name,
+          slug:           enc.slug,
+          iconUrl:        enc.iconUrl ? `https://cdn.raiderio.net${enc.iconUrl}` : null,
+          guildsDefeated: atLeastByProgress[i + 1] || 0,
+          // Only meaningful once this boss is actually killed -- Raider.io also
+          // returns entries for bosses that are merely attempted (best pull %),
+          // which isn't a kill rank. The frontend gates display on youKilled.
+          yourRegionRank: bossRankBySlug[enc.slug]?.region ?? null,
+          avgPulls,
+          pullSampleSize: pullSamples.length,
+        };
+      });
+
+      // "Current" boss for the composition recommendation below -- the next
+      // one this guild hasn't killed yet, clamped to the last boss once
+      // they've cleared the tier (or if Raider.io has no data for them at
+      // all, in which case there's no better guess than the first boss).
+      const currentBossIdx = Math.min(yourGuild?.killed ?? 0, Math.max(encounters.length - 1, 0));
+      const currentBossSlug = encounters[currentBossIdx]?.slug || null;
 
       return res.status(200).json({
         configured: true,
@@ -269,7 +319,93 @@ module.exports = async (req, res) => {
         region,
         bosses,
         yourGuild,
+        currentBossSlug,
+        compSampleSize: COMP_SAMPLE_SIZE,
       });
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+
+  // ── PROGRESS COMPOSITION: "recommended comp" for a specific boss --
+  // averages tank/healer/melee/ranged counts from the top COMP_SAMPLE_SIZE
+  // guilds' actual kill rosters. Deliberately a separate action from
+  // `progress` (which stays cheap/fast, a single request) since this one
+  // costs up to COMP_SAMPLE_SIZE additional Raider.io calls -- the frontend
+  // fetches it in the background after the main Progress view is already
+  // showing, same pattern as the Roster tab's ilvl backfill. ──
+  if (action === 'progressComposition') {
+    const teamId     = req.query.teamId || req.body?.teamId;
+    const difficulty = (req.query.difficulty || req.body?.difficulty || 'mythic').toLowerCase();
+    const raidSlug   = req.query.raidSlug || req.body?.raidSlug;
+    const bossSlug   = req.query.bossSlug || req.body?.bossSlug;
+    const region     = req.query.region || req.body?.region || 'us';
+    if (!teamId || !raidSlug || !bossSlug) {
+      return res.status(400).json({ error: 'teamId, raidSlug, and bossSlug required' });
+    }
+    if (!VALID_DIFFICULTIES.includes(difficulty)) return res.status(400).json({ error: 'Invalid difficulty' });
+
+    try {
+      await assertTeamMembership(supabase, session.id, teamId);
+
+      const raiderioRegion = toRaiderioRegion(region);
+      const cacheKey = `${raidSlug}|${difficulty}|${bossSlug}|${raiderioRegion}`;
+      const cached = compositionCache.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAt < COMPOSITION_CACHE_MS) {
+        return res.status(200).json(cached.data);
+      }
+
+      const rankingsUrl = `https://raider.io/api/raids/instance-rankings?difficulty=${encodeURIComponent(difficulty)}` +
+        `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(raiderioRegion)}` +
+        `&realm=all&page=0&faction=&recent=false&limit=0`;
+      const rankResp = await fetch(rankingsUrl);
+      if (!rankResp.ok) return res.status(200).json({ composition: null, sampleSize: 0, sampleOf: 0 });
+      const rankData = await rankResp.json();
+      const topGuilds = (rankData?.raidRankings?.rankedGuilds || []).slice(0, COMP_SAMPLE_SIZE);
+
+      // One boss-kill lookup per sampled guild, in parallel -- a guild with
+      // raidComps privacy off, or that simply hasn't killed this boss yet,
+      // just contributes nothing rather than failing the whole batch.
+      const rosters = await Promise.all(topGuilds.map(async g => {
+        try {
+          const url = `https://raider.io/api/v1/guilds/boss-kill?region=${encodeURIComponent(g.guild?.region?.slug || raiderioRegion)}` +
+            `&realm=${encodeURIComponent(g.guild?.realm?.slug || '')}&guild=${encodeURIComponent(g.guild?.name || '')}` +
+            `&raid=${encodeURIComponent(raidSlug)}&boss=${encodeURIComponent(bossSlug)}&difficulty=${encodeURIComponent(difficulty)}`;
+          const r = await fetch(url);
+          if (!r.ok) return null;
+          const kill = await r.json();
+          return Array.isArray(kill.roster) && kill.roster.length ? kill.roster : null;
+        } catch (e) { return null; }
+      }));
+
+      const tally = { tank: 0, healer: 0, melee: 0, ranged: 0 };
+      let sampleSize = 0;
+      rosters.forEach(roster => {
+        if (!roster) return;
+        sampleSize++;
+        roster.forEach(member => {
+          const spec = member?.character?.spec;
+          if (!spec) return;
+          if (spec.role === 'tank') tally.tank++;
+          else if (spec.role === 'healer') tally.healer++;
+          else if (spec.role === 'dps' && spec.is_melee) tally.melee++;
+          else if (spec.role === 'dps' && !spec.is_melee) tally.ranged++;
+        });
+      });
+
+      const responseData = sampleSize > 0 ? {
+        composition: {
+          tank:   Math.round(tally.tank   / sampleSize),
+          healer: Math.round(tally.healer / sampleSize),
+          melee:  Math.round(tally.melee  / sampleSize),
+          ranged: Math.round(tally.ranged / sampleSize),
+        },
+        sampleSize,
+        sampleOf: topGuilds.length,
+      } : { composition: null, sampleSize: 0, sampleOf: topGuilds.length };
+
+      compositionCache.set(cacheKey, { data: responseData, fetchedAt: Date.now() });
+      return res.status(200).json(responseData);
     } catch (err) {
       return res.status(err.status || 500).json({ error: err.message });
     }
