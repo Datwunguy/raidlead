@@ -2925,6 +2925,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
+  // Kick off the active-team lookup concurrently with the session check right
+  // below -- both re-authenticate independently via the session cookie
+  // server-side, so nothing actually requires waiting for one before
+  // starting the other. Awaited later, once we know there's no pending
+  // invite (which needs fresh post-join data instead and ignores this).
+  // Cuts a full network round trip off every normal boot.
+  const activeGuildDataPromise = fetchActiveGuildData().catch(() => null);
+
   // Verify session via cookie — retry once to handle timing after OAuth redirect
   let sessionAccount = null;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -2988,10 +2996,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Supabase is always the source of truth — fetch the active team once, fall
-  // back to localStorage for offline/share-link flows, show setup if nothing found.
-  let guildData = null;
-  try { guildData = await fetchActiveGuildData(); } catch(e) {}
+  // Supabase is always the source of truth — this awaits the lookup already
+  // kicked off above (typically already settled by now, since it's been
+  // running in parallel with the session check this whole time), falling
+  // back to localStorage for offline/share-link flows, or setup if nothing
+  // found at all.
+  const guildData = await activeGuildDataPromise;
 
   if (guildData && guildData.team) {
     applyGuildData(guildData);
