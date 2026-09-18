@@ -43,8 +43,9 @@
 //  All are public data with no auth of their own; proxied server-side
 //  only to avoid depending on Raider.io's CORS policy.
 //
-//  Actions: progress (teamId, difficulty), progressComposition (teamId,
-//  raidSlug, bossSlug, difficulty), listRaids (teamId)
+//  Actions: progress (teamId, difficulty), progressPulls (teamId, raidSlug,
+//  difficulty, rankStart), progressComposition (teamId, raidSlug, bossSlug,
+//  difficulty), listRaids (teamId)
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
@@ -54,10 +55,21 @@ const { ensureZoneName } = require('../lib/wclZone');
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
 // How many of the top (by overall progress) rankedGuilds to sample for the
-// "average pulls"/"recommended comp" stats -- a starting point, easy to
-// raise (more representative, slower/more Raider.io calls for comp) or
-// filter by region later once we've seen how this sample size looks live.
+// "recommended comp" stat and the initial (pre-bracket-selection) pull
+// count shown before the frontend picks a rank-appropriate bracket -- a
+// starting point, easy to raise (more representative, slower/more
+// Raider.io calls for comp) or filter by region later once we've seen how
+// this sample size looks live.
 const COMP_SAMPLE_SIZE = 20;
+
+// Avg-pulls rank brackets (see progressPulls below) are this many guilds
+// wide -- comparing a rank-470 guild's pulls against the world's top 20 is
+// a misleading gap, so the frontend lets a guild pick (or defaults to,
+// based on yourGuild.worldRank) whichever 50-guild bracket it actually
+// belongs in instead.
+const PULLS_BRACKET_SIZE = 50;
+const pullsPageCache = new Map(); // "raidSlug|difficulty|region|pageN" -> { data: rankedGuilds, fetchedAt }
+const PULLS_PAGE_CACHE_MS = 30 * 60 * 1000;
 
 // Module-scope cache for listRaids' "current expansion" lookup -- see where
 // it's used below. Persists across invocations on the same warm serverless
@@ -322,6 +334,71 @@ module.exports = async (req, res) => {
         currentBossSlug,
         compSampleSize: COMP_SAMPLE_SIZE,
       });
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+
+  // ── PROGRESS PULLS: avg pull count per boss for an arbitrary 50-guild
+  // rank bracket (e.g. 451-500), instead of always the world's top
+  // COMP_SAMPLE_SIZE -- a top-500 guild comparing itself to the top 20 sees
+  // a misleading gap, since the best guilds in the world aren't a
+  // reasonable comparison point. Cheap regardless of bracket: Raider.io
+  // pages rankedGuilds 100 at a time (verified live), and every 50-guild
+  // bracket boundary aligns with either the first or second half of a page,
+  // so this is always exactly one Raider.io call no matter which bracket is
+  // requested. ──
+  if (action === 'progressPulls') {
+    const teamId     = req.query.teamId || req.body?.teamId;
+    const difficulty = (req.query.difficulty || req.body?.difficulty || 'mythic').toLowerCase();
+    const raidSlug   = req.query.raidSlug || req.body?.raidSlug;
+    const region     = req.query.region || req.body?.region || 'us';
+    const rankStart  = parseInt(req.query.rankStart || req.body?.rankStart, 10);
+    if (!teamId || !raidSlug) return res.status(400).json({ error: 'teamId and raidSlug required' });
+    if (!VALID_DIFFICULTIES.includes(difficulty)) return res.status(400).json({ error: 'Invalid difficulty' });
+    if (!Number.isInteger(rankStart) || rankStart < 1 || (rankStart - 1) % PULLS_BRACKET_SIZE !== 0) {
+      return res.status(400).json({ error: `rankStart must be 1, ${PULLS_BRACKET_SIZE + 1}, ${2 * PULLS_BRACKET_SIZE + 1}, etc.` });
+    }
+
+    try {
+      await assertTeamMembership(supabase, session.id, teamId);
+
+      const raiderioRegion = toRaiderioRegion(region);
+      const page = Math.floor((rankStart - 1) / 100);
+      const sliceStart = (rankStart - 1) % 100;
+
+      const cacheKey = `${raidSlug}|${difficulty}|${raiderioRegion}|page${page}`;
+      let rankedGuilds;
+      const cached = pullsPageCache.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAt < PULLS_PAGE_CACHE_MS) {
+        rankedGuilds = cached.data;
+      } else {
+        const rankingsUrl = `https://raider.io/api/raids/instance-rankings?difficulty=${encodeURIComponent(difficulty)}` +
+          `&raid=${encodeURIComponent(raidSlug)}&region=${encodeURIComponent(raiderioRegion)}` +
+          `&realm=all&page=${page}&faction=&recent=false&limit=0`;
+        const resp = await fetch(rankingsUrl);
+        if (!resp.ok) return res.status(200).json({ pullsBySlug: {}, bracketSize: 0 });
+        const rankData = await resp.json();
+        rankedGuilds = rankData?.raidRankings?.rankedGuilds || [];
+        pullsPageCache.set(cacheKey, { data: rankedGuilds, fetchedAt: Date.now() });
+      }
+
+      const bracketGuilds = rankedGuilds.slice(sliceStart, sliceStart + PULLS_BRACKET_SIZE);
+      const pullsBySlug = {};
+      bracketGuilds.forEach(g => {
+        (g.encountersDefeated || []).forEach(e => {
+          if (typeof e.attempts !== 'number') return;
+          if (!pullsBySlug[e.slug]) pullsBySlug[e.slug] = { total: 0, count: 0 };
+          pullsBySlug[e.slug].total += e.attempts;
+          pullsBySlug[e.slug].count += 1;
+        });
+      });
+      const result = {};
+      Object.entries(pullsBySlug).forEach(([slug, { total, count }]) => {
+        result[slug] = { avgPulls: Math.round(total / count), sampleSize: count };
+      });
+
+      return res.status(200).json({ pullsBySlug: result, bracketSize: bracketGuilds.length });
     } catch (err) {
       return res.status(err.status || 500).json({ error: err.message });
     }

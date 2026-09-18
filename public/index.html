@@ -4427,9 +4427,13 @@ function renderProgress(data) {
     }
   }
 
-  const killedCount = data.yourGuild ? data.yourGuild.killed : 0;
-
   content.innerHTML = '';
+
+  // Stashed for the bracket selector / boss-row-click handlers below, which
+  // fire well after this initial render and need the same data to re-render
+  // against.
+  STATE.progressData = data;
+  STATE.progressCompBossSlug = data.currentBossSlug;
 
   // ── Your Guild summary ──
   const yourCard = document.createElement('div');
@@ -4466,20 +4470,58 @@ function renderProgress(data) {
   // Populated a moment later by loadProgressComposition() below, once its
   // background fetch resolves -- kept as an empty placeholder here so the
   // rest of the tab never waits on it (up to 20 extra Raider.io calls).
+  // Click any boss row below to switch which one this shows.
   const compCard = document.createElement('div');
   compCard.id = 'progress-comp-card';
   content.appendChild(compCard);
 
-  const list = document.createElement('div');
-  list.style.cssText = 'display:flex; flex-direction:column; gap:10px;';
+  // ── Avg Pulls bracket selector -- defaults to whichever 50-guild bracket
+  // this guild's own world rank falls in, so a rank-470 guild isn't
+  // compared against the world's top 20 by default. ──
+  const bracketRow = document.createElement('div');
+  bracketRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;';
+  const defaultBracketStart = progressDefaultBracketStart(data.yourGuild?.worldRank);
+  bracketRow.innerHTML = `
+    <span style="font-size:11px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">Avg Pulls vs:</span>
+    <select id="progress-pulls-bracket" class="themed-select" onchange="onProgressPullsBracketChange()">
+      ${progressPullsBracketOptions(data.yourGuild?.worldRank).map(o =>
+        `<option value="${o.start}" ${o.start === defaultBracketStart ? 'selected' : ''}>${o.label}</option>`
+      ).join('')}
+    </select>
+    <span id="progress-pulls-bracket-note" style="font-size:11px; color:var(--text-mute);"></span>
+  `;
+  content.appendChild(bracketRow);
 
+  const list = document.createElement('div');
+  list.id = 'progress-boss-list';
+  list.style.cssText = 'display:flex; flex-direction:column; gap:10px;';
+  content.appendChild(list);
+  renderBossList(data);
+
+  loadProgressComposition(data);
+  loadProgressPulls(data, defaultBracketStart);
+}
+
+// Rebuilds just the boss rows (not Your Guild / the comp card / the bracket
+// selector) -- called on initial render, after a bracket change updates
+// avgPulls/pullSampleSize, and after clicking a row to re-target the comp
+// card, so all three stay in sync without re-fetching everything.
+function renderBossList(data) {
+  const list = document.getElementById('progress-boss-list');
+  if (!list) return;
+  const killedCount = data.yourGuild ? data.yourGuild.killed : 0;
+
+  list.innerHTML = '';
   data.bosses.forEach((boss, i) => {
     const youKilled = i < killedCount;
+    const isCompTarget = boss.slug === STATE.progressCompBossSlug;
     const row = document.createElement('div');
     row.style.cssText = `
-      background: var(--bg2); border: 1px solid ${youKilled ? 'var(--gold-dim)' : 'var(--border)'}; border-radius: 6px;
-      padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+      background: var(--bg2); border: 1px solid ${isCompTarget ? 'var(--accent)' : (youKilled ? 'var(--gold-dim)' : 'var(--border)')}; border-radius: 6px;
+      padding: 12px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: border-color 0.15s;
     `;
+    row.title = 'Click to see the recommended comp for this boss';
+    row.onclick = () => loadProgressComposition(data, boss.slug);
     row.innerHTML = `
       <div style="font-size:11px; color:var(--text-mute); width:16px; flex-shrink:0;">${i + 1}</div>
       ${boss.iconUrl ? `<img src="${boss.iconUrl}" alt="" style="width:36px; height:36px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">` : ''}
@@ -4493,7 +4535,7 @@ function renderProgress(data) {
         <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">guilds</div>
       </div>
       ${boss.pullSampleSize > 0 ? `
-        <div style="font-size:16px; font-weight:700; color:var(--text); flex-shrink:0; text-align:right; min-width:70px;" title="Averaged from ${boss.pullSampleSize} of the top ${data.compSampleSize} guilds that share pull counts">
+        <div style="font-size:16px; font-weight:700; color:var(--text); flex-shrink:0; text-align:right; min-width:70px;" title="Averaged from ${boss.pullSampleSize} guilds in this bracket that share pull counts">
           ${boss.avgPulls.toLocaleString()}
           <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">avg pulls</div>
         </div>
@@ -4501,47 +4543,112 @@ function renderProgress(data) {
     `;
     list.appendChild(row);
   });
-
-  content.appendChild(list);
-
-  loadProgressComposition(data);
 }
 
-// Background-loads the "Recommended Comp" card for the current tier's next
-// unkilled boss (see currentBossSlug from the progress response) -- fired
-// after renderProgress() already finished, never blocking it, since this
-// costs up to compSampleSize extra Raider.io calls (one per sampled guild's
-// kill roster) versus the single call everything else above needed.
-async function loadProgressComposition(data) {
+// 50-guild brackets, 1-50 through 951-1000 -- see PULLS_BRACKET_SIZE in
+// api/raiderio.js (must match).
+const PROGRESS_PULLS_BRACKET_SIZE = 50;
+const PROGRESS_PULLS_BRACKET_COUNT = 20;
+
+function progressDefaultBracketStart(worldRank) {
+  if (!worldRank || worldRank < 1) return 1;
+  return Math.floor((worldRank - 1) / PROGRESS_PULLS_BRACKET_SIZE) * PROGRESS_PULLS_BRACKET_SIZE + 1;
+}
+
+function progressPullsBracketOptions(worldRank) {
+  const opts = [];
+  for (let i = 0; i < PROGRESS_PULLS_BRACKET_COUNT; i++) {
+    const start = i * PROGRESS_PULLS_BRACKET_SIZE + 1;
+    const end = start + PROGRESS_PULLS_BRACKET_SIZE - 1;
+    const isYours = worldRank && worldRank >= start && worldRank <= end;
+    opts.push({ start, label: `Rank ${start}-${end}${isYours ? ' (Your Rank)' : ''}` });
+  }
+  return opts;
+}
+
+function onProgressPullsBracketChange() {
+  const select = document.getElementById('progress-pulls-bracket');
+  const rankStart = parseInt(select?.value, 10);
+  if (!STATE.progressData || !rankStart) return;
+  loadProgressPulls(STATE.progressData, rankStart);
+}
+
+// Backgrounded like composition below -- one extra Raider.io call, but no
+// reason to make the initial render (or a bracket switch) wait on it.
+async function loadProgressPulls(data, rankStart) {
+  const note = document.getElementById('progress-pulls-bracket-note');
+  if (note) note.textContent = 'Loading...';
+  try {
+    const url = `/api/raiderio?action=progressPulls&teamId=${encodeURIComponent(STATE.teamId)}` +
+      `&raidSlug=${encodeURIComponent(data.raidSlug)}&difficulty=${encodeURIComponent(data.difficulty)}` +
+      `&region=${encodeURIComponent(data.region)}&rankStart=${rankStart}`;
+    const resp = await fetch(url);
+    const pullsData = await resp.json();
+    if (!resp.ok) throw new Error(pullsData.error || 'Failed to load pull counts');
+
+    // Still looking at the same raid tier this was fetched for?
+    if (STATE.progressRaidSlug && STATE.progressRaidSlug !== data.raidSlug) return;
+
+    const pullsBySlug = pullsData.pullsBySlug || {};
+    data.bosses.forEach(boss => {
+      const p = pullsBySlug[boss.slug];
+      boss.avgPulls       = p ? p.avgPulls   : null;
+      boss.pullSampleSize = p ? p.sampleSize : 0;
+    });
+    renderBossList(data);
+    if (note) note.textContent = pullsData.bracketSize ? `${pullsData.bracketSize} guilds in this bracket` : 'No guilds found in this bracket';
+  } catch (e) {
+    if (note) note.textContent = '';
+  }
+}
+
+// Background-loads the "Recommended Comp" card, defaulting to the current
+// tier's next unkilled boss (see currentBossSlug from the progress
+// response) but re-targetable to any boss by clicking its row in the list
+// below (see renderBossList) -- fired after renderProgress() already
+// finished, never blocking it, since this costs up to compSampleSize extra
+// Raider.io calls (one per sampled guild's kill roster) versus the single
+// call everything else above needed.
+async function loadProgressComposition(data, bossSlugOverride) {
   const card = document.getElementById('progress-comp-card');
   if (!card) return;
-  if (!data.currentBossSlug) { card.innerHTML = ''; return; }
+  const bossSlug = bossSlugOverride || data.currentBossSlug;
+  if (!bossSlug) { card.innerHTML = ''; return; }
 
-  const bossInfo = data.bosses.find(b => b.slug === data.currentBossSlug);
+  const isPlanningAhead = bossSlug !== data.currentBossSlug;
+  STATE.progressCompBossSlug = bossSlug;
+  renderBossList(data); // re-render now so the clicked row highlights immediately
+
+  const bossInfo = data.bosses.find(b => b.slug === bossSlug);
   card.innerHTML = `
     <div style="background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 18px; display: flex; align-items: center; gap: 12px;">
       <div class="spinner" style="width:20px; height:20px; border-width:2px; flex-shrink:0;"></div>
-      <div style="font-size:13px; color:var(--text-mute);">Loading recommended comp for ${escapeHtml(bossInfo?.name || 'the next boss')}...</div>
+      <div style="font-size:13px; color:var(--text-mute);">Loading recommended comp for ${escapeHtml(bossInfo?.name || 'this boss')}...</div>
     </div>
   `;
 
   try {
     const url = `/api/raiderio?action=progressComposition&teamId=${encodeURIComponent(STATE.teamId)}` +
-      `&raidSlug=${encodeURIComponent(data.raidSlug)}&bossSlug=${encodeURIComponent(data.currentBossSlug)}` +
+      `&raidSlug=${encodeURIComponent(data.raidSlug)}&bossSlug=${encodeURIComponent(bossSlug)}` +
       `&difficulty=${encodeURIComponent(data.difficulty)}&region=${encodeURIComponent(data.region)}`;
     const resp = await fetch(url);
     const compData = await resp.json();
     if (!resp.ok) throw new Error(compData.error || 'Failed to load composition');
 
-    // Still the same Progress view the user is looking at? A raid/difficulty
-    // switch while this was in flight would make this stale.
+    // Still the same Progress view the user is looking at, and still the
+    // same boss they clicked (a rapid second click would've moved this on)?
     if (!document.getElementById('progress-comp-card')) return;
     if (STATE.progressRaidSlug && STATE.progressRaidSlug !== data.raidSlug) return;
+    if (STATE.progressCompBossSlug !== bossSlug) return;
+
+    const subtitleTail = isPlanningAhead
+      ? ' — click any boss above to preview its comp'
+      : ' — your next boss (click any boss above to plan ahead)';
 
     if (!compData.composition) {
       card.innerHTML = `
         <div style="background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 18px;">
-          <div style="font-size:13px; color:var(--text-mute);">Not enough guilds share composition data for ${escapeHtml(bossInfo?.name || 'this boss')} yet to show a recommended comp.</div>
+          <div style="font-size:13px; color:var(--text-mute);">Not enough guilds share composition data for ${escapeHtml(bossInfo?.name || 'this boss')} yet to show a recommended comp.${subtitleTail}</div>
         </div>
       `;
       return;
@@ -4559,7 +4666,7 @@ async function loadProgressComposition(data) {
         <div>
           <div style="font-size:15px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--gold);">Recommended Comp</div>
           <div style="font-size:13px; color:var(--text-mute); margin-top:2px;">
-            ${escapeHtml(bossInfo?.name || '')} — averaged from ${compData.sampleSize} of the top ${compData.sampleOf} world guilds
+            ${escapeHtml(bossInfo?.name || '')} — averaged from ${compData.sampleSize} of the top ${compData.sampleOf} world guilds${subtitleTail}
           </div>
         </div>
         <div style="display:flex; gap:20px;">
