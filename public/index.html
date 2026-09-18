@@ -1567,6 +1567,41 @@
     .plan-player-pill { font-size: 14px; padding: 6px 10px; }
     .plan-role-label  { font-size: 11px; }
   }
+
+  /* Progress tab — boss list rows. Base rules mirror what used to be
+     inline styles (moved to classes so the mobile override below can win
+     without !important); dynamic per-row bits (border color) stay inline. */
+  .progress-boss-row {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+    cursor: pointer; transition: border-color 0.15s;
+  }
+  .progress-boss-rank   { font-size: 11px; color: var(--text-mute); width: 16px; flex-shrink: 0; }
+  .progress-boss-icon   { width: 36px; height: 36px; border-radius: 4px; border: 1px solid var(--border); flex-shrink: 0; }
+  .progress-boss-name   { flex: 1; min-width: 0; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .progress-boss-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .progress-boss-region-pill {
+    font-size: 13px; font-weight: 700; color: var(--gold); white-space: nowrap; flex-shrink: 0;
+    background: rgba(200,168,75,0.12); border: 1px solid var(--gold-dim); border-radius: 3px; padding: 2px 8px;
+  }
+  .progress-boss-stats  { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+  .progress-boss-stat   { font-size: 16px; font-weight: 700; text-align: right; min-width: 70px; }
+  .progress-boss-stat-label { font-size: 10px; font-weight: 500; color: var(--text-mute); text-transform: uppercase; letter-spacing: 1px; }
+
+  @media (max-width: 600px) {
+    /* Rank, region pill, guild count and avg pulls were all fighting for
+       space on one line and overlapping -- drop the rank number (already
+       implied by list order), shrink everything else, and let the stats
+       wrap to their own line under the name instead of squeezing in. */
+    .progress-boss-row   { flex-wrap: wrap; gap: 6px 10px; padding: 10px 12px; }
+    .progress-boss-rank  { display: none; }
+    .progress-boss-icon  { width: 28px; height: 28px; }
+    .progress-boss-name  { font-size: 13px; gap: 6px; }
+    .progress-boss-region-pill { font-size: 10px; padding: 1px 6px; }
+    .progress-boss-stats { flex-basis: 100%; justify-content: flex-end; gap: 20px; }
+    .progress-boss-stat  { font-size: 13px; min-width: 0; }
+    .progress-boss-stat-label { font-size: 8px; }
+  }
 </style>
 </head>
 <body>
@@ -4517,34 +4552,34 @@ function renderBossList(data) {
     const youKilled = i < killedCount;
     const isCompTarget = boss.slug === STATE.progressCompBossSlug;
     const row = document.createElement('div');
-    row.style.cssText = `
-      background: var(--bg2); border: 1px solid ${isCompTarget ? 'var(--accent)' : (youKilled ? 'var(--gold-dim)' : 'var(--border)')}; border-radius: 6px;
-      padding: 12px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer; transition: border-color 0.15s;
-    `;
+    row.className = 'progress-boss-row';
+    row.style.borderColor = isCompTarget ? 'var(--accent)' : (youKilled ? 'var(--gold-dim)' : 'var(--border)');
     row.title = 'Click to see the recommended comp for this boss';
     row.onclick = () => loadProgressComposition(data, boss.slug);
     row.innerHTML = `
-      <div style="font-size:11px; color:var(--text-mute); width:16px; flex-shrink:0;">${i + 1}</div>
-      ${boss.iconUrl ? `<img src="${boss.iconUrl}" alt="" style="width:36px; height:36px; border-radius:4px; border:1px solid var(--border); flex-shrink:0;">` : ''}
-      <div style="flex:1; min-width:0; font-weight:600; color:var(--text); display:flex; align-items:center; gap:8px;">
-        ${escapeHtml(boss.name)}
-        ${youKilled ? `<span title="Your guild has killed this boss" style="color:var(--gold); font-size:13px;">✓</span>` : ''}
-        ${youKilled && boss.yourRegionRank ? `<span title="Your guild's region rank for this boss" style="font-size:13px; font-weight:700; color:var(--gold); background:rgba(200,168,75,0.12); border:1px solid var(--gold-dim); border-radius:3px; padding:2px 8px;">Region #${boss.yourRegionRank.toLocaleString()}</span>` : ''}
+      <div class="progress-boss-rank">${i + 1}</div>
+      ${boss.iconUrl ? `<img class="progress-boss-icon" src="${boss.iconUrl}" alt="">` : ''}
+      <div class="progress-boss-name">
+        <span class="progress-boss-name-text">${escapeHtml(boss.name)}</span>
+        ${youKilled ? `<span title="Your guild has killed this boss" style="color:var(--gold); font-size:13px; flex-shrink:0;">✓</span>` : ''}
+        ${youKilled && boss.yourRegionRank ? `<span class="progress-boss-region-pill" title="Your guild's region rank for this boss">Region #${boss.yourRegionRank.toLocaleString()}</span>` : ''}
       </div>
-      <div style="font-size:16px; font-weight:700; color:var(--gold); flex-shrink:0; text-align:right; min-width:90px;">
-        ${boss.guildsDefeated.toLocaleString()}
-        <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">guilds</div>
+      <div class="progress-boss-stats">
+        <div class="progress-boss-stat" style="color:var(--gold);">
+          ${boss.guildsDefeated.toLocaleString()}
+          <div class="progress-boss-stat-label">guilds</div>
+        </div>
+        ${!data.pullsLoaded ? `
+          <div class="progress-boss-stat">
+            <div class="spinner" style="width:12px; height:12px; border-width:2px; display:inline-block;"></div>
+          </div>
+        ` : boss.pullSampleSize > 0 ? `
+          <div class="progress-boss-stat" style="color:var(--text);" title="Averaged from ${boss.pullSampleSize} guilds in this bracket that share a real pull count">
+            ${boss.avgPulls.toLocaleString()}
+            <div class="progress-boss-stat-label">avg pulls</div>
+          </div>
+        ` : ''}
       </div>
-      ${!data.pullsLoaded ? `
-        <div style="font-size:12px; color:var(--text-mute); flex-shrink:0; text-align:right; min-width:70px;">
-          <div class="spinner" style="width:12px; height:12px; border-width:2px; display:inline-block;"></div>
-        </div>
-      ` : boss.pullSampleSize > 0 ? `
-        <div style="font-size:16px; font-weight:700; color:var(--text); flex-shrink:0; text-align:right; min-width:70px;" title="Averaged from ${boss.pullSampleSize} guilds in this bracket that share a real pull count">
-          ${boss.avgPulls.toLocaleString()}
-          <div style="font-size:10px; font-weight:500; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">avg pulls</div>
-        </div>
-      ` : ''}
     `;
     list.appendChild(row);
   });
