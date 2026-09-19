@@ -645,7 +645,6 @@
             <span id="plan-status-badge" style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; padding:4px 10px; border-radius:3px; background:rgba(255,107,107,0.1); color:#ff6b6b; border:1px solid rgba(255,107,107,0.3);">DRAFT</span>
             <button class="btn-secondary" id="planner-edit-btn" style="display:none;" onclick="enterEditMode()">✎ Edit</button>
             <button class="btn-primary" id="planner-publish-btn" style="display:none;" onclick="publishRaidPlan()">⬆ Publish</button>
-            <button class="btn-secondary" id="planner-sync-btn" onclick="plannerSyncNow()" title="Push this roster into your connected WoW folder — same as the Loot tab's Sync Now">🔄 Sync to WoW</button>
             <button class="btn-secondary" id="planner-import-btn" style="display:none;" onclick="importLastRaidRoster()">⤓ Use Last Roster</button>
             <button class="btn-secondary" id="planner-clear-btn" style="display:none;" onclick="clearRaidRoster()">✕ Clear</button>
           </div>
@@ -768,53 +767,25 @@
             <div style="font-weight:700;">WoW Sync</div>
             <span id="wow-sync-toggle-arrow" style="font-size:26px; line-height:1; color:#fff; transition:transform 0.15s; padding:4px 10px;">▾</span>
           </div>
-          <div id="wow-sync-unsupported" style="display:none; font-size:14px; color:#fff; margin-top:6px;">
-            This feature needs Chrome or Edge — your browser doesn't support the File System Access API it relies on to read your addon's saved data.
-          </div>
-          <div id="wow-sync-controls">
-            <div id="wow-sync-explainer">
-              <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
-                <strong>Why this exists:</strong> a WoW addon can never make a network call, so it can't
-                talk to RaidLead on its own — this page is the bridge. Chrome/Edge also won't let a website reach anything inside
-                <code>Program Files</code>, which is where WoW normally lives, so a small local script relays data through a separate
-                folder instead — this page only ever touches that folder, never your WoW install directly.
-              </div>
-              <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
-                <strong>One-time setup:</strong>
-                <a href="/RaidLead-Download.zip" style="color:var(--gold-dim);">Download RaidLead</a> — the zip has two folders:
-                <br />
-                • <strong>RaidLead</strong> — copy this into <code>...\_retail_\Interface\AddOns\</code>.
-                <br />
-                • <strong>RaidLead Docs</strong> — this acts as a bridge. Put it in your <strong>Documents folder</strong>. It
-                just lets the addon and this site read/write data back and forth; the addon won't actually sync anything
-                without it.
-                <br /><br />
-                Then <a href="https://github.com/Datwunguy/raidlead/releases/latest/download/RaidLead-Companion-Setup.exe" style="color:var(--gold-dim);">download RaidLead Companion</a> and
-                install it, Windows might try to block it, but it's safe to run — this is the small companion-app that keeps the
-                AddOn and the "RaidLead Docs" folder in sync. In its Settings, connect it to your WoW AddOns folder and
-                "RaidLead Docs".
-                <br /><br />
-                Then click Connect below and select the <strong>RaidLead Docs</strong> folder (wherever you put it).
-              </div>
-              <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
-                <strong>Night to night, once set up:</strong>
-                <br />
-                • RaidLead Companion should just stay running in the background (it starts with Windows automatically) —
-                you never need to click anything inside it.
-                <br />
-                • <strong>Before a raid:</strong> publish your roster on Raid Night. Companion picks it up within moments;
-                <code>/reload</code> in-game to see it.
-                <br />
-                • <strong>After a raid:</strong> log out or <code>/reload</code> so WoW saves this session's loot to disk,
-                then come back here and press <code>Sync Now</code> once. That's the one manual step that can't be
-                automated — your browser needs an actual click to read the folder.
-              </div>
+          <div id="wow-sync-explainer">
+            <div style="font-size:14px; color:#fff; margin-bottom:10px; line-height:1.6;">
+              <strong>One-time setup:</strong>
+              <a href="/RaidLead-Download.zip" style="color:var(--gold-dim);">Download RaidLead</a> and copy it into
+              <code>...\_retail_\Interface\AddOns\</code>.
+              <br /><br />
+              Then <a href="https://github.com/Datwunguy/raidlead/releases/latest/download/RaidLead-Companion-Setup.exe" style="color:var(--gold-dim);">download RaidLead Companion</a> and
+              install it — Windows might try to block it, but it's safe to run. Open it and click <strong>Log In</strong>;
+              a page opens here asking you to approve it. Once approved, that's it — no folders to pick, nothing else to configure.
             </div>
-            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-              <button class="btn-secondary" style="padding:6px 14px; font-size:13px;" onclick="connectWowFolder()">Connect Bridge Folder</button>
-              <button class="btn-primary" id="wow-sync-now-btn" style="display:none; padding:6px 14px; font-size:13px;" onclick="wowSyncNow()">Sync Now</button>
+            <div style="font-size:14px; color:#fff; line-height:1.6;">
+              <strong>Night to night, once set up:</strong> RaidLead Companion stays running in the background (it starts
+              with Windows automatically) and syncs everything on its own — your published roster goes to the game, and
+              loot comes back here, with nothing to click on either side. Just <code>/reload</code> in-game after publishing
+              a new roster to see it.
             </div>
-            <div id="wow-sync-status" style="font-size:14px; color:#fff; margin-top:8px;"></div>
+            <div style="font-size:12px; color:var(--text-mute); margin-top:10px;">
+              Manage or revoke a connected Companion app under Settings → Connected Devices.
+            </div>
           </div>
         </div>
 
@@ -847,21 +818,24 @@
         <div id="resources-content" style="margin-top:18px;"></div>
       </div>
 
-      <!-- ADDON SETUP PROMPT MODAL -->
-      <div class="modal-overlay" id="addon-setup-modal">
+      <!-- COMPANION APP PAIRING MODAL -->
+      <div class="modal-overlay" id="companion-pair-modal">
         <div class="modal" style="max-width:420px;">
           <div class="modal-header">
-            <div class="modal-player-name" style="font-size:18px;">Set up WoW sync?</div>
-            <button class="modal-close" onclick="closeAddonSetupModal()">&times;</button>
+            <div class="modal-player-name" style="font-size:18px;">Connect RaidLead Companion?</div>
+            <button class="modal-close" onclick="respondToCompanionPair(false)">&times;</button>
           </div>
           <div class="modal-body">
             <p style="font-size:13px; color:var(--text-dim); line-height:1.6;">
-              You haven't connected a WoW bridge folder yet, so there's nowhere to sync this roster to. Set it up on the Loot tab —
-              it walks through installing the addon and connecting a folder.
+              A RaidLead Companion app on this computer wants to log in as you:
+            </p>
+            <p style="font-size:16px; font-weight:700; color:var(--gold); text-align:center; margin:10px 0;" id="companion-pair-device"></p>
+            <p style="font-size:13px; color:#ff6b6b; line-height:1.6;">
+              Only approve this if you just clicked Log In in RaidLead Companion yourself.
             </p>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-              <button class="btn-secondary" onclick="closeAddonSetupModal()">Not now</button>
-              <button class="btn-primary" onclick="closeAddonSetupModal(); showTab('loot');">Take me there</button>
+              <button class="btn-secondary" onclick="respondToCompanionPair(false)">Deny</button>
+              <button class="btn-primary" onclick="respondToCompanionPair(true)">Approve</button>
             </div>
           </div>
         </div>
@@ -1059,6 +1033,13 @@
             <span style="font-size:12px; color:var(--text-mute);">Type <code>/link CODE</code> in Discord within 10 minutes</span>
           </div>
           <button class="btn-secondary" id="discord-link-btn" style="padding:6px 14px; font-size:12px;" onclick="startDiscordLink()">Link Discord</button>
+        </div>
+
+        <!-- Connected devices — RaidLead Companion logins tied to this account -->
+        <div id="connected-devices-section" style="background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:14px 16px; margin-bottom:20px;">
+          <div style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-mute); margin-bottom:8px;">Connected Devices</div>
+          <div style="font-size:12px; color:var(--text-mute); margin-bottom:10px;">RaidLead Companion apps logged in as you. Revoke one if a device is lost or no longer trusted.</div>
+          <div id="connected-devices-list"></div>
         </div>
 
         <!-- Officer-only section -->

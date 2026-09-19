@@ -176,6 +176,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Handle pending invite link
   checkInviteParam();
 
+  // Handle a RaidLead Companion pairing link (?companion-pair=<code>)
+  checkCompanionPairParam();
+
   // Handle the "Connect to Discord" OAuth redirect result
   const discordConnected   = urlParams.get('discord_connected');
   const discordConnectErr  = urlParams.get('discord_connect_error');
@@ -231,6 +234,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('dropdown-battletag').textContent = sessionAccount.battletag;
     document.getElementById('account-menu').style.display = 'flex';
   }
+
+  // Unawaited -- shows its own confirm modal asynchronously if there's a
+  // pending Companion pairing; never blocks the rest of boot.
+  checkPendingCompanionPair();
 
   // Check for pending invite FIRST — before checking saved config
   // This ensures first-time invite users skip guild setup entirely.
@@ -2059,308 +2066,144 @@ const RESOURCES = {
 };
 
 // ─────────────────────────────────────────────
-//  WOW SYNC — bridges the RaidLead addon's local SavedVariables to this
-//  site, via a small local relay (the RaidLead Companion app) plus this
-//  in-browser File System Access code. Originally this talked to the WoW
-//  install folder directly with no local helper at all -- but Chrome/Edge
-//  categorically refuse File System Access to anything under
-//  "Program Files"/"Program Files (x86)", which is exactly where Battle.net
-//  installs WoW by default. There's no way around that from a webpage, so
-//  RaidLead Companion (a small always-running desktop app -- see companion/)
-//  mirrors data between the real WoW folder and a plain, non-blocked
-//  "bridge" folder in the user's Documents, and this code only ever
-//  touches that bridge folder -- never Program Files.
+//  COMPANION APP PAIRING — approves a RaidLead Companion app's login
+//  request. The Companion app itself calls api/companion.js's startPairing
+//  and opens a browser to `?companion-pair=<code>`; everything here is just
+//  the confirm screen on this side, followed by a plain POST to
+//  approvePairing. The Companion app's own background poll is what actually
+//  mints its access token (see api/companion.js's checkPairing) -- nothing
+//  in this file ever sees or handles that token.
 //
-//  Because both sides of THIS hop (Companion <-> browser) are code we
-//  fully control, the bridge folder's files are plain JSON, not Lua -- only
-//  Companion needs to speak Lua now (for the real WoW files), which
-//  simplifies this side a lot (no more Lua parsing here, no more account
-//  picker -- Companion already resolved which WoW account to use).
-//
-//  Chromium-only (Chrome/Edge) -- there's no fallback for Firefox/Safari,
-//  which don't implement the File System Access API at all.
+//  This replaced the old bridge-folder/File System Access sync code: the
+//  Companion app now talks to RaidLead directly using this login, so there's
+//  nothing left for the browser to relay.
 // ─────────────────────────────────────────────
-const WOWSYNC_DB_NAME = 'raidlead-wowsync';
-const WOWSYNC_STORE   = 'handles';
-const BRIDGE_LOOT_FILE   = 'loot-export.json';
-const BRIDGE_ROSTER_FILE = 'roster-import.json';
-
-function wowSyncSupported() {
-  return typeof window.showDirectoryPicker === 'function';
-}
-
-function idbOpen() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(WOWSYNC_DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(WOWSYNC_STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbGet(key) {
-  const db = await idbOpen();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(WOWSYNC_STORE, 'readonly');
-    const req = tx.objectStore(WOWSYNC_STORE).get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function idbSet(key, value) {
-  const db = await idbOpen();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(WOWSYNC_STORE, 'readwrite');
-    tx.objectStore(WOWSYNC_STORE).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-function setWowSyncStatus(msg) {
-  const el = document.getElementById('wow-sync-status');
-  if (el) el.textContent = msg;
-}
-
-async function connectWowFolder() {
-  if (!wowSyncSupported()) return;
-  try {
-    const handle = await window.showDirectoryPicker({ startIn: 'documents' });
-    await idbSet('bridgeHandle', handle);
-
-    const hasRun = await fileExistsInHandle(handle, 'config.json');
-    setWowSyncStatus(hasRun
-      ? 'Connected.'
-      : 'Connected, but this doesn\'t look like RaidLead Companion has run yet — open it (or install it) and try Sync again.');
-
-    document.getElementById('wow-sync-now-btn').style.display = '';
-    // Auto-collapse the setup instructions once there's real evidence this
-    // is actually hooked up -- but only then, so someone who connects the
-    // wrong folder (or hasn't installed/run Companion yet) still sees the
-    // instructions rather than having them vanish on a false-looking success.
-    if (hasRun) setWowSyncExplainerCollapsed(true);
-  } catch (e) {
-    if (e.name !== 'AbortError') setWowSyncStatus('Couldn\'t open that folder — try again.'); // user just cancelled the picker otherwise
-  }
-}
-
-async function fileExistsInHandle(dirHandle, name) {
-  try { await dirHandle.getFileHandle(name); return true; }
-  catch { return false; }
-}
-
-// Restores a previously-connected folder on page load, if the browser still
-// honors the stored permission. Re-granting can't happen silently (the API
-// requires a real click) -- if permission has lapsed, this just shows the
-// Connect button again rather than erroring.
-// Collapses/expands just the explanatory text (not the Connect/Sync
-// buttons or status, which stay put) so the box doesn't hog the whole page
-// once someone's already set up and just wants to see loot history below.
-// Remembered per-browser via localStorage -- purely a display preference,
-// nothing meaningful to sync anywhere else.
-function setWowSyncExplainerCollapsed(collapsed) {
+// Collapses/expands the Loot tab's WoW Sync setup instructions -- purely a
+// display preference, remembered per-browser, nothing meaningful to sync
+// anywhere else.
+function toggleWowSyncExplainer() {
   const explainer = document.getElementById('wow-sync-explainer');
   const arrow = document.getElementById('wow-sync-toggle-arrow');
   if (!explainer || !arrow) return;
+  const collapsed = explainer.style.display !== 'none';
   explainer.style.display = collapsed ? 'none' : '';
   arrow.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
-  try { localStorage.setItem('raidlead_wowsync_collapsed', collapsed ? '1' : '0'); } catch {}
+  try { localStorage.setItem('raidlead_wowsync_collapsed', collapsed ? '1' : '0'); } catch(e) {}
 }
 
-function toggleWowSyncExplainer() {
-  const explainer = document.getElementById('wow-sync-explainer');
-  const isCollapsed = explainer && explainer.style.display === 'none';
-  setWowSyncExplainerCollapsed(!isCollapsed);
+const COMPANION_PAIR_STORAGE_KEY = 'raidlead_pending_companion_pair';
+
+// Checked at the same point as checkInviteParam(), just before the session
+// check. Unlike that invite flow, this deliberately does NOT clear the
+// stored code right away -- approving a Companion login needs an explicit
+// click, so a stray reload (or just being slow to decide) shouldn't lose
+// the code with no way to recover it, since the query param itself is
+// already scrubbed from the URL by then.
+function checkCompanionPairParam() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('companion-pair');
+  if (!code) return;
+  window.history.replaceState({}, '', '/');
+  try { localStorage.setItem(COMPANION_PAIR_STORAGE_KEY, code); } catch(e) {}
 }
 
-async function initWowSync() {
-  try { setWowSyncExplainerCollapsed(localStorage.getItem('raidlead_wowsync_collapsed') === '1'); } catch {}
-
-  const box = document.getElementById('wow-sync-controls');
-  const unsupported = document.getElementById('wow-sync-unsupported');
-  if (!wowSyncSupported()) {
-    box.style.display = 'none';
-    unsupported.style.display = 'block';
-    return;
-  }
-
-  const handle = await idbGet('bridgeHandle');
-  if (!handle) return;
+// Called once a real session is confirmed. Fetches getPairingInfo (read-only
+// -- see api/companion.js for why this is a separate action from the
+// Companion app's own consuming checkPairing poll) to show which device is
+// asking, then shows the confirm modal.
+async function checkPendingCompanionPair() {
+  let code;
+  try { code = localStorage.getItem(COMPANION_PAIR_STORAGE_KEY); } catch(e) { return; }
+  if (!code) return;
 
   try {
-    const perm = await handle.queryPermission({ mode: 'readwrite' });
-    setWowSyncStatus(perm === 'granted' ? 'Connected.' : 'Connected previously — click Sync Now to re-grant access.');
-    document.getElementById('wow-sync-now-btn').style.display = '';
-  } catch {
-    setWowSyncStatus('Lost access to your bridge folder — click Connect WoW Folder again.');
-  }
-}
-
-// Shared by both Sync buttons (Loot tab and Raid Night) so there's one
-// place that actually does the work -- each caller just wires its own UI
-// feedback around it. Throws with `.needsConnect = true` when there's
-// nothing connected yet, so callers can point the user at the Loot tab
-// specifically rather than a generic failure.
-async function performFullSync() {
-  const handle = await idbGet('bridgeHandle');
-  if (!handle) {
-    const err = new Error('Connect your bridge folder on the Loot tab first.');
-    err.needsConnect = true;
-    throw err;
-  }
-
-  // Must run inside a click handler -- the API requires a fresh user gesture
-  // to (re-)request permission, which is exactly what both callers are.
-  const perm = await handle.requestPermission({ mode: 'readwrite' });
-  if (perm !== 'granted') throw new Error('Permission denied — can\'t sync without access to your bridge folder.');
-
-  const uploaded = await wowSyncUploadLoot(handle);
-  const rosterResult = await wowSyncDownloadRoster(handle);
-  return { uploaded, rosterResult };
-}
-
-async function wowSyncNow() {
-  const btn = document.getElementById('wow-sync-now-btn');
-  btn.disabled = true;
-  try {
-    setWowSyncStatus('Syncing...');
-    const { uploaded, rosterResult } = await performFullSync();
-    setWowSyncStatus(`Done — uploaded ${uploaded} loot record(s), ${rosterResult}. RaidLead Companion picks this up automatically within a few minutes, then /reload in-game to see it.`);
-    loadLootTab();
+    const resp = await fetch(`/api/companion?action=getPairingInfo&pairingCode=${encodeURIComponent(code)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Invalid pairing code');
+    if (data.status !== 'pending') throw new Error('already used');
+    showCompanionPairModal(code, data.deviceLabel);
   } catch (e) {
-    setWowSyncStatus(e.needsConnect ? 'Connect your bridge folder first (below).' : ('Sync failed: ' + e.message));
-  } finally {
-    btn.disabled = false;
+    try { localStorage.removeItem(COMPANION_PAIR_STORAGE_KEY); } catch(err) {}
   }
 }
 
-// Raid Night's "Sync to WoW" button -- same underlying sync, feedback via
-// toast instead of the Loot tab's status line since that element isn't on
-// this tab. Exists because publishing already auto-syncs the roster when a
-// folder's connected, but that's silent/best-effort (see
-// autoSyncRosterIfConnected) -- this gives officers a visible, on-demand way
-// to push again (e.g. after editing swaps/attendance) without hunting for
-// the Loot tab, and a clear way to find out *why* nothing happened if
-// they're not connected yet or a permission prompt is needed.
-async function plannerSyncNow() {
-  const btn = document.getElementById('planner-sync-btn');
-  const originalText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⏳ Syncing...';
+function showCompanionPairModal(pairingCode, deviceLabel) {
+  const modal = document.getElementById('companion-pair-modal');
+  document.getElementById('companion-pair-device').textContent = deviceLabel || 'Unknown device';
+  modal.dataset.pairingCode = pairingCode;
+  modal.classList.add('open');
+}
+
+// `approve` false covers both an explicit Deny click and just closing the
+// modal -- either way the pairing is simply left alone to expire on its
+// own (there's no separate "deny" signal the Companion app's poll needs;
+// it just keeps seeing "pending" until the 10-minute window runs out).
+async function respondToCompanionPair(approve) {
+  const modal = document.getElementById('companion-pair-modal');
+  const pairingCode = modal.dataset.pairingCode;
+  modal.classList.remove('open');
+  try { localStorage.removeItem(COMPANION_PAIR_STORAGE_KEY); } catch(e) {}
+  if (!approve || !pairingCode) return;
+
   try {
-    const { uploaded, rosterResult } = await performFullSync();
-    showToast(`Synced to WoW — ${rosterResult}; ${uploaded} loot record(s) uploaded. RaidLead Companion will pull this into the game within a few minutes.`, 'success');
+    const resp = await fetch('/api/companion?action=approvePairing', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairingCode }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Could not approve login');
+    showToast('RaidLead Companion connected!', 'success');
   } catch (e) {
-    if (e.needsConnect) {
-      openAddonSetupModal();
-    } else {
-      showToast('Sync failed: ' + e.message, 'error');
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Connected devices (Settings) — lists/revokes this account's Companion
+// app tokens. Revoking immediately blocks that device from calling
+// getRosterSync/uploadLoot/getMyTeams again. ──
+async function loadConnectedDevices() {
+  const listEl = document.getElementById('connected-devices-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+  try {
+    const resp = await fetch('/api/companion?action=listMyTokens');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to load connected devices');
+
+    const tokens = data.tokens || [];
+    if (tokens.length === 0) {
+      listEl.innerHTML = '<div style="font-size:13px; color:var(--text-mute);">No Companion apps connected yet.</div>';
+      return;
     }
-  } finally {
-    btn.disabled = false;
-    btn.textContent = originalText;
-  }
-}
 
-function openAddonSetupModal() {
-  document.getElementById('addon-setup-modal').classList.add('open');
-}
-
-function closeAddonSetupModal() {
-  document.getElementById('addon-setup-modal').classList.remove('open');
-}
-
-// Reads loot-export.json from the bridge folder (written there by the
-// RaidLead Companion app, which pulled it out of the real WoW SavedVariables
-// file) -- plain JSON now, no Lua involved on this side of the bridge.
-async function wowSyncUploadLoot(bridgeHandle) {
-  let recordsById;
-  try {
-    const fileHandle = await bridgeHandle.getFileHandle(BRIDGE_LOOT_FILE);
-    const text = await (await fileHandle.getFile()).text();
-    recordsById = text ? JSON.parse(text) : {};
-  } catch {
-    recordsById = {}; // Companion hasn't run yet, or nothing captured so far
-  }
-
-  const records = Object.values(recordsById || {});
-  if (records.length === 0) return 0;
-
-  const resp = await fetch('/api/loot?action=import', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ teamId: STATE.teamId, records }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || 'Loot upload failed');
-  return data.imported || 0;
-}
-
-// Writes roster-import.json into the bridge folder -- plain JSON; the
-// PowerShell script is what turns this into the Lua WoW actually reads.
-async function wowSyncDownloadRoster(bridgeHandle) {
-  const [planResp, membersResp, attendanceResp] = await Promise.all([
-    fetch(`/api/plans?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
-    fetch(`/api/members?action=get&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
-    fetch(`/api/members?action=getAttendance&teamId=${encodeURIComponent(STATE.teamId)}`).then(r => r.json()),
-  ]);
-
-  const roster = (membersResp.members || [])
-    .flatMap(m => m.characters || [])
-    .map(c => ({ name: c.name, class: c.class, primaryRole: c.primary_role }));
-
-  let plan = null;
-  if (planResp.plan) {
-    const unavailable = (attendanceResp.marks || [])
-      .filter(m => m.status === 'unavailable' && m.raid_date === planResp.plan.raid_date)
-      .map(m => m.character_name);
-    plan = {
-      name: planResp.plan.name,
-      raidDate: planResp.plan.raid_date,
-      updatedAt: planResp.plan.updated_at,
-      members: (planResp.plan.raid_plan_members || [])
-        .filter(m => m.characters)
-        .map(m => ({
-          name: m.characters.name, class: m.characters.class, primaryRole: m.characters.primary_role,
-          assignedRole: m.assigned_role, server: m.characters.server, realmName: m.characters.realm_name,
-        })),
-      unavailable,
-    };
-  }
-
-  const payload = { plan, roster, syncedAt: Math.floor(Date.now() / 1000) };
-
-  const fileHandle = await bridgeHandle.getFileHandle(BRIDGE_ROSTER_FILE, { create: true });
-  const writable = await fileHandle.createWritable();
-  await writable.write(JSON.stringify(payload));
-  await writable.close();
-
-  return plan
-    ? `"${plan.name}" queued for import`
-    : 'no published plan, but roster data queued for import';
-}
-
-// Called right after a successful Publish so an officer who's already
-// connected their bridge folder doesn't need a second trip to the Loot tab
-// to push the new roster down. Deliberately silent/best-effort: publishing
-// already succeeded regardless, this is a bonus, and a fresh permission
-// PROMPT popping up out of nowhere after clicking Publish would be a worse
-// experience than just skipping it -- queryPermission (not requestPermission)
-// only proceeds if the browser still honors an earlier grant. If it doesn't,
-// the officer can always still hit Sync Now manually on the Loot tab.
-async function autoSyncRosterIfConnected() {
-  if (!wowSyncSupported()) return;
-  try {
-    const handle = await idbGet('bridgeHandle');
-    if (!handle) return;
-
-    const perm = await handle.queryPermission({ mode: 'readwrite' });
-    if (perm !== 'granted') return;
-
-    await wowSyncDownloadRoster(handle);
-    showToast('Roster queued for your bridge folder — RaidLead Companion picks it up automatically, then /reload in-game to see it.', 'success');
+    listEl.innerHTML = tokens.map(t => `
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:var(--bg3); border:1px solid var(--border); border-radius:6px; margin-bottom:8px;">
+        <div>
+          <div style="font-size:14px; font-weight:700; ${t.revoked_at ? 'color:var(--text-mute); text-decoration:line-through;' : ''}">${escapeHtml(t.device_label || 'Unknown device')}</div>
+          <div style="font-size:11px; color:var(--text-mute);">
+            ${t.revoked_at ? 'Revoked' : (t.last_used_at ? 'Last used ' + new Date(t.last_used_at).toLocaleString() : 'Never used yet')}
+          </div>
+        </div>
+        ${t.revoked_at ? '' : `<button class="btn-secondary" style="padding:4px 12px; font-size:12px;" onclick="revokeConnectedDevice('${t.id}')">Revoke</button>`}
+      </div>
+    `).join('');
   } catch (e) {
-    // Best-effort only -- publishing already succeeded either way.
+    listEl.innerHTML = `<div style="font-size:13px; color:#ff6b6b;">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function revokeConnectedDevice(tokenId) {
+  if (!confirm('Revoke this device? It will stop syncing until logged in again.')) return;
+  try {
+    const resp = await fetch('/api/companion?action=revokeToken', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to revoke');
+    loadConnectedDevices();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
   }
 }
 
@@ -2372,7 +2215,14 @@ async function autoSyncRosterIfConnected() {
 // ─────────────────────────────────────────────
 async function loadLootTab() {
   if (!STATE.teamId) return;
-  initWowSync();
+  try {
+    const explainer = document.getElementById('wow-sync-explainer');
+    const arrow = document.getElementById('wow-sync-toggle-arrow');
+    if (explainer && arrow && localStorage.getItem('raidlead_wowsync_collapsed') === '1') {
+      explainer.style.display = 'none';
+      arrow.style.transform = 'rotate(-90deg)';
+    }
+  } catch(e) {}
   try {
     // The real roster is STATE.players -- the Guild Roster tab, sourced from
     // the characters table and already loaded before any tab can be viewed
@@ -5016,7 +4866,6 @@ async function publishRaidPlan() {
     document.getElementById('plan-status-badge').style.color     = '#1EFF00';
     document.getElementById('plan-status-badge').style.borderColor = 'rgba(30,255,0,0.3)';
     showToast('Raid plan published! Members can now see it.', 'success');
-    autoSyncRosterIfConnected();
   } catch(e) {
     showToast('Error publishing: ' + e.message, 'error');
     // Restore edit mode UI so user can try again
@@ -5573,6 +5422,8 @@ function showMembersModal() {
   if (displayInput && AUTH.session?.displayName) {
     displayInput.value = AUTH.session.displayName;
   }
+
+  loadConnectedDevices();
 
   fetchMembersFromDB().then(data => {
     const members = data?.members || (Array.isArray(data) ? data : []);
