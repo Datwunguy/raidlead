@@ -8,6 +8,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell } = require('elec
 
 const config = require('./config');
 const wowPaths = require('./wowPaths');
+const auth = require('./auth');
 const { SyncManager } = require('./sync');
 const { startUpdateChecks, checkOnce, getStatus: getUpdateStatus, DOWNLOAD_URL } = require('./updater');
 
@@ -133,19 +134,71 @@ ipcMain.handle('raidlead:browseWowFolder', async () => {
   };
 });
 
-ipcMain.handle('raidlead:browseBridgeFolder', async () => {
-  // The exact same folder the website's "Connect Bridge Folder" button
-  // points at -- whatever RaidLead Docs was extracted to and connected on
-  // the Loot tab.
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select your "RaidLead Docs" folder (the one connected on the website\'s Loot tab)',
-    properties: ['openDirectory'],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return result.filePaths[0];
-});
-
 ipcMain.handle('raidlead:syncNow', async () => {
   sync.exportLoot(true);
   sync.importRoster(true);
+});
+
+// ── LOGIN: device-pairing handshake (see auth.js) -- opens the system
+// browser to the website's approve screen and polls until this app
+// receives its own access token, then resolves which team to sync (only
+// asks if the account belongs to more than one). Returns { success: true }
+// or { error }, never throws across the IPC boundary. ──
+ipcMain.handle('raidlead:login', async () => {
+  try {
+    const { pairingCode, approveUrl } = await auth.startPairing();
+    shell.openExternal(approveUrl);
+    sendLog('Waiting for approval in your browser...');
+    const token = await auth.pollPairing(pairingCode, (status) => {
+      if (status === 'pending') sendLog('Waiting for you to approve this in your browser...');
+    });
+
+    const teams = await auth.getMyTeams(token);
+    if (teams.length === 0) {
+      return { error: 'Logged in, but this account has no RaidLead team yet -- join or create one on the website first.' };
+    }
+
+    currentConfig = {
+      ...currentConfig,
+      authTokenEnc: auth.encryptToken(token),
+      deviceLabel: auth.deviceLabel(),
+      teamId: teams.length === 1 ? teams[0].teamId : null,
+    };
+    config.save(currentConfig);
+    sync.start();
+    sendLog('Logged in to RaidLead.');
+
+    return { success: true, teams: teams.length > 1 ? teams : null };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+ipcMain.handle('raidlead:logout', () => {
+  currentConfig = { ...currentConfig, authTokenEnc: null, deviceLabel: null, teamId: null };
+  config.save(currentConfig);
+  sync.stop();
+  sendLog('Logged out.');
+  return currentConfig;
+});
+
+// For the multi-team picker -- only ever asked for right after login, when
+// raidlead:login's own response already includes the team list, but exposed
+// separately too in case Settings needs to re-show the picker later (e.g.
+// the account was added to a second team since logging in).
+ipcMain.handle('raidlead:getMyTeams', async () => {
+  const token = auth.decryptToken(currentConfig.authTokenEnc);
+  if (!token) return { error: 'Not logged in' };
+  try {
+    return { teams: await auth.getMyTeams(token) };
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+ipcMain.handle('raidlead:setTeam', (_e, teamId) => {
+  currentConfig = { ...currentConfig, teamId };
+  config.save(currentConfig);
+  sync.start();
+  return currentConfig;
 });

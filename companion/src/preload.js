@@ -13,7 +13,10 @@ contextBridge.exposeInMainWorld('raidlead', {
   getUpdateStatus: () => ipcRenderer.invoke('raidlead:getUpdateStatus'),
   openDownloadLink: () => ipcRenderer.invoke('raidlead:openDownloadLink'),
   browseWowFolder: () => ipcRenderer.invoke('raidlead:browseWowFolder'),
-  browseBridgeFolder: () => ipcRenderer.invoke('raidlead:browseBridgeFolder'),
   syncNow: () => ipcRenderer.invoke('raidlead:syncNow'),
+  login: () => ipcRenderer.invoke('raidlead:login'),
+  logout: () => ipcRenderer.invoke('raidlead:logout'),
+  getMyTeams: () => ipcRenderer.invoke('raidlead:getMyTeams'),
+  setTeam: (teamId) => ipcRenderer.invoke('raidlead:setTeam', teamId),
   onLog: (callback) => ipcRenderer.on('raidlead:log', (_e, line) => callback(line)),
 });

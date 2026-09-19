@@ -11,9 +11,11 @@ const { app } = require('electron');
 const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
 
 const DEFAULTS = {
-  wowRoot: null,          // .../World of Warcraft (the folder containing _retail_) -- which account is "yours" is re-resolved fresh every sync, not stored
-  bridgeFolderPath: null, // the "RaidLead Docs" folder -- same one connected on the website's Loot tab
-  autoStart: true,        // launch this app automatically when Windows starts (opt-out, not opt-in -- see main.js)
+  wowRoot: null,       // .../World of Warcraft (the folder containing _retail_) -- which account is "yours" is re-resolved fresh every sync, not stored
+  authTokenEnc: null,  // this app's own RaidLead access token, encrypted via auth.js's encryptToken (safeStorage) -- never stored in plaintext
+  deviceLabel: null,   // shown on the website's approve screen and Connected Devices list -- captured at login time, not re-derived every run
+  teamId: null,         // which RaidLead team to sync -- auto-resolved at login for a single-team account, or chosen via the team picker for multi-team
+  autoStart: true,      // launch this app automatically when Windows starts (opt-out, not opt-in -- see main.js)
 };
 
 function load() {

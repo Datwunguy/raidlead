@@ -32,12 +32,28 @@
 </head>
 <body>
   <h1>RaidLead Companion</h1>
-  <p class="sub">Keeps your addon's loot data and published roster in sync with the RaidLead Docs bridge folder — no scheduled task, no console window, just runs quietly while it's open. It never makes a network call itself; the website still handles all of that.</p>
+  <p class="sub">Reads your addon's loot data and writes your published roster into WoW, syncing with your RaidLead account in the background — no bridge folder, no manual steps. Logging in opens your browser to approve this app once; after that it runs quietly on its own.</p>
 
   <div id="wow-status" class="hint" style="font-size:12px; margin-bottom:6px;">Checking for WoW...</div>
   <div id="update-status" style="display:none; font-size:12px; margin-bottom:14px; color:#4ade80;"></div>
 
   <div class="section" style="border-top:none; margin-top:0; padding-top:0;">
+    <label>RaidLead Account</label>
+    <div id="login-section">
+      <div class="hint" style="margin-top:0; margin-bottom:8px;">Not logged in yet.</div>
+      <button class="primary" id="loginBtn">Log In</button>
+      <div id="login-status" class="hint" style="margin-top:8px;"></div>
+    </div>
+    <div id="account-section" style="display:none;">
+      <div class="hint" style="margin-top:0; margin-bottom:8px;">Logged in as <strong id="deviceLabelDisplay"></strong>.</div>
+      <div class="row" id="team-picker-row" style="display:none; margin-bottom:8px;">
+        <select id="teamPicker" style="flex:1;"></select>
+      </div>
+      <button id="logoutBtn">Log Out</button>
+    </div>
+  </div>
+
+  <div class="section">
     <label>WoW AddOns Folder</label>
     <div class="hint" style="margin-top:0; margin-bottom:6px;">
       Browse to <code>...\_retail_\Interface\AddOns\</code> (the same folder you copied the <code>RaidLead</code> addon into) — this app works out your WoW install from it. Which account is yours is re-detected automatically every time, so there's nothing to pick.
@@ -47,18 +63,6 @@
       <button id="browseWow">Browse...</button>
     </div>
     <div id="addon-check-warning" class="hint" style="display:none; color:#e5a53d;"></div>
-  </div>
-
-  <div class="section">
-    <label>RaidLead Docs (bridge folder)</label>
-    <div class="hint" style="margin-top:0; margin-bottom:6px;">
-      The same folder you connected on the website's Loot tab (Connect Bridge Folder) — put it in your Documents folder, not
-      the Desktop, since Windows can silently block files from being created there.
-    </div>
-    <div class="row">
-      <input type="text" id="bridgeFolderPath" readonly placeholder="Not set" />
-      <button id="browseBridge">Browse...</button>
-    </div>
   </div>
 
   <div class="section">
@@ -110,11 +114,33 @@
     });
   }
 
+  function renderAccountSection() {
+    const loggedIn = !!config.authTokenEnc;
+    el('login-section').style.display = loggedIn ? 'none' : 'block';
+    el('account-section').style.display = loggedIn ? 'block' : 'none';
+    if (loggedIn) el('deviceLabelDisplay').textContent = config.deviceLabel || 'this device';
+  }
+
+  async function populateTeamPickerIfNeeded() {
+    const row = el('team-picker-row');
+    if (!config.authTokenEnc) { row.style.display = 'none'; return; }
+
+    const result = await window.raidlead.getMyTeams();
+    if (result.error || !result.teams || result.teams.length <= 1) { row.style.display = 'none'; return; }
+
+    row.style.display = 'flex';
+    const picker = el('teamPicker');
+    picker.innerHTML = result.teams.map(t =>
+      `<option value="${t.teamId}" ${t.teamId === config.teamId ? 'selected' : ''}>${t.guildName || 'Guild'} — ${t.teamName}</option>`
+    ).join('');
+  }
+
   async function init() {
     config = await window.raidlead.getConfig();
     el('wowRoot').value = config.wowRoot || '';
-    el('bridgeFolderPath').value = config.bridgeFolderPath || '';
     el('autoStart').checked = config.autoStart !== false;
+    renderAccountSection();
+    populateTeamPickerIfNeeded();
 
     const existingLog = await window.raidlead.getLog();
     existingLog.forEach(appendLog);
@@ -148,13 +174,6 @@
     }
   });
 
-  el('browseBridge').addEventListener('click', async () => {
-    const folder = await window.raidlead.browseBridgeFolder();
-    if (!folder) return;
-    config = await window.raidlead.setConfig({ bridgeFolderPath: folder });
-    el('bridgeFolderPath').value = folder;
-  });
-
   el('autoStart').addEventListener('change', async () => {
     config = await window.raidlead.setConfig({ autoStart: el('autoStart').checked });
   });
@@ -162,6 +181,30 @@
   el('syncNow').addEventListener('click', async () => {
     appendLog('Syncing...');
     await window.raidlead.syncNow();
+  });
+
+  el('loginBtn').addEventListener('click', async () => {
+    el('loginBtn').disabled = true;
+    el('login-status').textContent = 'Opening your browser to approve this app...';
+    const result = await window.raidlead.login();
+    el('loginBtn').disabled = false;
+    if (result.error) {
+      el('login-status').textContent = 'Error: ' + result.error;
+      return;
+    }
+    el('login-status').textContent = '';
+    config = await window.raidlead.getConfig();
+    renderAccountSection();
+    populateTeamPickerIfNeeded();
+  });
+
+  el('logoutBtn').addEventListener('click', async () => {
+    config = await window.raidlead.logout();
+    renderAccountSection();
+  });
+
+  el('teamPicker').addEventListener('change', async () => {
+    config = await window.raidlead.setTeam(el('teamPicker').value);
   });
 
   init();

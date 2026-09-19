@@ -1,27 +1,40 @@
 # RaidLead Companion
 
-A small always-running tray app that replaces the `.bat` / Windows Task
-Scheduler / hidden-`wscript.exe` setup in `../public/RaidLead Docs/` with a
-normal background app -- the same kind of thing Discord or Steam are, not a
-scheduled script. It does **exactly** what `RaidLeadBridge.ps1` does, just
-continuously instead of once every 5 minutes via a scheduled task:
+A small always-running tray app that keeps your WoW addon data and RaidLead
+account in sync -- the same kind of thing Discord or Steam are, not a
+scheduled script. It logs in on its own (a one-time browser approval, not a
+stored password -- RaidLead has no separate password at all, every account
+is Battle.net-based) and talks to RaidLead directly from then on:
 
-- **Export**: watches the addon's SavedVariables file and writes
-  `loot-export.json` into the bridge folder whenever it changes (which only
+- **Export**: watches the addon's SavedVariables file and uploads captured
+  loot straight to your RaidLead account whenever it changes (which only
   happens after a `/reload` or logout in-game -- WoW doesn't flush that file
   live mid-raid).
-- **Import**: watches the bridge folder's `roster-import.json` (written by
-  the website) and writes it into every character's SavedVariables as soon
-  as it appears.
+- **Sync**: polls your team's published roster/raid plan every minute and
+  writes it into every character's SavedVariables as soon as it changes.
 
-**It needs no login or sync key**, and has exactly one narrow network access:
-checking `raidlead.vercel.app/updates/version.json` every few hours to see if
-a newer version exists (see `src/updater.js`). Everything else -- loot
-export, roster import -- is pure local file I/O, exactly like the PowerShell
-script it replaces. The website's browser-based Connect Bridge Folder / Sync
-Now flow is unchanged; this app just makes sure the local file conversion
-happens automatically and reliably in the background, without a scheduled
-task or hidden console window.
+There's no bridge folder and nothing to click on the website's Loot tab
+anymore -- logging in once here is the entire setup. See
+`sql/2026_09_companion_auth.sql` and `api/companion.js` at the repo root for
+the server side of the login handshake.
+
+## Login
+
+Click **Log In** in Settings. This opens your default browser to a RaidLead
+page asking you to approve the request (you'll go through your normal
+Battle.net login there first if you aren't already signed in on the
+website). Once approved, this app receives its own long-lived access token
+automatically -- no code to type, no folder to pick. That token is encrypted
+at rest via Electron's `safeStorage` (OS-backed, e.g. Windows DPAPI), the
+same protection your browser gives saved website passwords.
+
+If your account belongs to more than one RaidLead team, a picker appears
+after login so you can choose which one to sync -- most accounts only have
+one and never see this.
+
+You can revoke a device's access at any time from the website (Account menu
+→ My Profile → Connected Devices) without needing to be at that computer --
+useful if a laptop is lost or a device is no longer trusted.
 
 ## Update notifications
 
@@ -50,10 +63,22 @@ The installer is never committed to this repo or deployed with the site --
 at 100MB+ it's over both GitHub's and Vercel's per-file limits, so it only
 ever exists as a GitHub Release asset.
 
-## Why this exists instead of the `.bat`/Task Scheduler setup
+## Why this exists instead of the old bridge-folder / `.bat`/Task Scheduler setup
 
-That approach turned out to be fragile in ways only found by testing against
-a real machine, not from reading the code:
+The original design routed everything through a browser-picked "bridge
+folder," because a browser's File System Access API categorically refuses
+access to anything under `Program Files` (where WoW normally lives), so a
+website could never talk to the real SavedVariables files directly. This app
+was never actually subject to that restriction -- it's a native desktop app,
+same as WoW itself, and always could read/write there directly (see
+`wowPaths.js`). The bridge folder existed purely because this app had no way
+to authenticate to RaidLead's backend on its own; the browser's already-
+logged-in session was standing in as a relay. Giving this app its own login
+(above) removes the need for that relay entirely.
+
+Before *that*, an even older approach used a `.bat` / Windows Task Scheduler
+/ hidden-`wscript.exe` script, which turned out to be fragile in ways only
+found by testing against a real machine, not from reading the code:
 
 - Antivirus quietly deleting the downloaded `.ps1`/`.vbs` files.
 - Windows' Controlled Folder Access silently blocking those file types from
@@ -75,11 +100,9 @@ npm start
 ```
 
 First run: open Settings (tray icon, or the window that opens
-automatically), browse to your WoW AddOns folder (the one you copied
-`RaidLead` into), and browse to your `RaidLead Docs` bridge folder (the same
-one connected on the website's Loot tab). That's it -- which WoW account is
-yours is re-detected automatically every time, same as the PowerShell
-script, so there's nothing to pick.
+automatically), click **Log In**, and browse to your WoW AddOns folder (the
+one you copied `RaidLead` into). That's it -- which WoW account is yours is
+re-detected automatically every time, so there's nothing to pick there.
 
 "Start automatically when Windows starts" is on by default -- turn it off in
 Settings if you'd rather launch it manually.
