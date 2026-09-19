@@ -12,28 +12,22 @@
 --
 -- 2. Group Loot (Need/Greed roll, highest roll wins) -- via the
 --    C_LootHistory API and LOOT_HISTORY_UPDATE_DROP event (see below).
---    NEEDS LIVE-CLIENT VERIFICATION: the API shape here is drawn from
---    Warcraft Wiki documentation (C_LootHistory.GetSortedDropsForEncounter/
---    GetSortedInfoForDrop, EncounterLootDropInfo/EncounterLootDropRollInfo),
---    cross-checked against multiple pages, but has NOT been exercised
---    against a live client. Specifically unverified: (a) that
---    LOOT_HISTORY_UPDATE_DROP actually fires for every raid member's
---    client and not just the loot master/raid leader -- if it turns out
---    to be leader-only, an officer's game session becomes a hard
---    requirement for this data to get captured at all; (b) that `winner`
---    is nil until the roll truly resolves and never populated
---    prematurely; (c) the exact Enum.EncounterLootDropRollState values
---    (assumed below: 0 NeedMainSpec, 1 NeedOffSpec, 2 Transmog, 3 Greed,
---    4 NoRoll, 5 Pass). Test in a 5-man with Group Loot set as the loot
---    method before trusting this in a real raid -- kill anything that
---    drops a rollable item, roll Need, and confirm a record appears with
---    lootMethod="roll" and the right winner/rollType/rollValue.
+--    Confirmed working against a live client: drops resolve and the
+--    correct winner is captured. Still unverified: the exact
+--    Enum.EncounterLootDropRollState values (assumed below: 0
+--    NeedMainSpec, 1 NeedOffSpec, 2 Transmog, 3 Greed, 4 NoRoll, 5 Pass) --
+--    if a record's rollType ever looks wrong, check a real roll's state
+--    against these before assuming a different bug.
 --
 -- Parsing loot chat text: Blizzard ships the exact format strings used to
 -- build these messages (LOOT_ITEM, LOOT_ITEM_MULTIPLE, LOOT_ITEM_SELF,
 -- LOOT_ITEM_SELF_MULTIPLE) specifically so addons don't have to hardcode
 -- English text -- they work in every client locale. We convert each one
 -- into a Lua pattern once at load time.
+--
+-- Quality floor: neither path records anything below Uncommon (Poor/Common
+-- trash is never worth tracking, boss kill or Group Loot roll or not) --
+-- see meetsQualityFloor below.
 -- ============================================================
 local _, RaidLead = ...
 
@@ -51,6 +45,15 @@ RaidLead.TIER_TOKEN_ITEM_IDS = {
 local ITEM_CLASS_ARMOR  = Enum.ItemClass and Enum.ItemClass.Armor  or 4
 local ITEM_CLASS_WEAPON = Enum.ItemClass and Enum.ItemClass.Weapon or 2
 local QUALITY_EPIC      = Enum.ItemQuality and Enum.ItemQuality.Epic or 4
+local QUALITY_UNCOMMON  = Enum.ItemQuality and Enum.ItemQuality.Uncommon or 2
+
+-- Floor for capturing anything at all -- Poor (0)/Common (1) trash (vendor
+-- greys, random world-drop greens' little cousins, cloth/leather stacks
+-- that sometimes get rolled on in Group Loot) is never worth recording,
+-- boss kill or not.
+local function meetsQualityFloor(itemQuality)
+  return itemQuality and itemQuality >= QUALITY_UNCOMMON
+end
 
 local UPGRADE_TRACKS = { 'Veteran', 'Champion', 'Hero', 'Mythic' }
 
@@ -270,6 +273,8 @@ function RaidLead.HandleLootMessage(msg)
     if not itemId then return end
 
     resolveItemMetaAsync(itemLink, function(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
+      if not meetsQualityFloor(itemQuality) then return end
+
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
       local isBossLoot  = currentEncounter ~= nil
 
@@ -351,7 +356,9 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
       encounterName = EJ_GetEncounterInfo(encounterID)
     end
 
-    resolveItemMetaAsync(itemLink, function(itemName, _, _, _, itemMeta)
+    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, _, itemMeta)
+      if not meetsQualityFloor(itemQuality) then return end
+
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
       recordLoot(winnerName, itemLink, itemId, itemName, isTierToken, false, itemMeta,
         { rollType = rollType, rollValue = rollValue, participants = participants },
