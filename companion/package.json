@@ -1,6 +1,6 @@
 {
   "name": "raidlead-companion",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "Desktop companion for the RaidLead WoW addon -- reads your addon's saved loot data and writes your published roster into WoW, syncing with your RaidLead account in the background once you log in (a one-time browser approval, not a stored password). Also checks raidlead.vercel.app/updates for a newer version -- it never downloads or installs anything on its own.",
   "main": "src/main.js",
