@@ -117,3 +117,12 @@ at for the installer/exe icon, since a plain PNG renders blurry there. An
 unsigned `.exe` can still draw a SmartScreen prompt on first run -- code
 signing would remove that, but is a separate cost/setup decision, not
 something this app can route around on its own.
+
+`build/installer.nsh` (a custom NSIS hook electron-builder picks up
+automatically) force-closes any already-running copy of the app the moment
+the installer starts, via `taskkill /f`. electron-builder's own default
+behavior tries a gentler close-then-kill first, but in practice that still
+left a process behind that had to be killed by hand in Task Manager before
+install could proceed -- this app has no unsaved state worth a graceful
+shutdown for (everything's already on disk or safely re-fetched next
+launch), so skipping straight to a forced kill is the more reliable choice.

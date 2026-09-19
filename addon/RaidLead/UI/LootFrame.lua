@@ -8,12 +8,13 @@
 --
 -- Why "Prepare for Sync" reloads the UI rather than uploading directly:
 -- no WoW addon can make a network call, ever, regardless of what triggers
--- it (logout included) -- the actual upload always happens through the
--- browser on RaidLead's Loot tab. What this button *can* do is force
--- WoW to flush this session's data to disk right now (via ReloadUI(),
--- same effect as typing /reload) instead of waiting for the player to
--- naturally reload or log out, so the freshest data is ready whenever
--- they do go sync it on the website.
+-- it (logout included) -- uploading is entirely RaidLead Companion's job
+-- (see companion/src/sync.js), which watches this addon's SavedVariables
+-- file and uploads whatever it finds there. What this button *can* do is
+-- force WoW to flush this session's data to disk right now (via
+-- ReloadUI(), same effect as typing /reload) instead of waiting for the
+-- player to naturally reload or log out, so Companion has something to
+-- pick up immediately rather than whenever that next happens anyway.
 -- ============================================================
 local _, RaidLead = ...
 RaidLead.UI = RaidLead.UI or {}
@@ -24,7 +25,7 @@ local ROW_GAP = 4
 local MAX_VISIBLE_ROWS = 16
 
 StaticPopupDialogs['RAIDLEAD_CONFIRM_RELOAD'] = {
-  text = 'Reload your UI now to save this session\'s loot to disk?\n\nAfter reloading, go to RaidLead\'s Loot tab on the website and click Sync Now to actually upload it.',
+  text = 'Reload your UI now to save this session\'s loot to disk?\n\nRaidLead Companion (if it\'s running) will upload it automatically shortly after.',
   button1 = 'Reload Now',
   button2 = 'Cancel',
   OnAccept = function() ReloadUI() end,
@@ -128,7 +129,8 @@ function UI.RefreshLoot()
     row:SetPoint('TOPLEFT', prevAnchor, prevRelPoint, 0, i == 1 and 0 or -ROW_GAP)
 
     local tag = record.isTierToken and '|cffc8a84bTier|r ' or (record.isBoe and '|cff888888BoE|r ' or '')
-    row.left:SetText(string.format('%s%s  |cff888888(%s)|r', tag, record.itemName or ('Item ' .. tostring(record.itemId)), record.bossName or 'Trash'))
+    local bindSuffix = record.bindType and (' · ' .. record.bindType) or ''
+    row.left:SetText(string.format('%s%s  |cff888888(%s%s)|r', tag, record.itemName or ('Item ' .. tostring(record.itemId)), record.bossName or 'Trash', bindSuffix))
     row.right:SetText(record.recipientName or '?')
 
     prevAnchor, prevRelPoint = row, 'BOTTOMLEFT'

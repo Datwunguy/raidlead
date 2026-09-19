@@ -57,6 +57,13 @@ alter table loot_drops add column if not exists upgrade_level_max  int;    -- e.
 alter table loot_drops add column if not exists item_slot          text;  -- e.g. "Head", "Neck", "Trinket"
 alter table loot_drops add column if not exists armor_type         text;  -- Cloth / Leather / Mail / Plate (armor only)
 
+-- Real bind type, straight off GetItemInfo's bindType return (Enum.ItemBind)
+-- -- unlike is_boe above (a capture-eligibility heuristic for untracked trash
+-- drops, not derived from this), this is set for every drop, boss loot
+-- included. See addon/RaidLead/Loot.lua's BIND_TYPE_NAMES for the value set
+-- ("Soulbound", "BoE", "Warbound", "Warbound Until Equipped", etc).
+alter table loot_drops add column if not exists bind_type          text;
+
 -- Manual per-character checklist for "one tier token per member" tracking --
 -- deliberately separate from the auto-captured is_tier_token drops, since
 -- officers need to hand-confirm this regardless of what the addon saw (a

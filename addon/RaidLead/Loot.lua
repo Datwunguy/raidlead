@@ -54,6 +54,20 @@ local QUALITY_EPIC      = Enum.ItemQuality and Enum.ItemQuality.Epic or 4
 
 local UPGRADE_TRACKS = { 'Veteran', 'Champion', 'Hero', 'Mythic' }
 
+-- Enum.ItemBind -- bindType is GetItemInfo's 14th return value, confirmed
+-- against https://warcraft.wiki.gg/wiki/Enum.ItemBind. Values 7-9 are the
+-- Warband-account terminology introduced in patch 11.0.0 (War Within);
+-- anything not listed here (e.g. 0/None) is left unshown rather than guessed.
+local BIND_TYPE_NAMES = {
+  [1] = 'Soulbound',              -- OnAcquire (bind on pickup)
+  [2] = 'BoE',                    -- OnEquip
+  [3] = 'Binds on Use',           -- OnUse
+  [4] = 'Quest Item',             -- Quest
+  [7] = 'Account Bound',          -- ToWoWAccount (legacy BoA)
+  [8] = 'Warbound',               -- ToBnetAccount
+  [9] = 'Warbound Until Equipped', -- ToBnetAccountUntilEquipped
+}
+
 -- Item quality TRACK (Veteran/Champion/Hero/Mythic) and upgrade level (e.g.
 -- "4/8") aren't exposed by GetItemInfo -- they only ever show up as tooltip
 -- text. NEEDS LIVE-CLIENT VERIFICATION: this scans every tooltip line for
@@ -201,6 +215,7 @@ local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken
     upgradeLevelMax = itemMeta.upgradeLevelMax,
     itemSlot       = itemMeta.itemSlot,
     armorType      = itemMeta.armorType,
+    bindType       = itemMeta.bindType,
     lootMethod     = rollInfo and 'roll' or 'personal',
     rollType       = rollInfo and rollInfo.rollType or nil,
     rollValue      = rollInfo and rollInfo.rollValue or nil,
@@ -219,7 +234,8 @@ end
 local function resolveItemMetaAsync(itemLink, callback)
   local item = Item:CreateFromItemLink(itemLink)
   item:ContinueOnItemLoad(function()
-    local itemName, _, itemQuality, itemLevel, _, _, itemSubType, _, itemEquipLoc, _, _, itemClassID = GetItemInfo(itemLink)
+    local itemName, _, itemQuality, itemLevel, _, _, itemSubType, _, itemEquipLoc, _, _, itemClassID, _, bindType =
+      GetItemInfo(itemLink)
     if not itemQuality then return end
 
     -- itemEquipLoc is an internal token (e.g. "INVTYPE_HEAD") -- Blizzard
@@ -232,6 +248,7 @@ local function resolveItemMetaAsync(itemLink, callback)
     local itemMeta = {
       itemSlot = itemSlot, armorType = armorType,
       qualityTrack = qualityTrack, upgradeLevel = upgradeLevel, upgradeLevelMax = upgradeLevelMax,
+      bindType = BIND_TYPE_NAMES[bindType],
     }
     callback(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
   end)

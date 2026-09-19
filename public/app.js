@@ -2389,6 +2389,7 @@ async function resetTierChecklist() {
 
 // name -> Blizzard's real in-game color for that upgrade track badge.
 const QUALITY_TRACK_COLORS = { Veteran: '#1eff00', Champion: '#0070dd', Hero: '#a335ee', Mythic: '#ff8000' };
+const BIND_TYPE_COLORS = { Warbound: 'var(--accent)', 'Warbound Until Equipped': 'var(--accent)', BoE: 'var(--red)' };
 
 function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
   const el = document.getElementById(targetId);
@@ -2449,12 +2450,18 @@ function renderLootRow(d, isOfficer) {
     ? `<span style="color:${trackColor || 'var(--text-mute)'}; margin-left:6px;">${d.item_quality_track}${d.upgrade_level ? ` ${d.upgrade_level}/${d.upgrade_level_max || '?'}` : ''}</span>`
     : '';
   const metaBits = [d.item_slot, d.armor_type].filter(Boolean).join(' · ');
+  // bind_type is the real GetItemInfo-reported bind (set on every drop, not
+  // just untracked trash BoEs) -- prefer it, and only fall back to the older
+  // is_boe heuristic badge for records captured before bind_type existed.
+  const bindBadge = d.bind_type
+    ? `<span style="color:${BIND_TYPE_COLORS[d.bind_type] || 'var(--text-mute)'}; margin-left:6px;">${d.bind_type}</span>`
+    : (d.is_boe ? '<span style="color:var(--text-mute); margin-left:6px;">BoE</span>' : '');
   return `
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:6px 8px; background:var(--bg2); border-radius:4px;">
       <div>
         <span style="font-weight:600;">${d.item_name || ('Item ' + d.item_id)}</span>
         ${d.is_tier_token ? '<span style="color:var(--gold); margin-left:6px;">Tier Token</span>' : ''}
-        ${d.is_boe ? '<span style="color:var(--text-mute); margin-left:6px;">BoE</span>' : ''}
+        ${bindBadge}
         ${trackBadge}
         <span style="color:var(--text-mute); margin-left:6px;">${d.boss_name || 'Trash'}</span>
         ${metaBits ? `<span style="color:var(--text-mute); margin-left:6px;">(${metaBits})</span>` : ''}
