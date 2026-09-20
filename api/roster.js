@@ -82,12 +82,6 @@ async function wclQuery(query, creds) {
   return await resp.json();
 }
 
-function normaliseTs(ts) {
-  if (!ts || ts === 0) return 0;
-  // WCL sometimes returns seconds, sometimes ms — normalise to ms
-  return ts < 9999999999 ? ts * 1000 : ts;
-}
-
 // Fetches ALL reports for a guild+zone by paginating through WCL's reports connection.
 // A single page is capped at 50 by WCL, and a guild can easily have logged more than
 // that for one zone/tier -- callers that need the true earliest report (to compute
@@ -164,101 +158,6 @@ module.exports = async (req, res) => {
       const data = await wclQuery(`query { worldData { zones { id name frozen } } }`, creds);
       return res.status(200).json(data);
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
-  }
-
-  // ── PROGRESSION: own guild + benchmark data for Compare tab ──
-  // Uses only worldData (client credentials compatible — reportData requires OAuth)
-  if (action === 'progression') {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, guildName, serverSlug, region: rawRegion, zoneId, diffId, startMs, endMs, bossIds, wclGuildId } = req.body || {};
-    const region = toWclRegion(rawRegion);
-
-    try {
-      await assertTeamOwnership(teamId, { requireOfficer: true });
-      const creds = await resolveWclCredentials(teamId);
-      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
-      if (!bossIds || bossIds.length === 0) return res.status(400).json({ error: 'bossIds required' });
-
-      // ── Batch all bosses in chunks of 5 using GraphQL aliases ──
-      // Each boss gets: guildRankings (all guilds, for benchmark)
-      // We also search for this specific guild within those rankings for "own" data
-      const benchmark = {};
-
-      // Query one boss at a time to stay under WCL's 50k complexity limit
-      // Strategy: fetch page 1 to get total count, then jump to last page
-      // metric:progress sorts by speed (world-first first), so last page = most recent kills
-      // This gives us the most recent first-kills in just 2 API calls per boss
-      function parseRankings(raw) {
-        if (typeof raw === 'string') {
-          try {
-            const p = JSON.parse(raw);
-            return { rankings: p?.rankings || p?.data || [], hasMore: p?.hasMorePages || false };
-          } catch(e) { return { rankings: [], hasMore: false }; }
-        }
-        if (raw?.rankings) return { rankings: raw.rankings, hasMore: raw.hasMorePages || false };
-        if (Array.isArray(raw)) return { rankings: raw, hasMore: false };
-        return { rankings: [], hasMore: false };
-      }
-
-      for (const id of bossIds) {
-        try {
-          const baseArgs = `difficulty: ${diffId} serverRegion: "${region}" metric: progress`;
-          // metric:progress sorts by speed (world-first first, most recent last)
-          // We page forward until we find kills within the date window
-          // Cap at 15 pages (750 guilds) to limit API usage
-          const MAX_PAGES = 15;
-          let found = [];
-          let page = 1;
-
-          while (page <= MAX_PAGES) {
-            const q = `query { worldData { encounter(id: ${id}) { fightRankings(${baseArgs} page: ${page}) } } }`;
-            const r = await wclQuery(q, creds);
-            if (r?.errors) { console.log('[progression] boss', id, 'p'+page+' error:', r.errors[0]?.message); break; }
-
-            const rawFR = r?.data?.worldData?.encounter?.fightRankings;
-            // Log full raw structure on page 1 to find count/total field
-            if (page === 1) {
-              if (typeof rawFR === 'string') {
-                try { const p = JSON.parse(rawFR); console.log('[progression] boss', id, 'page1 keys:', Object.keys(p).join(','), '| count:', p.count, '| total:', p.total, '| hasMore:', p.hasMorePages, '| rankings len:', p.rankings?.length); } catch(e) {}
-              } else if (rawFR) {
-                console.log('[progression] boss', id, 'page1 keys:', Object.keys(rawFR).join(','), '| count:', rawFR.count, '| total:', rawFR.total, '| hasMore:', rawFR.hasMorePages);
-              }
-            }
-            const { rankings, hasMore } = parseRankings(rawFR);
-            if (!rankings.length) break;
-
-            // Check if any kill on this page is within our window
-            const inWindow = rankings.filter(r => {
-              const ts = normaliseTs(r.startTime || r.start_time || r.date || 0);
-              return ts >= startMs && ts <= endMs;
-            });
-
-            // Check if we've gone past the window (all kills newer than endMs)
-            const allNewer = rankings.every(r => {
-              const ts = normaliseTs(r.startTime || r.start_time || r.date || 0);
-              return ts > endMs;
-            });
-
-            if (inWindow.length > 0) { found = found.concat(inWindow); }
-            if (allNewer) break; // Past the window, stop
-            if (!hasMore) break; // No more pages
-            page++;
-          }
-
-          const hitMaxPages = (found.length === 0 && page > MAX_PAGES);
-          benchmark[id] = { kills: found, hitMaxPages };
-          console.log('[progression] boss', id, 'pages checked:', page, 'in window:', found.length, hitMaxPages ? '(hit max pages — boss popular/old)' : '');
-        } catch(e) {
-          console.error('[progression] boss', id, 'error:', e.message);
-          benchmark[id] = [];
-        }
-      }
-
-      return res.status(200).json({ benchmark });
-    } catch(err) {
-      console.error('progression error:', err);
-      return res.status(err.status || 500).json({ error: err.message });
-    }
   }
 
   // ── WCL QUERY PROXY (officers only) ──

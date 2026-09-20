@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260918">
+<link rel="stylesheet" href="styles.css?v=20260919">
 </head>
 <body>
 <div id="app">
@@ -587,49 +587,6 @@
         </div>
       </div>
 
-      <!-- COMPARE TAB (Phase 2) -->
-      <div class="tab-content" id="tab-compare">
-        <div class="section-header">
-          <div class="section-title">Progression Benchmark</div>
-        </div>
-
-        <!-- COMPARE TOOLBAR -->
-        <div class="scores-toolbar" id="compare-toolbar">
-          <div class="scores-toolbar-left" style="flex-wrap:wrap; gap:10px;">
-            <!-- Difficulty -->
-            <div class="role-filter" id="compare-diff-filter">
-              <button class="filter-btn" onclick="setCompareDifficulty('lfr', this)">LFR</button>
-              <button class="filter-btn" onclick="setCompareDifficulty('normal', this)">Normal</button>
-              <button class="filter-btn" onclick="setCompareDifficulty('heroic', this)">Heroic</button>
-              <button class="filter-btn active" onclick="setCompareDifficulty('mythic', this)">Mythic</button>
-            </div>
-            <!-- Date range -->
-            <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-dim);">
-              <span style="letter-spacing:1px; text-transform:uppercase; font-size:11px;">Since</span>
-              <input type="date" id="compare-date-input"
-                style="background:var(--bg3); border:1px solid var(--border); border-radius:4px;
-                       color:var(--text); font-family:'Rajdhani',sans-serif; font-size:12px;
-                       padding:4px 8px; cursor:pointer;"
-                onchange="onCompareDateChange()" />
-              <span id="compare-region-badge"
-                style="background:rgba(200,168,75,0.08); border:1px solid var(--border);
-                       border-radius:4px; padding:3px 8px; font-size:11px; letter-spacing:1px;
-                       color:var(--gold-dim); text-transform:uppercase;"></span>
-            </div>
-          </div>
-          <button class="fetch-btn" id="compare-fetch-btn" onclick="fetchCompareData()" style="display:none;">⚔ Fetch Data</button>
-        </div>
-
-        <!-- COMPARE CONTENT -->
-        <div id="compare-content" style="margin-top:16px;">
-          <div class="empty-state" style="padding:60px;">
-            <div class="empty-state-icon">📊</div>
-            <h3>No Data Loaded</h3>
-            <p>Click "Fetch Data" to load your guild's progression and regional benchmarks.</p>
-          </div>
-        </div>
-      </div>
-
       <!-- RAID NIGHT TAB (internally still "planner" -- tab id/JS names unchanged) -->
       <div class="tab-content" id="tab-planner">
         <div class="section-header" style="flex-wrap:wrap; gap:10px;">
@@ -1119,6 +1076,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260919"></script>
+<script src="app.js?v=20260919b"></script>
 </body>
 </html>

@@ -902,34 +902,6 @@
 
   .empty-state-icon { font-size: 48px; opacity: 0.3; }
 
-  /* ── COMPARE TAB ── */
-  .compare-stat {
-    background: var(--bg3);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 6px 10px;
-  }
-  .compare-stat-label {
-    font-size: 10px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    color: var(--text-mute);
-    margin-bottom: 2px;
-  }
-  .compare-stat-value {
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--text);
-    font-family: 'Rajdhani', sans-serif;
-  }
-  .compare-boss-card tbody tr:hover { background: var(--bg3); }
-  .compare-boss-card tbody td { padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,0.03); }
-
-  @media (max-width: 768px) {
-    .compare-boss-card > div > div[style*="grid-template-columns:1fr 2fr"] {
-      grid-template-columns: 1fr !important;
-    }
-  }
   .empty-state h3 { font-size: 16px; color: var(--text-dim); letter-spacing: 2px; }
   .empty-state p { font-size: 13px; max-width: 300px; line-height: 1.6; }
 
