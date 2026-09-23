@@ -165,10 +165,28 @@
             </select>
           </div>
         </div>
-        <div class="form-row" id="inp-zone-row" style="display:none;">
+        <div class="form-row">
           <div class="form-group full">
-            <label>Current Raid Zone <span style="color:var(--text-mute);font-weight:400;">(detected automatically once WCL credentials below are connected -- nothing to fill in here)</span></label>
-            <div id="inp-zone-display" style="padding:8px 14px; color:var(--text-dim);">Not detected yet</div>
+            <label>WowAudit API Key <span style="color:var(--text-mute);font-weight:400;">(optional — powers the "Import from WowAudit" button on the Roster tab. Your roster is managed directly on RaidLead either way; this just saves typing everyone in by hand)</span></label>
+
+            <details style="margin-bottom:14px;">
+              <summary style="cursor:pointer; font-size:16px; color:var(--gold); text-transform:none; letter-spacing:0; font-weight:700;">How do I get this?</summary>
+              <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
+                <li>Open your team on WowAudit and go to Settings &gt; API.</li>
+                <li>Copy the API key shown there and paste it in below.</li>
+              </ol>
+            </details>
+
+            <div class="form-row" style="margin-bottom:0;">
+              <div class="form-group full">
+                <input type="password" id="inp-wowaudit-key" placeholder="Paste your WowAudit API key" autocomplete="off" />
+              </div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+              <button class="btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="saveWowauditKey()">Save</button>
+            </div>
+            <div id="wowaudit-key-msg" class="status-msg" style="margin-top:6px;"></div>
+            <div id="wowaudit-key-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
           </div>
         </div>
         <div class="form-row">
@@ -202,28 +220,10 @@
             <div id="wcl-creds-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
           </div>
         </div>
-        <div class="form-row">
+        <div class="form-row" id="inp-zone-row" style="display:none;">
           <div class="form-group full">
-            <label>WowAudit API Key <span style="color:var(--text-mute);font-weight:400;">(optional — powers the "Import from WowAudit" button on the Roster tab. Your roster is managed directly on RaidLead either way; this just saves typing everyone in by hand)</span></label>
-
-            <details style="margin-bottom:14px;">
-              <summary style="cursor:pointer; font-size:16px; color:var(--gold); text-transform:none; letter-spacing:0; font-weight:700;">How do I get this?</summary>
-              <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
-                <li>Open your team on WowAudit and go to Settings &gt; API.</li>
-                <li>Copy the API key shown there and paste it in below.</li>
-              </ol>
-            </details>
-
-            <div class="form-row" style="margin-bottom:0;">
-              <div class="form-group full">
-                <input type="password" id="inp-wowaudit-key" placeholder="Paste your WowAudit API key" autocomplete="off" />
-              </div>
-            </div>
-            <div style="display:flex; gap:10px; margin-top:10px;">
-              <button class="btn-secondary" style="padding:8px 16px; font-size:13px;" onclick="saveWowauditKey()">Save</button>
-            </div>
-            <div id="wowaudit-key-msg" class="status-msg" style="margin-top:6px;"></div>
-            <div id="wowaudit-key-status" style="font-size:13px; color:var(--text-dim); margin-top:10px;"></div>
+            <label>Current Raid Zone <span style="color:var(--text-mute);font-weight:400;">(detected automatically once WCL credentials above are connected -- nothing to fill in here)</span></label>
+            <div id="inp-zone-display" style="padding:8px 14px; color:var(--text-dim);">Not detected yet</div>
           </div>
         </div>
         <div class="form-row" id="multi-team-row">
@@ -1082,6 +1082,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260922"></script>
+<script src="app.js?v=20260922b"></script>
 </body>
 </html>

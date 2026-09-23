@@ -2991,7 +2991,18 @@ async function detectCurrentZone() {
     // "(PTR)" suffix on the name (confirmed against WCL's own page titles,
     // e.g. "Mythic Sporefall (PTR)") -- exclude those or a PTR zone would
     // false-positive as "the new season" weeks before it actually ships.
-    const active = zones.filter(z => !z.frozen && !/\(PTR\)/i.test(z.name || ''));
+    //
+    // WCL's zones list also isn't raid-only -- it's every "zone" on the
+    // site (the Zone type's own doc says "a raid, dungeon, arena, etc."),
+    // and confirmed live: a Mythic+ season rotation (e.g. "Mythic+ Season
+    // 2") shows up in this same list, non-frozen, often with a HIGHER id
+    // than the actual current raid since keystone seasons ship on their
+    // own cadence. There's no type/category field in the API to filter on
+    // (checked WCL's schema directly) -- only the naming convention: these
+    // wrapper zones are always named "<Content Type> Season N", which no
+    // real raid tier is ever named. Exclude that pattern too.
+    const active = zones.filter(z =>
+      !z.frozen && !/\(PTR\)/i.test(z.name || '') && !/season\s*\d+/i.test(z.name || ''));
     if (active.length === 0) return null;
     active.sort((a, b) => b.id - a.id);
     return active[0];
