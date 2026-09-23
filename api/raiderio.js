@@ -51,6 +51,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
+const { CURRENT_EXPANSION_ID_FALLBACK } = require('../lib/raiderioRaids');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
@@ -524,13 +525,15 @@ module.exports = async (req, res) => {
   // not a hardcoded ID.
   const EXPANSION_NAMES = ['Midnight', 'The War Within', 'Dragonflight'];
 
-  // Fallback for the discovery block below, used only when live discovery
-  // fails (e.g. the instance-rankings outage that made the dropdown vanish
-  // entirely). The raid *list* itself comes from static-data, which doesn't
-  // depend on instance-rankings at all -- so as long as this ID is correct,
-  // the dropdown keeps working through an instance-rankings outage. Keep in
-  // sync with EXPANSION_NAMES[0] when a new expansion ships.
-  const CURRENT_EXPANSION_ID_FALLBACK = 11; // Midnight, as of 2026-09
+  // CURRENT_EXPANSION_ID_FALLBACK now lives in lib/raiderioRaids.js (shared
+  // with advanceSeason's credential-free zone detection) -- one place to
+  // update per expansion instead of two that can drift out of sync. Keep
+  // it in sync with EXPANSION_NAMES[0] when a new expansion ships. Used
+  // only when live discovery below fails (e.g. the instance-rankings
+  // outage that made the dropdown vanish entirely) -- the raid *list*
+  // itself comes from static-data, which doesn't depend on
+  // instance-rankings at all, so the dropdown keeps working through that
+  // kind of outage as long as this ID is correct.
 
   // ── LIST RAIDS: every raid from the 3 most recent expansions, for the
   // raid-tier selector -- not filtered to what this guild has raided, so

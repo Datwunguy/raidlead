@@ -13,12 +13,30 @@
 -- advanceSeason action).
 -- ============================================================
 
+-- zone_name (not zone_id) is the identity key: Raider.io's per-region raid
+-- launch dates are now the primary detection source (no WCL credentials
+-- needed), and Raider.io's raid IDs are a completely different numbering
+-- system from WCL's zone IDs -- there's no shared key between the two
+-- services. zone_id is populated as a best-effort enrichment (by matching
+-- this zone_name against the team's own WCL zone list, when they have WCL
+-- credentials connected) so WCL-specific features (Scores, Mitigation)
+-- keep working for teams that have it -- but it's optional, since a
+-- credential-less team can have a perfectly good season with no WCL zone
+-- number at all.
 create table if not exists global_zone_transitions (
-  zone_id           int primary key,
-  zone_name         text not null,
+  zone_id           int,
+  zone_name         text primary key,
   first_detected_at date not null default current_date,
   created_at        timestamptz not null default now()
 );
+-- The block above is a no-op against an already-existing table (Postgres
+-- doesn't diff columns/constraints on IF NOT EXISTS) -- this repo's live
+-- table still has zone_id as the primary key from the original version of
+-- this file. Migrate it explicitly: drop that PK, free up zone_id to be
+-- nullable, then make zone_name the real primary key.
+alter table global_zone_transitions drop constraint if exists global_zone_transitions_pkey;
+alter table global_zone_transitions alter column zone_id drop not null;
+alter table global_zone_transitions add constraint global_zone_transitions_pkey primary key (zone_name);
 
 -- One row per team per season. ended_at is null for the current season --
 -- the partial unique index below guarantees a team can never have more than
@@ -27,12 +45,13 @@ create table if not exists global_zone_transitions (
 create table if not exists seasons (
   id         uuid primary key default gen_random_uuid(),
   team_id    uuid not null references teams(id) on delete cascade,
-  zone_id    int not null,
+  zone_id    int,
   zone_name  text not null,
   started_at date not null,
   ended_at   date,
   created_at timestamptz not null default now()
 );
+alter table seasons alter column zone_id drop not null;
 
 create unique index if not exists seasons_one_current_per_team
   on seasons(team_id) where ended_at is null;

@@ -16,6 +16,8 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
+const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
+const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
 
 // Cache listIlvl's live Raider.io results per team briefly, so several
 // people opening the Roster tab around the same time don't each trigger a
@@ -160,18 +162,43 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── ADVANCE SEASON (officer only): called silently from the boot-path
-  // zone-detection check when the client's PTR-filtered detectCurrentZone()
-  // finds a live zone that differs from this team's current one. Never asks
-  // for confirmation -- the whole point is a season transition just happens,
-  // the same way for every team, the moment it's noticed. ──
+  // ── ADVANCE SEASON (officer only): fully self-contained -- called
+  // silently on every officer page load with nothing but a teamId, and
+  // decides everything itself:
+  //   1. Raider.io's static-data (primary) -- no WCL credentials needed,
+  //      and its per-region start/end dates are real Blizzard-confirmed
+  //      dates, not a guess based on who happened to notice first.
+  //   2. If the team has WCL credentials, look up that same raid *by name*
+  //      in their own WCL zone list to fill in a real zone_id (needed for
+  //      Scores/Mitigation) -- not found, or no credentials, zone_id just
+  //      stays null, which is fine since those features are already
+  //      unavailable to a credential-less team regardless.
+  //   3. If Raider.io itself can't resolve anything (network hiccup, or a
+  //      brand-new expansion not in its static data yet) and the team has
+  //      WCL credentials, fall back to the WCL-only PTR/season-filtered
+  //      detection as a last resort.
+  // zone_name is the identity key throughout (see sql/2026_09_seasons.sql
+  // for why) -- zone_id is populated opportunistically, never required.
   if (action === 'advanceSeason') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, zoneId, zoneName } = req.body || {};
-    if (!teamId || !zoneId || !zoneName) return res.status(400).json({ error: 'teamId, zoneId, and zoneName required' });
+    const { teamId } = req.body || {};
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
 
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
+
+      const { data: team } = await supabase
+        .from('teams').select('zone_name, guilds ( region )').eq('id', teamId).single();
+      if (!team) return res.status(404).json({ error: 'Team not found' });
+
+      let detected = await resolveCurrentRaidByDate(team.guilds?.region || 'us');
+      if (!detected) detected = await detectCurrentWclZone(supabase, teamId);
+      if (!detected) return res.status(200).json({ success: true, changed: false, reason: 'no_source_available' });
+
+      const zoneName = detected.zoneName;
+      if (zoneName === team.zone_name) return res.status(200).json({ success: true, changed: false });
+
+      const zoneId = detected.zoneId ?? await lookupWclZoneIdByName(supabase, teamId, zoneName);
 
       // A raid tier launches on one real date -- every team transitioning
       // into this same zone, whenever they get to it, should record the
@@ -181,21 +208,22 @@ module.exports = async (req, res) => {
       const today = new Date().toISOString().slice(0, 10);
       await supabase
         .from('global_zone_transitions')
-        .upsert({ zone_id: zoneId, zone_name: zoneName, first_detected_at: today }, { onConflict: 'zone_id', ignoreDuplicates: true });
+        .upsert({ zone_id: zoneId, zone_name: zoneName, first_detected_at: today }, { onConflict: 'zone_name', ignoreDuplicates: true });
       const { data: transition } = await supabase
-        .from('global_zone_transitions').select('first_detected_at').eq('zone_id', zoneId).single();
+        .from('global_zone_transitions').select('first_detected_at').eq('zone_name', zoneName).single();
       const transitionDate = transition?.first_detected_at || today;
 
       // Close the current season (if one exists yet -- a brand-new team may
       // not have one at all, in which case there's nothing to close). The
-      // `neq('zone_id', zoneId)` guard matters for the race case below: if a
-      // second officer session's request lands after the first one already
-      // advanced, "the open season" is now the brand-new one for this same
-      // zone -- without this guard, a blind `ended_at IS NULL` match would
-      // immediately re-close the season the first request just opened.
+      // `neq('zone_name', zoneName)` guard matters for the race case below:
+      // if a second officer session's request lands after the first one
+      // already advanced, "the open season" is now the brand-new one for
+      // this same zone -- without this guard, a blind `ended_at IS NULL`
+      // match would immediately re-close the season the first request just
+      // opened.
       await supabase
         .from('seasons').update({ ended_at: transitionDate })
-        .eq('team_id', teamId).is('ended_at', null).neq('zone_id', zoneId);
+        .eq('team_id', teamId).is('ended_at', null).neq('zone_name', zoneName);
 
       // Open the new one. The partial unique index (one open season per
       // team) makes this safe if two officer sessions race -- the loser's
@@ -207,7 +235,7 @@ module.exports = async (req, res) => {
 
       await supabase.from('teams').update({ zone_id: zoneId, zone_name: zoneName }).eq('id', teamId);
 
-      return res.status(200).json({ success: true, zoneId, zoneName, startedAt: transitionDate });
+      return res.status(200).json({ success: true, changed: true, zoneId, zoneName, startedAt: transitionDate });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 

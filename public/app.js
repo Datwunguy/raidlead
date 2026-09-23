@@ -3054,16 +3054,18 @@ async function checkAndAdvanceSeason() {
   if (!['owner', 'officer'].includes(STATE.myRole)) return;
   if (!STATE.teamId) return;
   try {
-    const detected = await detectCurrentZone();
-    if (!detected || detected.id === STATE.zoneId) return;
-
+    // Detection now lives entirely server-side (Raider.io primary, WCL
+    // fallback -- see api/roster.js's advanceSeason) since it needs to
+    // cross-reference the team's own WCL zone list too, not just pick a
+    // zone client-side. This call is a no-op most of the time (nothing
+    // changed) and always safe to fire on every officer page load.
     const resp = await fetch('/api/roster?action=advanceSeason', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, zoneId: detected.id, zoneName: detected.name }),
+      body: JSON.stringify({ teamId: STATE.teamId }),
     });
     const data = await resp.json();
-    if (!resp.ok) return;
+    if (!resp.ok || !data.changed) return;
 
     STATE.zoneId   = data.zoneId;
     STATE.zoneName = data.zoneName;
