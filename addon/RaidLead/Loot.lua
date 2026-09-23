@@ -1,10 +1,11 @@
 -- ============================================================
 -- Loot.lua — encounter tracking + loot capture + BoE filtering.
 --
--- Two independent capture paths, since a raid's chosen loot method
--- decides which one ever actually fires -- Personal Loot and Group Loot
--- are mutually exclusive per-raid, but different runs (or a guild vs. a
--- pug) may use either, so both paths are kept live rather than picking one:
+-- Three capture paths -- Personal Loot and Group Loot are mutually
+-- exclusive per-raid (a raid's chosen loot method decides which one ever
+-- fires), but different runs (or a guild vs. a pug) may use either, so
+-- both are kept live rather than picking one. Bonus Rolls are a third,
+-- independent path layered on top of whichever loot method is active:
 --
 -- 1. Personal Loot -- via CHAT_MSG_LOOT, a long-standing, well-documented
 --    chat event that fires for every raid member's loot, not just your
@@ -18,6 +19,15 @@
 --    NeedMainSpec, 1 NeedOffSpec, 2 Transmog, 3 Greed, 4 NoRoll, 5 Pass) --
 --    if a record's rollType ever looks wrong, check a real roll's state
 --    against these before assuming a different bug.
+--
+-- 3. Bonus Rolls -- via BONUS_ROLL_RESULT. Confirmed a real gap live: a
+--    raid member's bonus-roll item was completely missing from captured
+--    loot. Root cause, confirmed by researching other bonus-roll-tracking
+--    addons: this event is personal and client-local -- it only ever
+--    fires for whoever is doing the roll, never broadcast to the raid the
+--    way normal boss loot is. This addon can therefore only ever capture
+--    the *addon holder's own* bonus rolls; other raid members' are
+--    invisible to a single-installer addon with the currently known API.
 --
 -- Parsing loot chat text: Blizzard ships the exact format strings used to
 -- build these messages (LOOT_ITEM, LOOT_ITEM_MULTIPLE, LOOT_ITEM_SELF,
@@ -159,6 +169,7 @@ eventFrame:RegisterEvent('ENCOUNTER_START')
 eventFrame:RegisterEvent('ENCOUNTER_END')
 eventFrame:RegisterEvent('CHAT_MSG_LOOT')
 eventFrame:RegisterEvent('LOOT_HISTORY_UPDATE_DROP')
+eventFrame:RegisterEvent('BONUS_ROLL_RESULT')
 
 eventFrame:SetScript('OnEvent', function(_, event, ...)
   if event == 'ENCOUNTER_START' then
@@ -186,6 +197,8 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
     RaidLead.HandleLootMessage(...)
   elseif event == 'LOOT_HISTORY_UPDATE_DROP' then
     RaidLead.HandleLootHistoryDrop(...)
+  elseif event == 'BONUS_ROLL_RESULT' then
+    RaidLead.HandleBonusRoll(...)
   end
 end)
 
@@ -404,5 +417,36 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
   if not ok then
     -- Never let a malformed/unexpected loot-history update take down the addon.
     -- (uncomment while debugging: print('|cffff4444RaidLead loot-roll parse error|r: ' .. tostring(err)))
+  end
+end
+
+-- Exposed for the OnEvent handler above. A Bonus Roll is a personal,
+-- client-local mechanic -- BONUS_ROLL_RESULT only ever fires for whoever
+-- is doing the roll, never broadcast to the raid the way a normal boss
+-- kill's loot is (confirmed against other bonus-roll-tracking addons,
+-- which all need their own explicit addon-comm sync just to show a
+-- bonus roll to anyone other than the roller). That means this can only
+-- ever capture the addon holder's OWN bonus rolls -- other raid members'
+-- are simply invisible to a single-installer addon, no way around it
+-- with the currently known API. Still worth capturing what we can.
+function RaidLead.HandleBonusRoll(typeIdentifier, itemLink)
+  local ok, err = pcall(function()
+    if not itemLink then return end -- a currency/gold result, not an item
+
+    local itemId = tonumber(itemLink:match('item:(%d+)'))
+    if not itemId then return end
+
+    local recipientName = UnitName('player')
+
+    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, _, itemMeta)
+      if not meetsQualityFloor(itemQuality) then return end
+      local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
+      if not isTierToken and not itemMeta.qualityTrack then return end
+      recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, false, itemMeta)
+    end)
+  end)
+  if not ok then
+    -- Never let a malformed/unexpected bonus-roll event take down the addon.
+    -- (uncomment while debugging: print('|cffff4444RaidLead bonus roll parse error|r: ' .. tostring(err)))
   end
 end

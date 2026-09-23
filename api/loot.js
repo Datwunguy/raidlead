@@ -107,6 +107,38 @@ module.exports = async (req, res) => {
     }
   }
 
+  // ── SET BIND TYPE: manual correction for the addon's auto-detected
+  // bind_type (Officer/Owner only). Exists because GetItemInfo's bindType
+  // can't reliably tell "Warbound Until Equipped" apart from plain BoE for
+  // another player's loot -- confirmed live against an actual item whose
+  // in-game tooltip disagreed with what the addon captured. "BoE" also
+  // flips is_boe so the item moves into the BoEs sub-tab; "Warbound" clears
+  // it back out. ──
+  if (action === 'setBindType') {
+    const { teamId, lootId, bindType } = req.body || {};
+    const ALLOWED = { BoE: true, 'Warbound Until Equipped': true };
+    if (!teamId || !lootId || !ALLOWED[bindType]) {
+      return res.status(400).json({ error: 'teamId, lootId, and a valid bindType are required' });
+    }
+    try {
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+
+      const { data, error } = await supabase
+        .from('loot_drops')
+        .update({ bind_type: bindType, is_boe: bindType === 'BoE' })
+        .eq('id', lootId)
+        .eq('team_id', teamId)
+        .select('id')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return res.status(404).json({ error: 'Loot record not found for this team' });
+
+      return res.status(200).json({ success: true });
+    } catch (err) {
+      return res.status(err.status || 500).json({ error: err.message });
+    }
+  }
+
   // ── DELETE: remove one loot record (Officer/Owner only). Also tombstones its
   // addon_record_id so the addon's own local copy (which has no idea this
   // happened) can't silently re-upload it on the next sync. ──

@@ -2493,6 +2493,8 @@ function renderLootRow(d, isOfficer) {
       <div style="display:flex; align-items:center; gap:8px;">
         <span>${d.current_holder_name || '?'}${traded ? ` <span style="color:var(--text-mute);">(was ${d.recipient_name})</span>` : ''}</span>
         ${isOfficer ? `
+          ${d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','BoE')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
+          ${d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','Warbound Until Equipped')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
           <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="reassignLootItem('${d.id}')">Reassign</button>
           <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" onclick="deleteLootItem('${d.id}')">✕</button>
         ` : ''}
@@ -2512,6 +2514,24 @@ async function reassignLootItem(lootId) {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to reassign');
     showToast('Reassigned to ' + newHolderName.trim(), 'success');
+    loadLootTab();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// Manual correction for the addon's auto-detected bind type -- GetItemInfo
+// can't reliably tell Warbound Until Equipped apart from plain BoE for
+// another player's loot, so officers can fix a wrong one here.
+async function setLootBindType(lootId, bindType) {
+  try {
+    const resp = await fetch('/api/loot?action=setBindType', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, lootId, bindType }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to update bind type');
+    showToast('Marked as ' + bindType, 'success');
     loadLootTab();
   } catch (e) {
     showToast('Error: ' + e.message, 'error');

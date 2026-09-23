@@ -136,13 +136,13 @@
 
   <!-- SETUP SCREEN -->
   <div id="setup-screen">
-    <div class="setup-card">
+    <div class="setup-card" style="max-width:900px;">
       <div class="setup-header">
         <h1 id="setup-heading">Configure Your Guild</h1>
         <p id="setup-subheading">Enter your guild details to get started. You only need to do this once.</p>
       </div>
       <div class="setup-body">
-        <div class="form-row">
+        <div class="form-row" style="grid-template-columns: 2fr 1fr 1fr;">
           <div class="form-group">
             <label>Guild Name</label>
             <input type="text" id="inp-guild" placeholder="Midnight Falls" />
@@ -151,8 +151,6 @@
             <label>Server</label>
             <input type="text" id="inp-server" placeholder="Sargeras" onblur="this.value = titleCaseServer(this.value)" />
           </div>
-        </div>
-        <div class="form-row">
           <div class="form-group">
             <label>Region</label>
             <select id="inp-region">
@@ -1082,6 +1080,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260922c"></script>
+<script src="app.js?v=20260923"></script>
 </body>
 </html>
