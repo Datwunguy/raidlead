@@ -114,10 +114,28 @@ local PATTERNS = {
 
 -- Tracks the boss context loot should be attributed to. Encounters end
 -- slightly before the last loot for that kill actually gets rolled/handed
--- out, so we keep attributing to the just-ended boss for a short grace
--- window rather than clearing instantly on ENCOUNTER_END.
+-- out, so we keep attributing to the just-ended boss for a grace window
+-- rather than clearing instantly on ENCOUNTER_END. Group Loot rolls in a
+-- large raid can genuinely take minutes to resolve as people weigh
+-- upgrades -- confirmed live: real gear was showing up as "Trash" (no
+-- boss) because the roll hadn't resolved by the time the short window
+-- expired. currentEncounter covers the normal case; lastEncounter is a
+-- longer-lived fallback specifically for slow rolls, and (unlike
+-- currentEncounter) is never cleared by a wipe -- a wipe doesn't change
+-- what the last actual kill was.
 local currentEncounter = nil
+local lastEncounter = nil
 local ENCOUNTER_GRACE_SECONDS = 45
+local LAST_ENCOUNTER_TIMEOUT_SECONDS = 600
+
+-- Force-load the Encounter Journal's data (not its UI) so EJ_GetEncounterInfo
+-- (used as a last-resort boss-name fallback below) works even if the player
+-- never manually opened that panel this session -- Blizzard_EncounterJournal
+-- is otherwise lazy-loaded only on first UI open, which most players never do.
+do
+  local loadAddOn = (C_AddOns and C_AddOns.LoadAddOn) or LoadAddOn
+  if loadAddOn then pcall(loadAddOn, 'Blizzard_EncounterJournal') end
+end
 
 -- Enum.EncounterLootDropRollState -- see the file header note above on why
 -- this needs live-client confirmation before being trusted.
@@ -150,12 +168,16 @@ eventFrame:SetScript('OnEvent', function(_, event, ...)
       name       = encounterName,
       difficulty = DIFFICULTY_NAMES[difficultyID] or tostring(difficultyID),
     }
+    lastEncounter = currentEncounter
   elseif event == 'ENCOUNTER_END' then
     local encounterID, _, _, _, success = ...
     if success == 1 and currentEncounter and currentEncounter.id == encounterID then
       local endedEncounter = currentEncounter
       C_Timer.After(ENCOUNTER_GRACE_SECONDS, function()
         if currentEncounter == endedEncounter then currentEncounter = nil end
+      end)
+      C_Timer.After(LAST_ENCOUNTER_TIMEOUT_SECONDS, function()
+        if lastEncounter == endedEncounter then lastEncounter = nil end
       end)
     else
       currentEncounter = nil
@@ -197,7 +219,7 @@ end
 -- a Group Loot roll rather than Personal Loot.
 local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, isBoe, itemMeta, rollInfo, encounterOverride)
   itemMeta = itemMeta or {}
-  local encounter = encounterOverride or currentEncounter
+  local encounter = encounterOverride or currentEncounter or lastEncounter
   local id = string.format('%s-%d-%d-%s', RaidLead.sessionId, time(), itemId, recipientName)
   RaidLeadDB.lootRecords[id] = {
     addonRecordId  = id,
@@ -276,7 +298,7 @@ function RaidLead.HandleLootMessage(msg)
       if not meetsQualityFloor(itemQuality) then return end
 
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
-      local isBossLoot  = currentEncounter ~= nil
+      local isBossLoot  = (currentEncounter or lastEncounter) ~= nil
 
       if isTierToken or isBossLoot then
         -- Real gear always carries an upgrade track (Veteran/Champion/Hero/
@@ -350,16 +372,18 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
       })
     end
 
-    -- A slow roll can resolve after currentEncounter's grace window has
-    -- already expired -- use the event's own encounterID either way, and
-    -- fall back to the Encounter Journal for the boss name only if
-    -- currentEncounter doesn't already have it. Best-effort: boss_name is
-    -- a nullable column, and EJ_GetEncounterInfo can return nil if the
-    -- Encounter Journal addon hasn't been loaded this session.
+    -- A slow roll can resolve well after currentEncounter's short grace
+    -- window has expired -- lastEncounter (10-minute window) is the
+    -- primary fallback for that. EJ_GetEncounterInfo is a last resort for
+    -- the case neither one matches at all (e.g. a mid-raid /reload wiped
+    -- our own Lua state) -- best-effort, boss_name is a nullable column.
     local encounterName, difficulty
     if currentEncounter and currentEncounter.id == encounterID then
       encounterName = currentEncounter.name
       difficulty = currentEncounter.difficulty
+    elseif lastEncounter and lastEncounter.id == encounterID then
+      encounterName = lastEncounter.name
+      difficulty = lastEncounter.difficulty
     elseif EJ_GetEncounterInfo then
       encounterName = EJ_GetEncounterInfo(encounterID)
     end

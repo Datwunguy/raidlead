@@ -2433,6 +2433,22 @@ function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
     const bossCount = new Set(items.map(d => d.boss_name).filter(Boolean)).size;
     const raidDate = items[0]?.raid_date || '?';
 
+    // Group by boss, ordered by each boss's earliest capture within this run
+    // -- raw insertion order (by created_at) scatters real gear across boss
+    // groups whenever a Group Loot roll resolves slowly, since a
+    // late-resolving roll for an earlier boss can land after an
+    // instantly-awarded item from a later one. Items with no boss
+    // attribution ("Trash") sort last as their own group.
+    const bossFirstSeen = {};
+    items.forEach((d, i) => {
+      const key = d.boss_name || '￿';
+      if (!(key in bossFirstSeen)) bossFirstSeen[key] = i;
+    });
+    const orderedItems = items.slice().sort((a, b) => {
+      const ka = a.boss_name || '￿', kb = b.boss_name || '￿';
+      return bossFirstSeen[ka] - bossFirstSeen[kb];
+    });
+
     return `
       <div style="background:var(--bg3); border:1px solid ${likelyPug ? 'rgba(196,30,58,0.4)' : 'var(--border)'}; border-radius:6px; padding:14px; margin-bottom:14px;">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
@@ -2444,7 +2460,7 @@ function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
           ${isOfficer && allowDeleteRun ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="deleteLootRun('${sessionId}')">Delete Run</button>` : ''}
         </div>
         <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
-          ${items.map(d => renderLootRow(d, isOfficer)).join('')}
+          ${orderedItems.map(d => renderLootRow(d, isOfficer)).join('')}
         </div>
       </div>
     `;
