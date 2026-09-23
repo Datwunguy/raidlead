@@ -20,14 +20,22 @@
 --    if a record's rollType ever looks wrong, check a real roll's state
 --    against these before assuming a different bug.
 --
--- 3. Bonus Rolls -- via BONUS_ROLL_RESULT. Confirmed a real gap live: a
---    raid member's bonus-roll item was completely missing from captured
---    loot. Root cause, confirmed by researching other bonus-roll-tracking
---    addons: this event is personal and client-local -- it only ever
---    fires for whoever is doing the roll, never broadcast to the raid the
---    way normal boss loot is. This addon can therefore only ever capture
---    the *addon holder's own* bonus rolls; other raid members' are
---    invisible to a single-installer addon with the currently known API.
+-- 3. Bonus Rolls -- via BONUS_ROLL_RESULT, a personal/client-local event
+--    that only ever fires for whoever is doing the roll -- this addon can
+--    only ever capture the *addon holder's own* bonus rolls through this
+--    specific event, never anyone else's.
+--
+--    A raid member's bonus-roll item was confirmed missing from captured
+--    loot on a real raid night. Blizzard's own docs describe CHAT_MSG_LOOT
+--    as firing "when you or a group member loots an item" -- generic
+--    wording, not boss-loot-specific -- so a bonus roll delivered through
+--    the same personal-loot pipeline may well already fire that event
+--    raid-wide too, same as any other loot message the Personal Loot path
+--    above already handles with no changes needed. The specific miss here
+--    most likely predates the boss-attribution fix elsewhere in this file
+--    (the old 45-second-only window) rather than proving bonus rolls are
+--    unreachable -- needs a fresh data point on a raid night with that fix
+--    live before concluding either way.
 --
 -- Parsing loot chat text: Blizzard ships the exact format strings used to
 -- build these messages (LOOT_ITEM, LOOT_ITEM_MULTIPLE, LOOT_ITEM_SELF,
@@ -420,15 +428,18 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
   end
 end
 
--- Exposed for the OnEvent handler above. A Bonus Roll is a personal,
--- client-local mechanic -- BONUS_ROLL_RESULT only ever fires for whoever
--- is doing the roll, never broadcast to the raid the way a normal boss
--- kill's loot is (confirmed against other bonus-roll-tracking addons,
--- which all need their own explicit addon-comm sync just to show a
--- bonus roll to anyone other than the roller). That means this can only
--- ever capture the addon holder's OWN bonus rolls -- other raid members'
--- are simply invisible to a single-installer addon, no way around it
--- with the currently known API. Still worth capturing what we can.
+-- Exposed for the OnEvent handler above. BONUS_ROLL_RESULT only ever
+-- fires for whoever is doing the roll, so this only ever catches the
+-- addon holder's OWN bonus rolls -- see the file header for the fuller
+-- picture on whether other raid members' bonus rolls are actually
+-- unreachable or already covered by the Personal Loot path above via a
+-- raid-wide CHAT_MSG_LOOT. If it turns out both paths fire for the same
+-- one of the addon holder's own bonus rolls, recordLoot's id
+-- (sessionId-time()-itemId-recipientName, whole-second resolution) means
+-- the common case -- both events firing in the same second -- collapses
+-- into one record rather than creating a duplicate, but a roll that
+-- happens to straddle a second boundary could still produce two. Not
+-- worth solving ahead of confirming it's even a real conflict.
 function RaidLead.HandleBonusRoll(typeIdentifier, itemLink)
   local ok, err = pcall(function()
     if not itemLink then return end -- a currency/gold result, not an item

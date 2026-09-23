@@ -479,8 +479,6 @@ function showSetup() {
     set('inp-wcl-team', '');
     set('inp-team', '');
     setRaidDaysOn('inp-raid-days', []);
-    const zoneRow = document.getElementById('inp-zone-row');
-    if (zoneRow) zoneRow.style.display = 'none';
     return;
   }
 
@@ -507,10 +505,6 @@ function showSetup() {
     set('inp-region',   s.region);
 
     set('inp-wcl-team',  s.wclTeamId);
-    const zoneRow = document.getElementById('inp-zone-row');
-    const zoneDisplay = document.getElementById('inp-zone-display');
-    if (zoneRow) zoneRow.style.display = '';
-    if (zoneDisplay) zoneDisplay.textContent = s.zoneName || 'Not detected yet';
     set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
     set('inp-wcl-client-id', s.wclClientId);
@@ -2493,8 +2487,8 @@ function renderLootRow(d, isOfficer) {
       <div style="display:flex; align-items:center; gap:8px;">
         <span>${d.current_holder_name || '?'}${traded ? ` <span style="color:var(--text-mute);">(was ${d.recipient_name})</span>` : ''}</span>
         ${isOfficer ? `
-          ${d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','BoE')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
-          ${d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','Warbound Until Equipped')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
+          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','BoE')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
+          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','Warbound Until Equipped')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
           <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="reassignLootItem('${d.id}')">Reassign</button>
           <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" onclick="deleteLootItem('${d.id}')">✕</button>
         ` : ''}
