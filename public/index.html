@@ -139,7 +139,7 @@
     <div class="setup-card">
       <div class="setup-header">
         <h1 id="setup-heading">Configure Your Guild</h1>
-        <p id="setup-subheading">Enter your guild details and data source URLs to get started. You only need to do this once.</p>
+        <p id="setup-subheading">Enter your guild details to get started. You only need to do this once.</p>
       </div>
       <div class="setup-body">
         <div class="form-row">
@@ -165,10 +165,10 @@
             </select>
           </div>
         </div>
-        <div class="form-row">
+        <div class="form-row" id="inp-zone-row" style="display:none;">
           <div class="form-group full">
-            <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
-            <input type="text" id="inp-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
+            <label>Current Raid Zone <span style="color:var(--text-mute);font-weight:400;">(detected automatically once WCL credentials below are connected -- nothing to fill in here)</span></label>
+            <div id="inp-zone-display" style="padding:8px 14px; color:var(--text-dim);">Not detected yet</div>
           </div>
         </div>
         <div class="form-row">
@@ -319,6 +319,9 @@
         <div id="claim-gate-empty" style="display:none; text-align:center; color:var(--text-mute); padding:24px 0;">
           No matching unclaimed characters. Ask an officer if your character isn't listed.
         </div>
+        <div style="text-align:center; margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
+          <a href="#" onclick="continueAsViewer(); return false;" style="font-size:13px; color:var(--text-mute);">Don't have a character? Continue as a Viewer (read-only access)</a>
+        </div>
       </div>
     </div>
   </div>
@@ -375,12 +378,6 @@
               <label>WCL Team ID <span style="color:var(--text-mute);font-weight:400;">(Found in the URL when filtering guild reports by team tag, e.g. warcraftlogs.com/guild/team-reports-list/<strong>12079</strong>)</span></label>
               <input type="text" id="gs-wcl-team" placeholder="e.g. 12079" style="width:200px;" />
             </div>
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group full">
-            <label>WCL Guild Progress URL <span style="color:var(--text-mute);font-weight:400;">(optional — e.g. warcraftlogs.com/guild/progress/201271?zone=46)</span></label>
-            <input type="text" id="gs-wcl" placeholder="https://www.warcraftlogs.com/guild/progress/..." />
           </div>
         </div>
         <div class="form-row">
@@ -484,7 +481,16 @@
             <button class="filter-btn" onclick="setRosterRankFilter('main', this)">Mains</button>
             <button class="filter-btn" onclick="setRosterRankFilter('alt', this)">Alts</button>
           </div>
+          <span style="font-size:11px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px; margin-left:12px;">Season:</span>
+          <select id="season-history-select" class="themed-select" style="width:auto;" onchange="onSeasonHistoryChange(this.value)">
+            <option value="">Current</option>
+          </select>
         </div>
+
+        <!-- Read-only past-season roster snapshot -- shown instead of the
+             live stat cards/roster-by-role below when a past season is
+             picked above. -->
+        <div id="season-history-panel" style="display:none;"></div>
 
         <!-- Stat cards -->
         <div class="stat-grid" id="stat-grid">
@@ -1076,6 +1082,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260919b"></script>
+<script src="app.js?v=20260922"></script>
 </body>
 </html>

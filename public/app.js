@@ -6,6 +6,7 @@ const STATE = {
   config:       null,
   players:      [],
   rosterRankFilter: 'all', // 'all' | 'main' | 'alt' -- which characters the Roster tab shows/computes stats over
+  seasonsListLoadedFor: null, // teamId the season-history dropdown was last populated for -- avoids refetching on every renderRoster()
   scores:       [],
   bossNames:    [],
   zoneId:       null,
@@ -262,14 +263,16 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       try { await loadRosterFromDB(); } catch(e) {}
 
-      // Gate: new members must claim a character before accessing the dashboard
-      if (!STATE.claimedCharacter) {
+      // Gate: new members must claim a character before accessing the
+      // dashboard -- except officers/owners, who bypass regardless.
+      if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) {
         showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
         await showClaimGateScreen();
       } else {
         showDashboard();
         loadCachedScores();
         showToast('Welcome to ' + STATE.config.guild + '!', 'success');
+        checkAndAdvanceSeason();
       }
       return;
     } catch(e) {
@@ -288,8 +291,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     applyGuildData(guildData);
     await loadRosterFromDB();
 
-    // Gate: block access until this account has claimed a character
-    if (!STATE.claimedCharacter) {
+    // Gate: block access until this account has claimed a character --
+    // except officers/owners, whose permission level has nothing to do
+    // with whether they personally play a character on this team.
+    if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) {
       showClaimGateScreen();
       return;
     }
@@ -299,6 +304,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     loadCachedScores();
     // Pre-load attendance data so marks are available immediately on any tab
     loadAttendanceData();
+    checkAndAdvanceSeason(); // silent, best-effort -- never blocks the dashboard
     return;
   }
 
@@ -468,11 +474,13 @@ function showSetup() {
     set('inp-region', STATE.config?.region);
     guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
 
-    // Team-specific fields start blank -- this is a brand new team
-    set('inp-wcl', '');
+    // Team-specific fields start blank -- this is a brand new team, with no
+    // zone until WCL credentials are connected and detection runs.
     set('inp-wcl-team', '');
     set('inp-team', '');
     setRaidDaysOn('inp-raid-days', []);
+    const zoneRow = document.getElementById('inp-zone-row');
+    if (zoneRow) zoneRow.style.display = 'none';
     return;
   }
 
@@ -485,7 +493,7 @@ function showSetup() {
 
   guildIdFieldIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = false; });
   document.getElementById('setup-heading').textContent = 'Configure Your Guild';
-  document.getElementById('setup-subheading').textContent = 'Enter your guild details and data source URLs to get started. You only need to do this once.';
+  document.getElementById('setup-subheading').textContent = 'Enter your guild details to get started. You only need to do this once.';
   document.getElementById('load-btn').textContent = STATE.config ? 'Save Changes' : 'Load Guild';
   if (addTeamRow)   addTeamRow.style.display   = STATE.config ? 'grid' : 'none';
   if (multiTeamRow) multiTeamRow.style.display = '';
@@ -498,8 +506,11 @@ function showSetup() {
     set('inp-server',   titleCaseServer(s.server));
     set('inp-region',   s.region);
 
-    set('inp-wcl',       s.wclUrl);
     set('inp-wcl-team',  s.wclTeamId);
+    const zoneRow = document.getElementById('inp-zone-row');
+    const zoneDisplay = document.getElementById('inp-zone-display');
+    if (zoneRow) zoneRow.style.display = '';
+    if (zoneDisplay) zoneDisplay.textContent = s.zoneName || 'Not detected yet';
     set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
     set('inp-wcl-client-id', s.wclClientId);
@@ -545,7 +556,6 @@ function showAddTeamScreen() {
 
 async function submitAddTeam() {
   const teamName  = document.getElementById('inp-team').value.trim();
-  const wclUrl    = document.getElementById('inp-wcl').value.trim();
   const wclTeamId = document.getElementById('inp-wcl-team').value.trim() || null;
   const raidDays  = getRaidDaysFrom('inp-raid-days');
 
@@ -554,9 +564,6 @@ async function submitAddTeam() {
     return;
   }
 
-  const zoneMatch = wclUrl ? wclUrl.match(/zone=(\d+)/) : null;
-  const zoneId    = zoneMatch ? parseInt(zoneMatch[1]) : null;
-
   setStatus('Creating team...', 'loading');
   document.getElementById('load-btn').disabled = true;
 
@@ -564,7 +571,7 @@ async function submitAddTeam() {
     const resp = await fetch('/api/guild?action=addTeam', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, teamName, wclUrl, wclTeamId, zoneId, raidDays }),
+      body: JSON.stringify({ teamId: STATE.teamId, teamName, wclTeamId, raidDays }),
     });
     const data = await resp.json();
 
@@ -620,7 +627,6 @@ async function loadGuild() {
   const server     = document.getElementById('inp-server').value.trim();
   const region     = document.getElementById('inp-region').value;
   const difficulty = 'mythic'; // difficulty is now set per-fetch in WCL Scores tab
-  const wclUrl     = document.getElementById('inp-wcl').value.trim();
   const wclTeamId  = document.getElementById('inp-wcl-team').value.trim() || null;
   const multiTeam  = document.querySelector('input[name="inp-multi-team"]:checked')?.value === 'yes';
   const teamName   = (multiTeam ? document.getElementById('inp-team')?.value.trim() : '') || 'Main Team';
@@ -630,13 +636,9 @@ async function loadGuild() {
     setStatus('Please fill in Guild Name and Server.', 'error'); return;
   }
 
-  const zoneMatch = wclUrl ? wclUrl.match(/zone=(\d+)/) : null;
-  const zoneId    = zoneMatch ? parseInt(zoneMatch[1]) : (STATE.zoneId || null);
-
-  // Merge onto the existing config rather than replacing it outright -- fields this
-  // form doesn't own (hasWclCredentials/wclClientId, zoneName, etc.) must survive a save.
-  STATE.config = { ...STATE.config, guild, server, region, difficulty, wclUrl, zoneId, wclTeamId, raidDays };
-  STATE.zoneId = zoneId;
+  // zoneId/zoneName are no longer settable here -- they're auto-detected in
+  // the background (checkAndAdvanceSeason) and left untouched by this form.
+  STATE.config = { ...STATE.config, guild, server, region, difficulty, wclTeamId, raidDays };
 
   setStatus('Saving...', 'loading');
   document.getElementById('load-btn').disabled = true;
@@ -646,7 +648,7 @@ async function loadGuild() {
     const resp = await fetch('/api/guild?action=update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, wclUrl, zoneId, teamName, wclTeamId, raidDays }),
+      body: JSON.stringify({ teamId: STATE.teamId, guild, server, region, teamName, wclTeamId, raidDays }),
     });
     const data = await resp.json();
 
@@ -952,6 +954,29 @@ async function claimMyCharacter(characterName) {
     showDashboard();
     updateRosterTitle();
     loadCachedScores();
+  } catch(e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// Lets someone past the claim gate without a character -- read-only access
+// from then on (see api/members.js's becomeViewer and the officer-only
+// write actions it's checked against).
+async function continueAsViewer() {
+  try {
+    const resp = await fetch('/api/members?action=becomeViewer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Could not continue as a Viewer');
+    STATE.myRole = data.role;
+    applyRolePermissions(STATE.myRole);
+    showDashboard();
+    updateRosterTitle();
+    loadCachedScores();
+    showToast('Continuing as a Viewer -- read-only access', 'success');
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
   }
@@ -2570,7 +2595,69 @@ function setRosterRankFilter(value, btn) {
   renderRoster();
 }
 
+// ── Read-only season history: a picker of past seasons, and (when one's
+// selected) that season's roster snapshot, sourced from
+// character_membership_periods -- who actually had an open membership
+// period during that window, not just who got scheduled into a raid
+// night. Loaded once per team, lazily, from renderRoster() below. ──
+async function loadSeasonHistoryList() {
+  if (STATE.seasonsListLoadedFor === STATE.teamId) return;
+  STATE.seasonsListLoadedFor = STATE.teamId;
+  try {
+    const resp = await fetch('/api/roster?action=getSeasons&teamId=' + encodeURIComponent(STATE.teamId));
+    const data = await resp.json();
+    if (!resp.ok) return;
+    const select = document.getElementById('season-history-select');
+    if (!select) return;
+    const seasons = (data.seasons || []).filter(s => s.ended_at); // only past (closed) seasons are worth picking -- "Current" already covers the live one
+    select.innerHTML = '<option value="">Current</option>' +
+      seasons.map(s => `<option value="${s.id}">${escapeHtml(s.zone_name)} (${s.started_at} – ${s.ended_at})</option>`).join('');
+  } catch(e) { /* best-effort -- dropdown just stays at "Current" */ }
+}
+
+async function onSeasonHistoryChange(seasonId) {
+  const panel = document.getElementById('season-history-panel');
+  const liveEls = ['stat-grid', 'raid-buffs-grid', 'roster-by-role'].map(id => document.getElementById(id));
+  if (!seasonId) {
+    panel.style.display = 'none';
+    panel.innerHTML = '';
+    liveEls.forEach(el => { if (el) el.style.display = ''; });
+    return;
+  }
+
+  liveEls.forEach(el => { if (el) el.style.display = 'none'; });
+  panel.style.display = 'block';
+  panel.innerHTML = '<div class="loading-overlay"><div class="spinner"></div></div>';
+
+  try {
+    const resp = await fetch(`/api/roster?action=getSeasonRoster&teamId=${encodeURIComponent(STATE.teamId)}&seasonId=${encodeURIComponent(seasonId)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to load season roster');
+
+    const roster = (data.roster || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    panel.innerHTML = `
+      <div style="background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px;">
+        <div style="font-size:11px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px; margin-bottom:10px;">
+          Read-only snapshot &middot; ${escapeHtml(data.season.zone_name)} &middot; ${data.season.started_at} – ${data.season.ended_at}
+        </div>
+        ${roster.length === 0 ? '<div style="color:var(--text-mute); font-size:13px;">No roster data recorded for this season.</div>' : `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${roster.map(c => `
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:6px 10px; background:var(--bg3); border-radius:4px;">
+              <span style="color:${CLASS_COLORS[c.class] || 'var(--text)'}; font-weight:600;">${escapeHtml(c.name)}</span>
+              <span style="color:var(--text-mute);">${escapeHtml(c.primary_role || '')} &middot; ${escapeHtml(c.rank || 'Main')}</span>
+            </div>
+          `).join('')}
+        </div>`}
+      </div>
+    `;
+  } catch(e) {
+    panel.innerHTML = `<div style="color:var(--text-mute); font-size:13px;">Error loading season roster: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
 function renderRoster() {
+  loadSeasonHistoryList();
   const players = STATE.rosterRankFilter === 'all'
     ? STATE.players
     : STATE.players.filter(p => (p.rank || 'Main').toLowerCase() === STATE.rosterRankFilter);
@@ -2896,8 +2983,15 @@ async function detectCurrentZone() {
   try {
     const data  = await wclQuery(query, { action: 'wclZones' });
     const zones = data?.data?.worldData?.zones || [];
-    // Filter to non-frozen zones (active tiers), take the highest ID
-    const active = zones.filter(z => !z.frozen);
+    // Filter to non-frozen zones (active tiers), take the highest ID.
+    // WCL has no live/PTR flag on Zone -- frozen just means "this old
+    // tier's rankings are locked for caching," unrelated to test-vs-live
+    // status. PTR raids get their own zone entries in this same list with
+    // frozen: false (since they're actively being logged) and a literal
+    // "(PTR)" suffix on the name (confirmed against WCL's own page titles,
+    // e.g. "Mythic Sporefall (PTR)") -- exclude those or a PTR zone would
+    // false-positive as "the new season" weeks before it actually ships.
+    const active = zones.filter(z => !z.frozen && !/\(PTR\)/i.test(z.name || ''));
     if (active.length === 0) return null;
     active.sort((a, b) => b.id - a.id);
     return active[0];
@@ -2905,6 +2999,38 @@ async function detectCurrentZone() {
     console.warn('Zone auto-detect failed:', e);
     return null;
   }
+}
+
+// Silent, automatic season advance -- runs on every officer/owner page
+// load, no button, no confirmation. If the PTR-filtered detected zone
+// differs from this team's current one, the backend (advanceSeason)
+// closes the old season, opens a new one dated from the shared
+// global_zone_transitions record, and updates teams.zone_id/zone_name --
+// the same season changes for the whole team at once, not per-viewer.
+// Fully best-effort: any failure here is silent (this is a background
+// sync piggybacking on a page load, never something a user is waiting on).
+async function checkAndAdvanceSeason() {
+  if (!['owner', 'officer'].includes(STATE.myRole)) return;
+  if (!STATE.teamId) return;
+  try {
+    const detected = await detectCurrentZone();
+    if (!detected || detected.id === STATE.zoneId) return;
+
+    const resp = await fetch('/api/roster?action=advanceSeason', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, zoneId: detected.id, zoneName: detected.name }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) return;
+
+    STATE.zoneId   = data.zoneId;
+    STATE.zoneName = data.zoneName;
+    if (STATE.config) { STATE.config.zoneId = data.zoneId; STATE.config.zoneName = data.zoneName; }
+    const zoneEl = document.getElementById('stat-zone');
+    if (zoneEl) zoneEl.textContent = data.zoneName || 'Zone ' + data.zoneId;
+    showToast('Season started: ' + data.zoneName, 'success');
+  } catch(e) { /* silent -- best-effort background sync */ }
 }
 
 async function wclQuery(query, options = {}) {
@@ -5105,13 +5231,14 @@ async function completeGuildJoin(joinCode) {
   applyGuildData(freshData);
   await loadRosterFromDB();
 
-  if (!STATE.claimedCharacter) {
+  if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) {
     showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
     await showClaimGateScreen();
   } else {
     showDashboard();
     loadCachedScores();
     showToast('Welcome to ' + STATE.config.guild + '!', 'success');
+    checkAndAdvanceSeason();
   }
 }
 
@@ -5170,7 +5297,6 @@ async function createGuild(confirmNewTeam) {
   const multiTeam = document.querySelector('input[name="multi-team"]:checked')?.value === 'yes';
   const teamNameEl = document.getElementById('gs-team');
   const teamName   = multiTeam && teamNameEl ? teamNameEl.value.trim() || 'Main Team' : 'Main Team';
-  const wclUrl     = document.getElementById('gs-wcl').value.trim();
   const wclTeamId  = document.getElementById('gs-wcl-team').value.trim() || null;
   const raidDays   = getRaidDaysFrom('gs-raid-days');
 
@@ -5179,9 +5305,6 @@ async function createGuild(confirmNewTeam) {
     document.getElementById('gs-status').className   = 'status-msg error';
     return;
   }
-
-  const zoneMatch = wclUrl.match(/zone=(\d+)/);
-  const zoneId    = zoneMatch ? parseInt(zoneMatch[1]) : null;
 
   document.getElementById('gs-status').textContent = 'Creating guild...';
   document.getElementById('gs-status').className   = 'status-msg loading';
@@ -5192,7 +5315,7 @@ async function createGuild(confirmNewTeam) {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
+      body: JSON.stringify({ guild, server, region, difficulty, teamName, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
     });
 
     let data = {};
@@ -5224,10 +5347,14 @@ async function createGuild(confirmNewTeam) {
     // A brand-new guild has no roster yet (no WowAudit import or manual adds
     // have happened), so there's nothing to claim from -- skip straight to
     // the dashboard rather than showing a claim gate with nobody to pick.
-    if (!STATE.claimedCharacter && STATE.players.length > 0) {
+    // The creator is always this team's owner anyway, so the officer bypass
+    // below would apply regardless -- kept for consistency with every other
+    // gate check site.
+    if (!STATE.claimedCharacter && STATE.players.length > 0 && !['owner', 'officer'].includes(STATE.myRole)) {
       await showClaimGateScreen();
     } else {
       showDashboard();
+      checkAndAdvanceSeason();
       loadCachedScores();
     }
 
@@ -6040,7 +6167,7 @@ async function switchActiveTeam(teamId) {
   if (!guildData || !guildData.team) { showToast('Could not switch teams', 'error'); return; }
   applyGuildData(guildData);
   await loadRosterFromDB();
-  if (!STATE.claimedCharacter) { showClaimGateScreen(); return; }
+  if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) { showClaimGateScreen(); return; }
   showDashboard();
   updateRosterTitle();
   STATE.scores = []; STATE.bossNames = []; STATE.scoresDifficulty = null;
@@ -6049,6 +6176,7 @@ async function switchActiveTeam(teamId) {
   loadCachedScores();
   loadAttendanceData();
   if (typeof loadPlanForDate === 'function' && STATE.plannerDate) loadPlanForDate(STATE.plannerDate);
+  checkAndAdvanceSeason();
 }
 
 // Renders the team switcher in the header -- only shown when the account

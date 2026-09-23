@@ -160,6 +160,103 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
+  // ── ADVANCE SEASON (officer only): called silently from the boot-path
+  // zone-detection check when the client's PTR-filtered detectCurrentZone()
+  // finds a live zone that differs from this team's current one. Never asks
+  // for confirmation -- the whole point is a season transition just happens,
+  // the same way for every team, the moment it's noticed. ──
+  if (action === 'advanceSeason') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const { teamId, zoneId, zoneName } = req.body || {};
+    if (!teamId || !zoneId || !zoneName) return res.status(400).json({ error: 'teamId, zoneId, and zoneName required' });
+
+    try {
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+
+      // A raid tier launches on one real date -- every team transitioning
+      // into this same zone, whenever they get to it, should record the
+      // same date, not whichever day their own officer happened to check.
+      // The first team anywhere to notice a zone sets it once; upsert with
+      // ignoreDuplicates so a later team's advance doesn't overwrite it.
+      const today = new Date().toISOString().slice(0, 10);
+      await supabase
+        .from('global_zone_transitions')
+        .upsert({ zone_id: zoneId, zone_name: zoneName, first_detected_at: today }, { onConflict: 'zone_id', ignoreDuplicates: true });
+      const { data: transition } = await supabase
+        .from('global_zone_transitions').select('first_detected_at').eq('zone_id', zoneId).single();
+      const transitionDate = transition?.first_detected_at || today;
+
+      // Close the current season (if one exists yet -- a brand-new team may
+      // not have one at all, in which case there's nothing to close). The
+      // `neq('zone_id', zoneId)` guard matters for the race case below: if a
+      // second officer session's request lands after the first one already
+      // advanced, "the open season" is now the brand-new one for this same
+      // zone -- without this guard, a blind `ended_at IS NULL` match would
+      // immediately re-close the season the first request just opened.
+      await supabase
+        .from('seasons').update({ ended_at: transitionDate })
+        .eq('team_id', teamId).is('ended_at', null).neq('zone_id', zoneId);
+
+      // Open the new one. The partial unique index (one open season per
+      // team) makes this safe if two officer sessions race -- the loser's
+      // insert just fails harmlessly since the winner already holds the slot.
+      const { error: insertErr } = await supabase
+        .from('seasons')
+        .insert({ team_id: teamId, zone_id: zoneId, zone_name: zoneName, started_at: transitionDate });
+      if (insertErr && insertErr.code !== '23505') throw insertErr; // 23505 = unique_violation (lost the race, fine)
+
+      await supabase.from('teams').update({ zone_id: zoneId, zone_name: zoneName }).eq('id', teamId);
+
+      return res.status(200).json({ success: true, zoneId, zoneName, startedAt: transitionDate });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── GET SEASONS (any team member): this team's season history, newest
+  // first, for the read-only history dropdown. ──
+  if (action === 'getSeasons') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    try {
+      await assertTeamOwnership(teamId);
+      const { data, error } = await supabase
+        .from('seasons').select('id, zone_id, zone_name, started_at, ended_at')
+        .eq('team_id', teamId).order('started_at', { ascending: false });
+      if (error) throw error;
+      return res.status(200).json({ seasons: data || [] });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── GET SEASON ROSTER (any team member): every character with a
+  // membership period overlapping the given season's date range --
+  // read-only, no editing surfaced through this action. ──
+  if (action === 'getSeasonRoster') {
+    const teamId   = req.query.teamId   || req.body?.teamId;
+    const seasonId = req.query.seasonId || req.body?.seasonId;
+    if (!seasonId) return res.status(400).json({ error: 'seasonId required' });
+    try {
+      await assertTeamOwnership(teamId);
+
+      const { data: season, error: seasonErr } = await supabase
+        .from('seasons').select('id, zone_id, zone_name, started_at, ended_at')
+        .eq('id', seasonId).eq('team_id', teamId).single();
+      if (seasonErr || !season) return res.status(404).json({ error: 'Season not found' });
+
+      const rangeEnd = season.ended_at || new Date().toISOString().slice(0, 10);
+      const { data: periods, error: periodsErr } = await supabase
+        .from('character_membership_periods')
+        .select('joined_at, left_at, characters ( id, name, class, primary_role, server, realm_name, rank )')
+        .eq('team_id', teamId)
+        .lte('joined_at', rangeEnd)
+        .or(`left_at.is.null,left_at.gte.${season.started_at}`);
+      if (periodsErr) throw periodsErr;
+
+      const roster = (periods || [])
+        .filter(p => p.characters)
+        .map(p => p.characters);
+
+      return res.status(200).json({ season, roster });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
   // ── WCL QUERY PROXY (officers only) ──
   // ── DIAGNOSTIC: probe Summary table structure for a known fight ──
   // ── GET MITIGATION CACHE ──
@@ -931,26 +1028,57 @@ module.exports = async (req, res) => {
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
+      // `characters` has a plain unique(team_id, name) with no carve-out for
+      // inactive rows, so someone who left and is being re-added under their
+      // exact old name would otherwise hit that constraint and fail outright.
+      // Look up any existing row (active or not) instead of blind-inserting.
       const { data: existing } = await supabase
-        .from('characters').select('id').eq('team_id', teamId).eq('active', true).ilike('name', name.trim()).maybeSingle();
-      if (existing) return res.status(409).json({ error: `${name.trim()} is already on this roster.` });
+        .from('characters').select('id, active').eq('team_id', teamId).ilike('name', name.trim()).maybeSingle();
+      if (existing?.active) return res.status(409).json({ error: `${name.trim()} is already on this roster.` });
 
-      const { data, error } = await supabase
-        .from('characters')
-        .insert({
-          team_id:      teamId,
-          name:         name.trim(),
-          class:        charClass.toLowerCase().trim(),
-          server:       slugifyServer(server),
-          realm_name:   server.trim(),
-          primary_role: role.toLowerCase().trim(),
-          rank:         rank || 'Main',
-          active:       true,
-        })
-        .select('id').single();
-      if (error) throw error;
+      let characterId;
+      if (existing) {
+        // Reactivate in place -- keeps the original id (and any loot history
+        // already tied to it) instead of creating a duplicate identity.
+        const { error: reactivateErr } = await supabase
+          .from('characters')
+          .update({
+            class:        charClass.toLowerCase().trim(),
+            server:       slugifyServer(server),
+            realm_name:   server.trim(),
+            primary_role: role.toLowerCase().trim(),
+            rank:         rank || 'Main',
+            active:       true,
+          })
+          .eq('id', existing.id);
+        if (reactivateErr) throw reactivateErr;
+        characterId = existing.id;
+      } else {
+        const { data, error } = await supabase
+          .from('characters')
+          .insert({
+            team_id:      teamId,
+            name:         name.trim(),
+            class:        charClass.toLowerCase().trim(),
+            server:       slugifyServer(server),
+            realm_name:   server.trim(),
+            primary_role: role.toLowerCase().trim(),
+            rank:         rank || 'Main',
+            active:       true,
+          })
+          .select('id').single();
+        if (error) throw error;
+        characterId = data.id;
+      }
 
-      return res.status(200).json({ success: true, id: data.id });
+      // Opens a new membership "stint" -- someone who left and rejoins gets
+      // a second row here rather than losing/overwriting their earlier one.
+      const { error: periodErr } = await supabase
+        .from('character_membership_periods')
+        .insert({ team_id: teamId, character_id: characterId, joined_at: new Date().toISOString().slice(0, 10) });
+      if (periodErr) throw periodErr;
+
+      return res.status(200).json({ success: true, id: characterId });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
@@ -995,6 +1123,14 @@ module.exports = async (req, res) => {
       const { error } = await supabase
         .from('characters').update({ active: false, account_id: null }).eq('id', characterId).eq('team_id', teamId);
       if (error) throw error;
+
+      // Close their open membership period, if any -- best-effort: a
+      // character added before this feature existed may have no period rows
+      // at all yet, which is fine, there's just nothing to close.
+      await supabase
+        .from('character_membership_periods')
+        .update({ left_at: new Date().toISOString().slice(0, 10) })
+        .eq('character_id', characterId).is('left_at', null);
 
       return res.status(200).json({ success: true });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }

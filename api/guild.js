@@ -152,7 +152,7 @@ module.exports = async (req, res) => {
   // ── CREATE: create a brand-new guild+team, OR (with confirmNewTeam) a new
   // sibling team under a guild that already exists by name+server ──
   if (action === 'create') {
-    const { guild, server, region, difficulty, teamName, wclUrl, zoneId, wclTeamId, raidDays, confirmNewTeam } = req.body;
+    const { guild, server, region, difficulty, teamName, wclTeamId, raidDays, confirmNewTeam } = req.body;
     if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
 
     try {
@@ -191,9 +191,7 @@ module.exports = async (req, res) => {
         .insert({
           guild_id:     guildId,
           name:         teamName || 'Main Team',
-          wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
-          zone_id:      zoneId || null,
           difficulty:   difficulty || 'mythic',
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
           join_code:    await generateUniqueJoinCode(supabase),
@@ -217,7 +215,7 @@ module.exports = async (req, res) => {
   // confirmNewTeam path above, just reached from a different starting point. ──
   if (action === 'addTeam') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-    const { teamId, teamName, wclUrl, zoneId, wclTeamId, difficulty, raidDays } = req.body;
+    const { teamId, teamName, wclTeamId, difficulty, raidDays } = req.body;
     if (!teamId || !teamName) return res.status(400).json({ error: 'teamId and teamName are required' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
@@ -231,9 +229,7 @@ module.exports = async (req, res) => {
         .insert({
           guild_id:     anchorTeam.guild_id,
           name:         teamName,
-          wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
-          zone_id:      zoneId || null,
           difficulty:   difficulty || 'mythic',
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
           join_code:    await generateUniqueJoinCode(supabase),
@@ -257,7 +253,7 @@ module.exports = async (req, res) => {
   if (action === 'update') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { teamId, guild, server, region, wclUrl, zoneId, teamName, wclTeamId, raidDays } = req.body;
+      const { teamId, guild, server, region, teamName, wclTeamId, raidDays } = req.body;
       if (!teamId) return res.status(400).json({ error: 'teamId required' });
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
@@ -275,9 +271,7 @@ module.exports = async (req, res) => {
         .from('teams')
         .update({
           name:         teamName || undefined,
-          wcl_url:      wclUrl || null,
           wcl_team_id:  wclTeamId || null,
-          zone_id:      zoneId || null,
           raid_days:    Array.isArray(raidDays) ? raidDays : [],
         })
         .eq('id', teamId)

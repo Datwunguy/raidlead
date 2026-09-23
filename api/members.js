@@ -93,6 +93,28 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
+  // ── BECOME VIEWER (self-service): lets someone past the character-claim
+  // gate without claiming a character, for anyone who just wants read-only
+  // access -- officers/owners never need this, they bypass the gate
+  // entirely on the client side regardless of role. Only ever changes the
+  // caller's own role, and only downward (never touches an existing
+  // officer/owner), so there's no privilege-escalation surface here. ──
+  if (action === 'becomeViewer') {
+    const { teamId } = req.body;
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
+    try {
+      const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      if (isOfficerRole(myRole)) return res.status(200).json({ success: true, role: myRole }); // nothing to do
+
+      await supabase
+        .from('team_members')
+        .update({ role: 'viewer' })
+        .eq('account_id', session.id)
+        .eq('team_id', teamId);
+      return res.status(200).json({ success: true, role: 'viewer' });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
   // ── UPDATE DISPLAY NAME (self-service, no team context) ──
   if (action === 'updateDisplayName') {
     const { displayName } = req.body;
@@ -328,6 +350,10 @@ module.exports = async (req, res) => {
     let isOfficer;
     try {
       const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      // A Viewer has no claimed character, so this would already be a no-op
+      // in practice -- explicit check anyway for a clear error rather than
+      // relying only on "there's nothing to match" below.
+      if (myRole === 'viewer') return res.status(403).json({ error: 'Viewers cannot mark attendance' });
       isOfficer = isOfficerRole(myRole);
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
 
