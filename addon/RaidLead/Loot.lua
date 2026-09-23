@@ -279,6 +279,13 @@ function RaidLead.HandleLootMessage(msg)
       local isBossLoot  = currentEncounter ~= nil
 
       if isTierToken or isBossLoot then
+        -- Real gear always carries an upgrade track (Veteran/Champion/Hero/
+        -- Mythic) in current content -- quest currency, catalyst fragments,
+        -- and similar junk (e.g. "Mask Fragment", "Spark of Tides") don't,
+        -- even though they clear the quality floor above. Tier tokens are
+        -- exempt: they're an explicit opt-in via TIER_TOKEN_ITEM_IDS and
+        -- some don't carry a track themselves.
+        if not isTierToken and not itemMeta.qualityTrack then return end
         recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, false, itemMeta)
         return
       end
@@ -289,6 +296,7 @@ function RaidLead.HandleLootMessage(msg)
       if itemQuality ~= QUALITY_EPIC then return end
       if itemClassID ~= ITEM_CLASS_ARMOR and itemClassID ~= ITEM_CLASS_WEAPON then return end
       if not itemLevel or itemLevel < (RaidLeadDB.settings.minTrackedItemLevel or 0) then return end
+      if not itemMeta.qualityTrack then return end
 
       recordLoot(recipientName, itemLink, itemId, itemName, false, true, itemMeta)
     end)
@@ -360,6 +368,10 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
       if not meetsQualityFloor(itemQuality) then return end
 
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
+      -- Same "real gear has a track" reasoning as the Personal Loot path --
+      -- see there for why. Tier tokens are exempt.
+      if not isTierToken and not itemMeta.qualityTrack then return end
+
       recordLoot(winnerName, itemLink, itemId, itemName, isTierToken, false, itemMeta,
         { rollType = rollType, rollValue = rollValue, participants = participants },
         { id = encounterID, name = encounterName, difficulty = difficulty })
