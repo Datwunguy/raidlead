@@ -750,6 +750,8 @@ function openAddCharacterModal() {
   document.getElementById('cm-msg').textContent = '';
   document.getElementById('cm-rename-warning').style.display = 'none';
   document.getElementById('cm-remove-btn').style.display = 'none';
+  document.getElementById('cm-guild-section').style.display = 'block';
+  resetAddFromGuildPanel();
   document.getElementById('character-modal').classList.add('open');
 }
 
@@ -767,6 +769,8 @@ function openEditCharacterModal(characterId) {
   document.getElementById('cm-msg').textContent = '';
   document.getElementById('cm-rename-warning').style.display = 'none';
   document.getElementById('cm-remove-btn').style.display = 'inline-block';
+  document.getElementById('cm-guild-section').style.display = 'none';
+  resetAddFromGuildPanel();
   document.getElementById('character-modal').classList.add('open');
 }
 
@@ -849,6 +853,146 @@ async function removeCharacterFromModal() {
     msg.textContent = e.message;
     msg.className   = 'status-msg error';
   }
+}
+
+// ── ADD FROM GUILD: pick a character straight off the guild's real Blizzard
+// roster instead of typing one in by hand (see api/roster.js's guildRoster/
+// guildCharacterSpec actions, and lib/battleNet.js). Fetched once per page
+// session and cached in memory -- opening the panel again just re-filters
+// what's already loaded, no extra network call. ──
+let GUILD_ROSTER_DATA     = null;  // [{name, class, level, rank}] once loaded, else null
+let GUILD_ROSTER_FILTERED = [];    // whatever's currently rendered, indexed for click handlers
+let GUILD_SPEC_CACHE      = {};    // characterName -> spec string (session-level, avoids re-fetching)
+let GUILD_SEARCH_DEBOUNCE = null;
+let GUILD_RENDER_TOKEN    = 0;     // bumped on every render so a slow spec fetch can't overwrite a newer search's rows
+
+// Mirrors api/discord.js's normalizeName -- strips combining accent marks so
+// "Häzey" / "Hazëy" / "Hazey" all match the same search term, same as the
+// Discord bot's character lookup already does server-side.
+function normalizeNameClient(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
+function resetAddFromGuildPanel() {
+  document.getElementById('cm-guild-panel').style.display = 'none';
+  document.getElementById('cm-guild-toggle-btn').textContent = '🔍 Add From Guild';
+  document.getElementById('cm-guild-search').value = '';
+  document.getElementById('cm-guild-results').innerHTML = '';
+  document.getElementById('cm-guild-status').textContent = '';
+}
+
+function toggleAddFromGuild() {
+  const panel = document.getElementById('cm-guild-panel');
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'block' : 'none';
+  document.getElementById('cm-guild-toggle-btn').textContent = opening ? '🔍 Hide Guild Search' : '🔍 Add From Guild';
+  if (opening && GUILD_ROSTER_DATA === null) loadGuildRosterPanel();
+  else if (opening) filterGuildRosterResults();
+}
+
+async function loadGuildRosterPanel() {
+  const status = document.getElementById('cm-guild-status');
+  status.textContent = 'Loading guild roster from Blizzard...';
+  try {
+    const resp = await fetch(`/api/roster?action=guildRoster&teamId=${encodeURIComponent(STATE.teamId)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to load guild roster');
+    GUILD_ROSTER_DATA = data.members || [];
+    if (data.error) {
+      status.textContent = data.error;
+    } else {
+      status.textContent = '';
+      filterGuildRosterResults();
+    }
+  } catch (e) {
+    GUILD_ROSTER_DATA = [];
+    status.textContent = 'Error: ' + e.message;
+  }
+}
+
+function filterGuildRosterResults() {
+  if (!GUILD_ROSTER_DATA) return;
+  const raw = document.getElementById('cm-guild-search').value.trim();
+  const rawLower  = raw.toLowerCase();
+  const normed    = normalizeNameClient(raw);
+
+  let matches = raw
+    ? GUILD_ROSTER_DATA.filter(m =>
+        m.name.toLowerCase().includes(rawLower) || normalizeNameClient(m.name).includes(normed))
+    : GUILD_ROSTER_DATA.slice();
+  matches.sort((a, b) => a.name.localeCompare(b.name));
+
+  const total = matches.length;
+  const shown = matches.slice(0, 25);
+  GUILD_ROSTER_FILTERED = shown;
+  GUILD_RENDER_TOKEN++;
+  renderGuildResults(shown, total, GUILD_RENDER_TOKEN);
+}
+
+function renderGuildResults(list, total, token) {
+  const results = document.getElementById('cm-guild-results');
+  const status  = document.getElementById('cm-guild-status');
+
+  if (list.length === 0) {
+    results.innerHTML = '';
+    status.textContent = GUILD_ROSTER_DATA.length === 0 ? 'No guild roster data available.' : 'No matches.';
+    return;
+  }
+
+  const activeNormNames = new Set(STATE.players.map(p => normalizeNameClient(p.name)));
+
+  results.innerHTML = list.map((m, idx) => {
+    const alreadyOn = activeNormNames.has(normalizeNameClient(m.name));
+    return `<div class="guild-roster-row" onclick="pickGuildCharacter(${idx})">
+      <span>
+        <span class="guild-roster-row-name">${escapeHtml(m.name)}</span>
+        <span class="guild-roster-row-meta" id="cm-guild-spec-${idx}">${escapeHtml(m.class || '')}</span>
+      </span>
+      ${alreadyOn ? '<span class="guild-roster-row-tag">Already on roster</span>' : ''}
+    </div>`;
+  }).join('');
+
+  status.textContent = total > list.length
+    ? `Showing ${list.length} of ${total} -- refine your search to narrow it down.`
+    : `${total} match${total === 1 ? '' : 'es'}.`;
+
+  clearTimeout(GUILD_SEARCH_DEBOUNCE);
+  GUILD_SEARCH_DEBOUNCE = setTimeout(() => enrichVisibleSpecs(list, token), 300);
+}
+
+// Active spec isn't in the roster response -- fetched lazily, only for
+// whatever's currently visible, and only after typing pauses for 300ms so
+// fast typing doesn't fire a burst of requests for rows about to disappear.
+// The token check guards against a slow response landing after a newer
+// search has already replaced these rows.
+async function enrichVisibleSpecs(list, token) {
+  await Promise.all(list.map(async (m, idx) => {
+    let spec = GUILD_SPEC_CACHE[m.name];
+    if (spec === undefined) {
+      try {
+        const resp = await fetch(`/api/roster?action=guildCharacterSpec&teamId=${encodeURIComponent(STATE.teamId)}&characterName=${encodeURIComponent(m.name)}`);
+        const data = await resp.json();
+        spec = resp.ok ? (data.spec || null) : null;
+      } catch (e) { spec = null; }
+      GUILD_SPEC_CACHE[m.name] = spec;
+    }
+    if (token !== GUILD_RENDER_TOKEN || !spec) return;
+    const el = document.getElementById(`cm-guild-spec-${idx}`);
+    if (el) el.textContent = `${m.class || ''} — ${spec}`;
+  }));
+}
+
+function pickGuildCharacter(idx) {
+  const m = GUILD_ROSTER_FILTERED[idx];
+  if (!m) return;
+  document.getElementById('cm-name').value = m.name;
+  if (m.class) document.getElementById('cm-class').value = m.class.toLowerCase();
+  document.getElementById('cm-server').value = titleCaseServer(STATE.config?.server);
+  document.getElementById('cm-guild-panel').style.display = 'none';
+  document.getElementById('cm-guild-toggle-btn').textContent = '🔍 Add From Guild';
+  const msg = document.getElementById('cm-msg');
+  msg.textContent = `Selected ${m.name} from the guild roster -- pick a Role and Rank, then Save.`;
+  msg.className = 'status-msg';
 }
 
 // ─────────────────────────────────────────────

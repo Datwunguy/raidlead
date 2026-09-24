@@ -18,6 +18,7 @@ const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
+const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 
 // Cache listIlvl's live Raider.io results per team briefly, so several
 // people opening the Roster tab around the same time don't each trigger a
@@ -25,6 +26,12 @@ const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone'
 // fast enough to justify hitting Raider.io on every page load either way.
 const ilvlCache = new Map(); // teamId -> { data: {name: ilvl}, fetchedAt }
 const ILVL_CACHE_MS = 10 * 60 * 1000;
+
+// Cache guildRoster's live Blizzard results per team briefly -- it's fetched
+// once when the "Add From Guild" panel opens, not per keystroke, but two
+// officers opening it around the same time shouldn't double the API calls.
+const guildRosterCache = new Map(); // teamId -> { data: [...members], fetchedAt }
+const GUILD_ROSTER_CACHE_MS = 10 * 60 * 1000;
 
 // Thrown when a request needs WCL access but the caller's guild hasn't connected its
 // own Warcraft Logs API client yet -- callers check err.wclNotConfigured to show a
@@ -1044,6 +1051,63 @@ module.exports = async (req, res) => {
       const ilvls = Object.fromEntries(entries);
       ilvlCache.set(teamId, { data: ilvls, fetchedAt: Date.now() });
       return res.status(200).json({ ilvls });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── GUILD ROSTER (officer only): the guild's real Blizzard roster, so the
+  // Add Character modal can offer a pick-list instead of relying on someone
+  // typing a name (and its accent marks) correctly by hand. Cached briefly
+  // per team, same pattern as ilvlCache above -- fetched once when the
+  // "Add From Guild" panel opens, not on every keystroke. ──
+  if (action === 'guildRoster') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    const force  = req.query.force === 'true' || req.body?.force === true;
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
+    try {
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+
+      const cached = guildRosterCache.get(teamId);
+      if (!force && cached && Date.now() - cached.fetchedAt < GUILD_ROSTER_CACHE_MS) {
+        return res.status(200).json({ members: cached.data });
+      }
+
+      const { data: team } = await supabase
+        .from('teams').select('id, guilds ( name, server, region )').eq('id', teamId).single();
+      const guild = team?.guilds;
+      if (!guild?.name || !guild?.server) {
+        return res.status(200).json({ members: [], error: "This team's guild name/server isn't set yet -- check Guild Settings." });
+      }
+
+      const members = await fetchGuildRoster(guild.region || 'us', guild.server, guild.name);
+      if (members === null) {
+        return res.status(200).json({ members: [], error: "Couldn't reach Blizzard's guild roster for this guild/server -- check the guild name/server in Guild Settings." });
+      }
+
+      guildRosterCache.set(teamId, { data: members, fetchedAt: Date.now() });
+      return res.status(200).json({ members });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
+
+  // ── GUILD CHARACTER SPEC (officer only): active spec for one character,
+  // looked up lazily -- guildRoster's response has no spec field (it's a
+  // separate Blizzard endpoint per character), and fetching it for an
+  // entire guild up front would be slow and mostly wasted. Best-effort: a
+  // character that hasn't logged in recently enough for Blizzard to have it
+  // cached just comes back with spec: null, never an error. ──
+  if (action === 'guildCharacterSpec') {
+    const teamId        = req.query.teamId        || req.body?.teamId;
+    const characterName = req.query.characterName || req.body?.characterName;
+    if (!teamId || !characterName) return res.status(400).json({ error: 'teamId and characterName required' });
+    try {
+      await assertTeamOwnership(teamId, { requireOfficer: true });
+
+      const { data: team } = await supabase
+        .from('teams').select('id, guilds ( server, region )').eq('id', teamId).single();
+      const guild = team?.guilds;
+      if (!guild?.server) return res.status(200).json({ spec: null });
+
+      const spec = await fetchCharacterSpec(guild.region || 'us', guild.server, characterName);
+      return res.status(200).json({ spec });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
