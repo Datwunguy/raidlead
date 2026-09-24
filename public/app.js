@@ -4344,7 +4344,13 @@ async function loadPlanForDate(dateStr) {
   renderPlannerChecklist();
   renderPlannerRoster();
 
-  const planData = await fetchRaidPlanFromDB(dateStr);
+  // Always refresh attendance marks alongside the plan itself --
+  // STATE.attendanceMarks is otherwise only ever fetched once per session
+  // (see showTab's attendanceLoaded gate), so a teammate marking themselves
+  // unavailable after this session's first Raid Night visit would silently
+  // never show up as Out here, even on a fresh publish or a later reopen
+  // of this same tab, without an explicit refresh on every load.
+  const [planData] = await Promise.all([fetchRaidPlanFromDB(dateStr), loadAttendanceData()]);
   console.log('[Planner] loadPlanForDate', dateStr, planData?.plan ? 'found' : 'none');
   if (planData?.plan) {
     applyPlanData(planData);
