@@ -2639,10 +2639,11 @@ async function loadSeasonHistoryList() {
     if (!resp.ok) return;
     const select = document.getElementById('season-history-select');
     if (!select) return;
-    const seasons = (data.seasons || []).filter(s => s.ended_at); // only past (closed) seasons are worth picking -- "Current" already covers the live one
-    select.innerHTML = '<option value="">Current</option>' +
+    const seasons = (data.seasons || []).filter(s => s.ended_at); // only past (closed) seasons are worth picking -- the current one already has its own option below
+    const currentLabel = STATE.zoneName || 'Current';
+    select.innerHTML = `<option value="">${escapeHtml(currentLabel)}</option>` +
       seasons.map(s => `<option value="${s.id}">${escapeHtml(s.zone_name)}</option>`).join('');
-  } catch(e) { /* best-effort -- dropdown just stays at "Current" */ }
+  } catch(e) { /* best-effort -- dropdown just stays at whatever it last showed */ }
 }
 
 async function onSeasonHistoryChange(seasonId) {
