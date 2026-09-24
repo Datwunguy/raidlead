@@ -135,10 +135,17 @@ async function handleAttendanceCommand(supabase, interaction) {
     // Note: this means anyone in the server can mark any character's attendance.
     // Matched accent-insensitively (Postgres ilike alone won't treat "Tiesto" and
     // "Tiësto" as equal), so players don't need to type special characters.
+    //
+    // active-only matters: confirmed live that a team with both a current
+    // "Häzey" and an old, removed "Hazëy" (soft-deleted, not hard-deleted --
+    // see removeCharacter) normalizes both to the same "hazey" target, and
+    // an unfiltered query could match whichever one Supabase happened to
+    // return first, silently marking the wrong (inactive, roster-invisible)
+    // character's attendance instead of the real one.
     const target = normalizeName(characterOpt);
     const matches = [];
     for (const t of candidateTeams) {
-      const { data: chars } = await supabase.from('characters').select('name').eq('team_id', t.id);
+      const { data: chars } = await supabase.from('characters').select('name').eq('team_id', t.id).eq('active', true);
       const char = (chars || []).find(c => normalizeName(c.name) === target);
       if (char) matches.push({ team: t, character: char });
     }
