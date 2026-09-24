@@ -2604,7 +2604,7 @@ function renderResources() {
         card.onmouseout  = () => card.style.borderColor = 'var(--border)';
         card.innerHTML = `
           <div style="font-weight:700; color:var(--gold); font-size:14px; margin-bottom:4px;">${escapeHtml(item.name)}</div>
-          <div style="font-size:12px; color:var(--text-mute); line-height:1.5;">${escapeHtml(item.description)}</div>
+          <div style="font-size:12px; color:var(--text-dim); line-height:1.5;">${escapeHtml(item.description)}</div>
         `;
         grid.appendChild(card);
       });
@@ -2641,7 +2641,7 @@ async function loadSeasonHistoryList() {
     if (!select) return;
     const seasons = (data.seasons || []).filter(s => s.ended_at); // only past (closed) seasons are worth picking -- "Current" already covers the live one
     select.innerHTML = '<option value="">Current</option>' +
-      seasons.map(s => `<option value="${s.id}">${escapeHtml(s.zone_name)} (${s.started_at} – ${s.ended_at})</option>`).join('');
+      seasons.map(s => `<option value="${s.id}">${escapeHtml(s.zone_name)}</option>`).join('');
   } catch(e) { /* best-effort -- dropdown just stays at "Current" */ }
 }
 

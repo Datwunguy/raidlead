@@ -73,3 +73,25 @@ create table if not exists character_membership_periods (
 
 create index if not exists membership_periods_team_id_idx on character_membership_periods(team_id);
 create index if not exists membership_periods_character_id_idx on character_membership_periods(character_id);
+
+-- Backfill: character_membership_periods only ever gets a row from
+-- addCharacter/removeCharacter going forward -- nobody already on a
+-- roster when this feature shipped ever got an initial "joined" period,
+-- so every season-roster query came back empty (confirmed live: "No
+-- roster data recorded for this season" for every team, every season).
+-- Best-effort, not a perfect historical record: uses each active
+-- character's created_at as a stand-in for when they actually joined,
+-- which is only as accurate as that column already was (e.g. a WowAudit
+-- bulk import would cluster everyone's created_at around the import date,
+-- not their real individual join dates). Inactive (already-departed)
+-- characters are deliberately left unbackfilled -- there's no recorded
+-- left_at for them to backfill accurately, so guessing one would make
+-- past-season rosters actively wrong rather than just incomplete. Safe to
+-- re-run: only inserts for characters with zero existing period rows.
+insert into character_membership_periods (team_id, character_id, joined_at)
+select c.team_id, c.id, c.created_at::date
+from characters c
+where c.active = true
+  and not exists (
+    select 1 from character_membership_periods p where p.character_id = c.id
+  );
