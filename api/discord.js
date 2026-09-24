@@ -142,18 +142,38 @@ async function handleAttendanceCommand(supabase, interaction) {
     // an unfiltered query could match whichever one Supabase happened to
     // return first, silently marking the wrong (inactive, roster-invisible)
     // character's attendance instead of the real one.
-    const target = normalizeName(characterOpt);
+    //
+    // Two *active* characters on the same team can still collide once
+    // accents are stripped (e.g. "Häzey" and "Hazey" both currently on the
+    // roster) -- try an exact, accent-preserving match first, since typing
+    // the real spelling should resolve that cleanly without ever hitting
+    // the ambiguous case below. Only fall back to the accent-stripped fuzzy
+    // match (and only then risk a same-team collision) when nothing matches
+    // exactly.
+    const target    = normalizeName(characterOpt);
+    const rawTarget = characterOpt.trim().toLowerCase();
     const matches = [];
     for (const t of candidateTeams) {
       const { data: chars } = await supabase.from('characters').select('name').eq('team_id', t.id).eq('active', true);
-      const char = (chars || []).find(c => normalizeName(c.name) === target);
-      if (char) matches.push({ team: t, character: char });
+      const list = chars || [];
+      let candidatesInTeam = list.filter(c => c.name.trim().toLowerCase() === rawTarget);
+      if (candidatesInTeam.length === 0) {
+        candidatesInTeam = list.filter(c => normalizeName(c.name) === target);
+      }
+      if (candidatesInTeam.length === 1) {
+        matches.push({ team: t, character: candidatesInTeam[0] });
+      } else if (candidatesInTeam.length > 1) {
+        matches.push({ team: t, character: null, ambiguousNames: candidatesInTeam.map(c => c.name) });
+      }
     }
     if (matches.length === 0) {
       return ephemeral(`Couldn't find a character named "${characterOpt}" on ${candidateTeams.length > 1 ? 'any team linked to this server' : `"${candidateTeams[0].name}"`}.`);
     }
     if (matches.length > 1) {
       return ephemeral(`"${characterOpt}" exists on more than one team here (${matches.map(m => m.team.name).join(', ')}) -- add \`team:\` to say which one you mean.`);
+    }
+    if (!matches[0].character) {
+      return ephemeral(`More than one character on "${matches[0].team.name}" matches "${characterOpt}" once accents are ignored (${matches[0].ambiguousNames.join(', ')}) -- type the exact name, with the right accent marks, to tell them apart.`);
     }
     teamRow = matches[0].team;
     character = matches[0].character;
