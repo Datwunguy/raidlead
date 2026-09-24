@@ -1093,10 +1093,16 @@ module.exports = async (req, res) => {
   // separate Blizzard endpoint per character), and fetching it for an
   // entire guild up front would be slow and mostly wasted. Best-effort: a
   // character that hasn't logged in recently enough for Blizzard to have it
-  // cached just comes back with spec: null, never an error. ──
+  // cached just comes back with spec: null, never an error.
+  //
+  // realmSlug is the character's OWN realm (as returned per-member by
+  // guildRoster), not necessarily the guild's realm -- a guild's members
+  // can be spread across its whole connected-realm group. Falls back to the
+  // guild's own realm only if the caller doesn't have a per-member one. ──
   if (action === 'guildCharacterSpec') {
-    const teamId        = req.query.teamId        || req.body?.teamId;
-    const characterName = req.query.characterName || req.body?.characterName;
+    const teamId          = req.query.teamId          || req.body?.teamId;
+    const characterName   = req.query.characterName   || req.body?.characterName;
+    const realmSlugParam  = req.query.realmSlug        || req.body?.realmSlug;
     if (!teamId || !characterName) return res.status(400).json({ error: 'teamId and characterName required' });
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
@@ -1104,9 +1110,10 @@ module.exports = async (req, res) => {
       const { data: team } = await supabase
         .from('teams').select('id, guilds ( server, region )').eq('id', teamId).single();
       const guild = team?.guilds;
-      if (!guild?.server) return res.status(200).json({ spec: null });
+      const realmSlug = realmSlugParam || guild?.server;
+      if (!realmSlug) return res.status(200).json({ spec: null });
 
-      const spec = await fetchCharacterSpec(guild.region || 'us', guild.server, characterName);
+      const spec = await fetchCharacterSpec(guild?.region || 'us', realmSlug, characterName);
       return res.status(200).json({ spec });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }

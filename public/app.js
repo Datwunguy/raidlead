@@ -860,7 +860,7 @@ async function removeCharacterFromModal() {
 // guildCharacterSpec actions, and lib/battleNet.js). Fetched once per page
 // session and cached in memory -- opening the panel again just re-filters
 // what's already loaded, no extra network call. ──
-let GUILD_ROSTER_DATA     = null;  // [{name, class, level, rank}] once loaded, else null
+let GUILD_ROSTER_DATA     = null;  // [{name, class, level, rank, realmSlug}] once loaded, else null
 let GUILD_ROSTER_FILTERED = [];    // whatever's currently rendered, indexed for click handlers
 let GUILD_SPEC_CACHE      = {};    // characterName -> spec string (session-level, avoids re-fetching)
 let GUILD_SEARCH_DEBOUNCE = null;
@@ -939,14 +939,20 @@ function renderGuildResults(list, total, token) {
     return;
   }
 
-  const activeNormNames = new Set(STATE.players.map(p => normalizeNameClient(p.name)));
+  // Exact match (name + realm), never accent-normalized -- accent variants
+  // like Häzey/Hazëy are genuinely different characters, so only the one
+  // whose name is byte-identical to what's already on this team's roster
+  // should be flagged. Realm matters too: a guild's members can be spread
+  // across its whole connected-realm group, so two different characters
+  // named the same thing can legitimately exist on different realms.
+  const activeKeys = new Set(STATE.players.map(p => `${p.name.trim().toLowerCase()}|${(p.server || '').toLowerCase()}`));
 
   results.innerHTML = list.map((m, idx) => {
-    const alreadyOn = activeNormNames.has(normalizeNameClient(m.name));
+    const alreadyOn = activeKeys.has(`${m.name.trim().toLowerCase()}|${(m.realmSlug || '').toLowerCase()}`);
     return `<div class="guild-roster-row" onclick="pickGuildCharacter(${idx})">
       <span>
         <span class="guild-roster-row-name">${escapeHtml(m.name)}</span>
-        <span class="guild-roster-row-meta" id="cm-guild-spec-${idx}">${escapeHtml(m.class || '')}</span>
+        <span class="guild-roster-row-meta" id="cm-guild-spec-${idx}">${escapeHtml(m.class || 'Unknown')}</span>
       </span>
       ${alreadyOn ? '<span class="guild-roster-row-tag">Already on roster</span>' : ''}
     </div>`;
@@ -967,14 +973,15 @@ function renderGuildResults(list, total, token) {
 // search has already replaced these rows.
 async function enrichVisibleSpecs(list, token) {
   await Promise.all(list.map(async (m, idx) => {
-    let spec = GUILD_SPEC_CACHE[m.name];
+    const cacheKey = `${m.name}|${m.realmSlug || ''}`;
+    let spec = GUILD_SPEC_CACHE[cacheKey];
     if (spec === undefined) {
       try {
-        const resp = await fetch(`/api/roster?action=guildCharacterSpec&teamId=${encodeURIComponent(STATE.teamId)}&characterName=${encodeURIComponent(m.name)}`);
+        const resp = await fetch(`/api/roster?action=guildCharacterSpec&teamId=${encodeURIComponent(STATE.teamId)}&characterName=${encodeURIComponent(m.name)}&realmSlug=${encodeURIComponent(m.realmSlug || '')}`);
         const data = await resp.json();
         spec = resp.ok ? (data.spec || null) : null;
       } catch (e) { spec = null; }
-      GUILD_SPEC_CACHE[m.name] = spec;
+      GUILD_SPEC_CACHE[cacheKey] = spec;
     }
     if (token !== GUILD_RENDER_TOKEN || !spec) return;
     const el = document.getElementById(`cm-guild-spec-${idx}`);
@@ -987,7 +994,7 @@ function pickGuildCharacter(idx) {
   if (!m) return;
   document.getElementById('cm-name').value = m.name;
   if (m.class) document.getElementById('cm-class').value = m.class.toLowerCase();
-  document.getElementById('cm-server').value = titleCaseServer(STATE.config?.server);
+  document.getElementById('cm-server').value = titleCaseServer(m.realmSlug) || titleCaseServer(STATE.config?.server);
   document.getElementById('cm-guild-panel').style.display = 'none';
   document.getElementById('cm-guild-toggle-btn').textContent = '🔍 Add From Guild';
   const msg = document.getElementById('cm-msg');
