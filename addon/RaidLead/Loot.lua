@@ -355,7 +355,19 @@ function RaidLead.HandleLootMessage(msg)
         -- even though they clear the quality floor above. Tier tokens are
         -- exempt: they're an explicit opt-in via TIER_TOKEN_ITEM_IDS and
         -- some don't carry a track themselves.
-        if not isTierToken and not itemMeta.qualityTrack then return end
+        if not isTierToken and not itemMeta.qualityTrack then
+          -- A real raid night reported loot -- including a genuine BoE --
+          -- going missing with zero trace. Silently `return`-ing here was
+          -- indistinguishable from a bug elsewhere; only Epic items print
+          -- (greens/blues rejected here are the overwhelming common case
+          -- and would just spam chat) so an unusual miss is visible without
+          -- flooding chat during normal trash clearing.
+          if itemQuality == QUALITY_EPIC then
+            print('|cffff8800RaidLead|r: NOT captured -- ' .. (itemName or itemLink) ..
+              ' is Epic but has no detected upgrade track and isn\'t a known tier token, so it was skipped as likely non-gear. If this was real gear or a BoE, report it.')
+          end
+          return
+        end
         -- isBoe reflects the item's REAL detected bind type (not a guess) --
         -- previously hardcoded false here, which meant a genuine BoE that
         -- dropped from a boss was captured in the main loot log (bindType
@@ -370,9 +382,21 @@ function RaidLead.HandleLootMessage(msg)
       -- tier-relevant BoE (Epic armor/weapon at or above this tier's floor),
       -- so trash mobs' cloth/gold/greens never show up in loot history.
       if itemQuality ~= QUALITY_EPIC then return end
-      if itemClassID ~= ITEM_CLASS_ARMOR and itemClassID ~= ITEM_CLASS_WEAPON then return end
-      if not itemLevel or itemLevel < (RaidLeadDB.settings.minTrackedItemLevel or 0) then return end
-      if not itemMeta.qualityTrack then return end
+      if itemClassID ~= ITEM_CLASS_ARMOR and itemClassID ~= ITEM_CLASS_WEAPON then
+        print('|cffff8800RaidLead|r: NOT captured -- ' .. (itemName or itemLink) ..
+          ' is Epic but not an armor/weapon item, so it was skipped (this addon only tracks equippable BoE gear).')
+        return
+      end
+      if not itemLevel or itemLevel < (RaidLeadDB.settings.minTrackedItemLevel or 0) then
+        print('|cffff8800RaidLead|r: NOT captured -- ' .. (itemName or itemLink) ..
+          ' is Epic armor/weapon but below this tier\'s tracked item level floor (' .. tostring(RaidLeadDB.settings.minTrackedItemLevel) .. ').')
+        return
+      end
+      if not itemMeta.qualityTrack then
+        print('|cffff8800RaidLead|r: NOT captured -- ' .. (itemName or itemLink) ..
+          ' is Epic armor/weapon at tier item level but has no detected upgrade track, so it was skipped as likely not real BoE gear. If this WAS a real BoE, report it -- this is the exact filter that may need adjusting.')
+        return
+      end
 
       recordLoot(recipientName, itemLink, itemId, itemName, false, itemMeta.bindType == 'BoE', itemMeta)
     end)
@@ -452,7 +476,13 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
       -- Same "real gear has a track" reasoning as the Personal Loot path --
       -- see there for why. Tier tokens are exempt.
-      if not isTierToken and not itemMeta.qualityTrack then return end
+      if not isTierToken and not itemMeta.qualityTrack then
+        if itemQuality == QUALITY_EPIC then
+          print('|cffff8800RaidLead|r: NOT captured -- Group Loot roll won by ' .. winnerName .. ' for ' .. (itemName or itemLink) ..
+            ' -- Epic with no detected upgrade track and not a known tier token, so it was skipped as likely non-gear. If this was real gear or a BoE, report it.')
+        end
+        return
+      end
 
       recordLoot(winnerName, itemLink, itemId, itemName, isTierToken, itemMeta.bindType == 'BoE', itemMeta,
         { rollType = rollType, rollValue = rollValue, participants = participants },
@@ -491,7 +521,13 @@ function RaidLead.HandleBonusRoll(typeIdentifier, itemLink)
     resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, _, itemMeta)
       if not meetsQualityFloor(itemQuality) then return end
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
-      if not isTierToken and not itemMeta.qualityTrack then return end
+      if not isTierToken and not itemMeta.qualityTrack then
+        if itemQuality == QUALITY_EPIC then
+          print('|cffff8800RaidLead|r: NOT captured -- bonus roll item ' .. (itemName or itemLink) ..
+            ' -- Epic with no detected upgrade track and not a known tier token, so it was skipped as likely non-gear.')
+        end
+        return
+      end
       recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, itemMeta.bindType == 'BoE', itemMeta)
     end)
   end)
