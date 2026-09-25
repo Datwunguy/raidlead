@@ -50,15 +50,18 @@ end
 -- person -- a bare name only resolves same-realm (and connected realms);
 -- anyone else needs "Name-Realm" or the client reports "player not found"
 -- even though they're a real roster member. Prefers entry.realmName (the
--- real realm name as an officer typed it, e.g. "Kel'Thuzad") when synced
--- down -- WoW's invite format only ever strips spaces, so that's lossless.
--- Falls back to reconstructing from the slug (lossy for apostrophes/etc,
--- see realmNameFromSlug above) for characters saved before realm_name
--- existed, and to the bare name if neither is available.
+-- real realm name as an officer typed it, e.g. "Mal'Ganis") when synced
+-- down. CONFIRMED against a live invite failure: WoW's Name-Realm format
+-- strips ALL punctuation from the realm part, not just spaces -- "Mal'Ganis"
+-- needs to become "MalGanis", not "Mal'Ganis" (an invite to the latter
+-- silently failed as "player not found" even though the target was a real,
+-- online roster member). Falls back to reconstructing from the slug (lossy
+-- for apostrophes/etc, see realmNameFromSlug above) for characters saved
+-- before realm_name existed, and to the bare name if neither is available.
 local function inviteTargetFor(entry)
   if not entry or not entry.name then return nil end
   if entry.realmName and entry.realmName ~= '' then
-    return entry.name .. '-' .. (entry.realmName:gsub('%s+', ''))
+    return entry.name .. '-' .. (entry.realmName:gsub('[^%w]', ''))
   end
   local realm = realmNameFromSlug(entry.server)
   if realm then return entry.name .. '-' .. realm end
@@ -166,18 +169,56 @@ function RaidLead.CanInvite()
   return UnitIsGroupLeader('player') or UnitIsGroupAssistant('player')
 end
 
+local function sendInvite(target)
+  if C_PartyInfo and C_PartyInfo.InviteUnit then
+    C_PartyInfo.InviteUnit(target)
+  elseif InviteUnit then
+    InviteUnit(target)
+  end
+end
+
+local function convertToRaid()
+  if C_PartyInfo and C_PartyInfo.ConvertToRaid then
+    C_PartyInfo.ConvertToRaid()
+  elseif ConvertToRaid then
+    ConvertToRaid()
+  end
+end
+
 -- `entries` is a list of { name, server } tables (server may be nil).
 function RaidLead.InviteMissing(entries)
   if not RaidLead.CanInvite() then return end
+
+  local targets = {}
   for _, entry in ipairs(entries) do
     local target = inviteTargetFor(entry)
-    if target then
-      if C_PartyInfo and C_PartyInfo.InviteUnit then
-        C_PartyInfo.InviteUnit(target)
-      elseif InviteUnit then
-        InviteUnit(target)
-      end
-    end
+    if target then table.insert(targets, target) end
+  end
+  if #targets == 0 then return end
+
+  -- A Party is capped at 5 players (yourself + 4 invites) -- CONFIRMED live:
+  -- Disband & Reinvite kept sending invites past that cap but they silently
+  -- stopped landing after the 4th, since the group was still Party type the
+  -- whole time. ConvertToRaid() fixes that -- EXCEPT while completely alone
+  -- (e.g. right at the start, or right after a full disband), where it's a
+  -- well-documented no-op -- it needs a party (even just a pending invite)
+  -- to already exist first. This is the same reason the community's own
+  -- long-standing "solo raid entry" trick sends one throwaway invite before
+  -- calling ConvertToRaid, rather than calling it cold. So: if already
+  -- grouped at all, convert immediately and send every invite; if starting
+  -- from nothing, send the first invite alone, give it a moment to form a
+  -- pending party, then convert before sending the rest.
+  if IsInRaid() then
+    for _, target in ipairs(targets) do sendInvite(target) end
+  elseif GetNumGroupMembers() > 0 then
+    convertToRaid()
+    for _, target in ipairs(targets) do sendInvite(target) end
+  else
+    sendInvite(targets[1])
+    C_Timer.After(0.5, function()
+      convertToRaid()
+      for i = 2, #targets do sendInvite(targets[i]) end
+    end)
   end
 end
 

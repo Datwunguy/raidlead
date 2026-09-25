@@ -277,12 +277,28 @@ end
 -- one implementation of this, not two that can drift apart.
 -- callback(itemName, itemQuality, itemLevel, itemClassID, itemMeta) --
 -- itemMeta is always a table (fields nil where not applicable/found).
+--
+-- A real raid night showed multiple Group Loot drops from the same kill
+-- vanish with zero trace -- no error, no record, nothing -- while others
+-- captured fine. ContinueOnItemLoad's callback is expected to fire almost
+-- immediately here (the item was already shown in everyone's roll popup
+-- moments earlier, so it should already be cached), but evidently doesn't
+-- always. Since the caller (HandleLootHistoryDrop) marks a drop as already
+-- processed BEFORE this resolves, a callback that never fires meant that
+-- drop could never be captured or retried. This adds two things: a 5s
+-- fallback that retries via a direct GetItemInfo call (no waiting on the
+-- async path at all), and a visible chat warning if even that comes up
+-- empty, so a future miss is a loud, immediate, diagnosable event instead
+-- of a silent one discovered days later.
 local function resolveItemMetaAsync(itemLink, callback)
-  local item = Item:CreateFromItemLink(itemLink)
-  item:ContinueOnItemLoad(function()
+  local resolved = false
+
+  local function buildMetaAndCallback()
+    if resolved then return end
     local itemName, _, itemQuality, itemLevel, _, _, itemSubType, _, itemEquipLoc, _, _, itemClassID, _, bindType =
       GetItemInfo(itemLink)
-    if not itemQuality then return end
+    if not itemQuality then return false end
+    resolved = true
 
     -- itemEquipLoc is an internal token (e.g. "INVTYPE_HEAD") -- Blizzard
     -- ships a matching global string for each one that's already the
@@ -297,6 +313,17 @@ local function resolveItemMetaAsync(itemLink, callback)
       bindType = BIND_TYPE_NAMES[bindType],
     }
     callback(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
+    return true
+  end
+
+  local item = Item:CreateFromItemLink(itemLink)
+  item:ContinueOnItemLoad(buildMetaAndCallback)
+
+  C_Timer.After(5, function()
+    if resolved then return end
+    if buildMetaAndCallback() then return end
+    print('|cffff4444RaidLead|r: could not read item info for ' .. tostring(itemLink) ..
+      ' -- this drop was NOT captured. Note the item/boss and report it so the addon can be fixed.')
   end)
 end
 
@@ -329,7 +356,13 @@ function RaidLead.HandleLootMessage(msg)
         -- exempt: they're an explicit opt-in via TIER_TOKEN_ITEM_IDS and
         -- some don't carry a track themselves.
         if not isTierToken and not itemMeta.qualityTrack then return end
-        recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, false, itemMeta)
+        -- isBoe reflects the item's REAL detected bind type (not a guess) --
+        -- previously hardcoded false here, which meant a genuine BoE that
+        -- dropped from a boss was captured in the main loot log (bindType
+        -- showed correctly there) but never appeared under the dedicated
+        -- "BoEs" tab, which filters strictly on this flag. See app.js's
+        -- renderLootRuns(..., d => d.is_boe, ...) for that filter.
+        recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, itemMeta.bindType == 'BoE', itemMeta)
         return
       end
 
@@ -341,12 +374,16 @@ function RaidLead.HandleLootMessage(msg)
       if not itemLevel or itemLevel < (RaidLeadDB.settings.minTrackedItemLevel or 0) then return end
       if not itemMeta.qualityTrack then return end
 
-      recordLoot(recipientName, itemLink, itemId, itemName, false, true, itemMeta)
+      recordLoot(recipientName, itemLink, itemId, itemName, false, itemMeta.bindType == 'BoE', itemMeta)
     end)
   end)
   if not ok then
-    -- Never let a malformed/unexpected loot message take down the addon.
-    -- (uncomment while debugging: print('|cffff4444RaidLead loot parse error|r: ' .. tostring(err)))
+    -- Never let a malformed/unexpected loot message take down the addon --
+    -- but a genuine error here silently meant a drop just vanished with no
+    -- record and no clue why. Printing it costs nothing (this only runs on
+    -- a real error, never in the normal case) and turns a future mystery
+    -- miss into an immediate, reportable message.
+    print('|cffff4444RaidLead loot parse error|r: ' .. tostring(err))
   end
 end
 
@@ -417,14 +454,16 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
       -- see there for why. Tier tokens are exempt.
       if not isTierToken and not itemMeta.qualityTrack then return end
 
-      recordLoot(winnerName, itemLink, itemId, itemName, isTierToken, false, itemMeta,
+      recordLoot(winnerName, itemLink, itemId, itemName, isTierToken, itemMeta.bindType == 'BoE', itemMeta,
         { rollType = rollType, rollValue = rollValue, participants = participants },
         { id = encounterID, name = encounterName, difficulty = difficulty })
     end)
   end)
   if not ok then
-    -- Never let a malformed/unexpected loot-history update take down the addon.
-    -- (uncomment while debugging: print('|cffff4444RaidLead loot-roll parse error|r: ' .. tostring(err)))
+    -- See the identical comment in HandleLootMessage above -- a silent
+    -- failure here is exactly the kind of thing that made a real raid
+    -- night's missing loot impossible to diagnose after the fact.
+    print('|cffff4444RaidLead loot-roll parse error|r: ' .. tostring(err))
   end
 end
 
@@ -453,11 +492,11 @@ function RaidLead.HandleBonusRoll(typeIdentifier, itemLink)
       if not meetsQualityFloor(itemQuality) then return end
       local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
       if not isTierToken and not itemMeta.qualityTrack then return end
-      recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, false, itemMeta)
+      recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, itemMeta.bindType == 'BoE', itemMeta)
     end)
   end)
   if not ok then
-    -- Never let a malformed/unexpected bonus-roll event take down the addon.
-    -- (uncomment while debugging: print('|cffff4444RaidLead bonus roll parse error|r: ' .. tostring(err)))
+    -- Same reasoning as HandleLootMessage/HandleLootHistoryDrop above.
+    print('|cffff4444RaidLead bonus roll parse error|r: ' .. tostring(err))
   end
 end

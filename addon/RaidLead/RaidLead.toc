@@ -2,7 +2,7 @@
 ## Title: RaidLead
 ## Notes: Mirrors your RaidLead published roster in-game and tracks boss loot.
 ## Author: RaidLead
-## Version: 0.1.0
+## Version: 0.2.0
 ## SavedVariables: RaidLeadDB, RaidLeadExportDB
 ## SavedVariablesPerCharacter: RaidLeadCompanionDB
 ## IconTexture: Interface\AddOns\RaidLead\Icon.png
