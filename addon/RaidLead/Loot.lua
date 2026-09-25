@@ -73,7 +73,7 @@ local function meetsQualityFloor(itemQuality)
   return itemQuality and itemQuality >= QUALITY_UNCOMMON
 end
 
-local UPGRADE_TRACKS = { 'Veteran', 'Champion', 'Hero', 'Mythic' }
+local UPGRADE_TRACKS = { 'Veteran', 'Champion', 'Hero', 'Myth' }
 
 -- Enum.ItemBind -- bindType is GetItemInfo's 14th return value, confirmed
 -- against https://warcraft.wiki.gg/wiki/Enum.ItemBind. Values 7-9 are the
@@ -89,13 +89,17 @@ local BIND_TYPE_NAMES = {
   [9] = 'Warbound Until Equipped', -- ToBnetAccountUntilEquipped
 }
 
--- Item quality TRACK (Veteran/Champion/Hero/Mythic) and upgrade level (e.g.
+-- Item quality TRACK (Veteran/Champion/Hero/Myth) and upgrade level (e.g.
 -- "4/8") aren't exposed by GetItemInfo -- they only ever show up as tooltip
--- text. NEEDS LIVE-CLIENT VERIFICATION: this scans every tooltip line for
--- "<Track> N/M" rather than assuming one exact line layout, so it should
--- keep working even if the surrounding wording changes -- but the track
--- names/format here should be checked against a real tooltip before
--- trusting this to track correctly. Best-effort: returns nils (never
+-- text. CONFIRMED against a live tooltip (a real Mythic-track BoE that this
+-- addon completely failed to capture): the top track is abbreviated to
+-- "Myth" in the actual tooltip ("Upgrade Level: Myth 1/6"), not spelled out
+-- as "Mythic" -- the table below used to say 'Mythic', which never matches
+-- that text, so EVERY Mythic-difficulty drop silently failed the "does this
+-- look like real gear" check in every capture path below, while Heroic
+-- ("Hero 1/6") worked fine. This scans every tooltip line for "<Track> N/M"
+-- rather than assuming one exact line layout, so it should keep working
+-- even if the surrounding wording changes. Best-effort: returns nils (never
 -- errors) if the tooltip API is unavailable or no line matches.
 local function GetUpgradeTrackInfo(itemLink)
   if not C_TooltipInfo or not C_TooltipInfo.GetHyperlink then return nil, nil, nil end
@@ -350,7 +354,7 @@ function RaidLead.HandleLootMessage(msg)
 
       if isTierToken or isBossLoot then
         -- Real gear always carries an upgrade track (Veteran/Champion/Hero/
-        -- Mythic) in current content -- quest currency, catalyst fragments,
+        -- Myth) in current content -- quest currency, catalyst fragments,
         -- and similar junk (e.g. "Mask Fragment", "Spark of Tides") don't,
         -- even though they clear the quality floor above. Tier tokens are
         -- exempt: they're an explicit opt-in via TIER_TOKEN_ITEM_IDS and
