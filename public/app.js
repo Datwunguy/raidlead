@@ -4424,7 +4424,7 @@ function applyPlanData(planData) {
       badge.style.borderColor = 'rgba(30,255,0,0.3)';
       badge.style.display     = 'inline-block';
     }
-    document.getElementById('planner-edit-btn').style.display    = 'block';
+    document.getElementById('planner-edit-btn').style.display    = ['owner', 'officer'].includes(STATE.myRole) ? 'block' : 'none';
     document.getElementById('planner-publish-btn').style.display = 'none';
     document.getElementById('planner-import-btn').style.display  = 'none';
   }
@@ -4510,6 +4510,11 @@ async function loadPlanForDate(dateStr) {
   // No plan: already cleared above
   // Reflect published state in the badge
   const badge = document.getElementById('plan-status-badge');
+  // Edit/Publish/Import are officer-only regardless of published state --
+  // this function runs on every tab/date load and was previously showing
+  // them unconditionally, silently overriding whatever applyRolePermissions
+  // had correctly hidden for a Member/Viewer moments earlier.
+  const isOfficerForPlan = ['owner', 'officer'].includes(STATE.myRole);
   if (planData?.plan?.published) {
     STATE.raidPlanPublished = true;
     STATE.raidPlanMode      = 'view';
@@ -4520,7 +4525,7 @@ async function loadPlanForDate(dateStr) {
       badge.style.borderColor = 'rgba(30,255,0,0.3)';
     }
     const editBtn = document.getElementById('planner-edit-btn');
-    if (editBtn) editBtn.style.display = 'block';
+    if (editBtn) editBtn.style.display = isOfficerForPlan ? 'block' : 'none';
     const pubBtn = document.getElementById('planner-publish-btn');
     if (pubBtn) pubBtn.style.display = 'none';
     const importBtn = document.getElementById('planner-import-btn');
@@ -4537,9 +4542,9 @@ async function loadPlanForDate(dateStr) {
     const editBtn = document.getElementById('planner-edit-btn');
     if (editBtn) editBtn.style.display = 'none';
     const pubBtn = document.getElementById('planner-publish-btn');
-    if (pubBtn) pubBtn.style.display = 'block';
+    if (pubBtn) pubBtn.style.display = isOfficerForPlan ? 'block' : 'none';
     const importBtn = document.getElementById('planner-import-btn');
-    if (importBtn) importBtn.style.display = 'inline-flex';
+    if (importBtn) importBtn.style.display = isOfficerForPlan ? 'inline-flex' : 'none';
   }
   const clearBtn = document.getElementById('planner-clear-btn');
   if (clearBtn) clearBtn.style.display = 'none';
