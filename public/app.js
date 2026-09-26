@@ -1700,6 +1700,10 @@ function showTab(name) {
     loadProgressTab();
   }
 
+  if (name === 'team') {
+    loadTeamTab();
+  }
+
   if (name === 'loot') {
     loadLootTab();
   }
@@ -3286,6 +3290,134 @@ function rebuildCurrentScoreCache() {
   }
 }
 
+// Loads (and caches on STATE) the zone's boss list, needed for First Kill's
+// per-boss encounterRankings queries -- re-fetched if missing, or if what's
+// cached was for a different zone (e.g. the guild moved to a new tier).
+async function ensureZoneBosses(zoneId) {
+  if (!STATE.bossIds || STATE.bossIds.length === 0 || STATE.bossIdsZoneId !== zoneId) {
+    try {
+      const bosses = await fetchZoneBosses(zoneId);
+      STATE.bossIds       = bosses.map(b => b.id);
+      STATE.bossOrder     = bosses.map(b => b.name);
+      STATE.bossIdsZoneId = zoneId;
+    } catch(e) { STATE.bossIds = []; STATE.bossOrder = []; }
+  }
+  return { bossIds: STATE.bossIds || [], bossOrder: STATE.bossOrder || [] };
+}
+
+// One character's Performance / Oppo-Parse / First Kill data. All three are
+// per-character lookups against WCL's character API -- unlike Survival and
+// Mitigation, which are built from the guild's own reports -- so this works
+// for anyone, including recruits who've never raided with the guild.
+// `char` needs { name, server (slug), role }; everything on it is carried
+// through onto the result. Never throws: failures come back as
+// result.error. `encounterNames` is the boss list from this character's
+// rankings, which the roster table uses to pick its columns.
+async function fetchCharacterWclScores(char, { zoneId, diffId, region, bossIds, bossOrder, verbose = false }) {
+  const isHealer   = ['heal', 'healer'].includes(char.role);
+  const metric     = isHealer ? ', metric: hps' : ', metric: dps';
+  const oppoMetric = isHealer ? ', metric: dps' : ', metric: hps';
+  const serverSlug = char.server.toLowerCase().replace(/\s+/g, '-').replace(/'/g, '').replace(/[^a-z0-9-]/g, '');
+
+  // encounterRankings is also a JSON scalar -- alias one per boss, then sort
+  // each boss's kills by startTime to find the first kill.
+  const bossAliases = bossIds.map((id, i) =>
+    `boss${i}: encounterRankings(encounterID: ${id}, difficulty: ${diffId}${metric})`
+  ).join(' ');
+
+  const query = `query { characterData { character(name: "${char.name}", serverSlug: "${serverSlug}", serverRegion: "${region}") {
+    name
+    best: zoneRankings(zoneID: ${zoneId}, difficulty: ${diffId}${metric})
+    oppo: zoneRankings(zoneID: ${zoneId}, difficulty: ${diffId}${oppoMetric})
+    ${bossAliases}
+  } } }`;
+
+  try {
+    const data = await wclQuery(query);
+    if (data.errors) {
+      console.warn('WCL error for', char.name, JSON.stringify(data.errors));
+      return { result: { ...char, error: data.errors[0]?.message || 'API error' }, encounterNames: [] };
+    }
+    const charData = data?.data?.characterData?.character;
+    console.log('WCL result for', char.name, ':', charData ? 'found' : 'not found', '| server:', serverSlug, '| zone:', zoneId);
+    if (verbose) console.log('[WCL raw best]', JSON.stringify(charData?.best)?.slice(0, 500));
+
+    if (!charData || !charData.best) {
+      return { result: { ...char, error: 'Not found' }, encounterNames: [] };
+    }
+
+    const parsejson = v => {
+      if (!v) return {};
+      if (typeof v === 'object') return v;
+      try { return JSON.parse(v); } catch(e) { return {}; }
+    };
+    const zr           = parsejson(charData.best);
+    const oppoZr       = parsejson(charData.oppo);
+    const rankings     = zr.rankings || [];
+    const oppoRankings = oppoZr.rankings || [];
+
+    const fmt = v => v != null ? parseFloat(v).toFixed(1) : 'N/A';
+    // Raw DPS/HPS for a ranking entry -- WCL's field is `bestAmount` (confirmed
+    // against warcraftlogs.com's own "Highest DPS/HPS" display).
+    const fmtAmount = n => {
+      n = parseFloat(n);
+      if (isNaN(n)) return null;
+      if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+      return n.toFixed(0);
+    };
+    const rawOf    = r => r?.bestAmount != null ? fmtAmount(r.bestAmount) : null;
+    const rawNumOf = r => r?.bestAmount != null ? parseFloat(r.bestAmount) : null;
+
+    const deaths     = zr.deaths     || 0;
+    const totalKills = zr.totalKills || 0;
+    const deathPct   = totalKills > 0 ? Math.min(100, ((deaths / totalKills) * 100)).toFixed(1) : 'N/A';
+
+    // First Kill: lowest startTime among each boss's kills = the first kill.
+    const firstKillMap = {};
+    bossIds.forEach((id, i) => {
+      const bossName = bossOrder?.[i];
+      if (!bossName) return;
+      const enc   = parsejson(charData[`boss${i}`]);
+      const kills = enc.ranks || enc.rankings || enc.data || [];
+      if (kills.length === 0) return;
+      const first = [...kills].sort((a, b) => (a.startTime || 0) - (b.startTime || 0))[0];
+      if (first?.rankPercent != null) firstKillMap[bossName] = fmt(first.rankPercent);
+    });
+
+    if (verbose) {
+      console.log('[FirstKill] bossOrder:', bossOrder);
+      console.log('[FirstKill] firstKillMap:', JSON.stringify(firstKillMap));
+      // Raw DPS/HPS verification -- check these logged keys for the actual field name
+      // if rawMap/oppoRawMap come back empty after deploying.
+      console.log('[WCL ranking keys]', rankings[0] ? Object.keys(rankings[0]).join(',') : 'no rankings', '| sample:', JSON.stringify(rankings[0]));
+    }
+
+    return {
+      result: {
+        ...char,
+        bestAvg:        fmt(zr.bestPerformanceAverage),
+        medianAvg:      fmt(zr.medianPerformanceAverage),
+        oppoBestAvg:    fmt(oppoZr.bestPerformanceAverage),
+        oppoMedianAvg:  fmt(oppoZr.medianPerformanceAverage),
+        deathPct,
+        rankingMap:     Object.fromEntries(rankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
+        oppoRankingMap: Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
+        rawMap:         Object.fromEntries(rankings.map(r => [r.encounter?.name, rawOf(r)])),
+        oppoRawMap:     Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawOf(r)])),
+        rawNumMap:      Object.fromEntries(rankings.map(r => [r.encounter?.name, rawNumOf(r)])),
+        oppoRawNumMap:  Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawNumOf(r)])),
+        firstKillMap,
+        rankings:       rankings.map(r => fmt(r.rankPercent)),
+        error:          null,
+      },
+      encounterNames: rankings.map(r => r.encounter?.name || 'Unknown'),
+    };
+  } catch(e) {
+    return { result: { ...char, error: e.message }, encounterNames: [] };
+  }
+}
+
 async function fetchScores() {
   const btn = document.getElementById('fetch-scores-btn');
   btn.disabled = true;
@@ -3298,151 +3430,24 @@ async function fetchScores() {
     const zoneId = STATE.zoneId;
     const diffId = DIFF_MAP[STATE.scoreDifficulty] || 5;
     const region = toWclRegion(STATE.config.region);
-    const healRoles = ['heal', 'healer'];
 
     const results    = [];
     const bossNames  = [];
-    let   bossesSet  = false;
 
-    // Fetch boss IDs for encounterRankings first-kill queries -- re-fetch if we don't
-    // have any yet, or if what's cached was fetched for a different zone (e.g. the
-    // guild progressed to a new tier since the last time this ran).
-    if (!STATE.bossIds || STATE.bossIds.length === 0 || STATE.bossIdsZoneId !== zoneId) {
-      try {
-        const bosses = await fetchZoneBosses(zoneId);
-        STATE.bossIds       = bosses.map(b => b.id);
-        STATE.bossOrder     = bosses.map(b => b.name);
-        STATE.bossIdsZoneId = zoneId;
-      } catch(e) { STATE.bossIds = []; STATE.bossOrder = []; }
-    }
-    const bossIds   = STATE.bossIds   || [];
+    const { bossIds, bossOrder } = await ensureZoneBosses(zoneId);
 
     for (const player of STATE.players) {
-      const isHealer   = healRoles.includes(player.role);
-      const metric     = isHealer ? ', metric: hps' : ', metric: dps';
-      const oppoMetric = isHealer ? ', metric: dps' : ', metric: hps';
-      const serverSlug = player.server.toLowerCase().replace(/\s+/g, '-').replace(/'/g, '').replace(/[^a-z0-9-]/g, '');
+      const { result, encounterNames } = await fetchCharacterWclScores(player,
+        { zoneId, diffId, region, bossIds, bossOrder, verbose: results.length === 0 });
+      results.push(result);
 
-      // Build encounterRankings aliases for each boss (first kill per boss)
-      // encounterRankings is also a JSON scalar — alias each boss
-      // encounterRankings returns all kills — we sort by startTime to find first kill
-      const bossAliases = bossIds.map((id, i) =>
-        `boss${i}: encounterRankings(encounterID: ${id}, difficulty: ${diffId}${metric})`
-      ).join(' ');
-
-      const query = `query { characterData { character(name: "${player.name}", serverSlug: "${serverSlug}", serverRegion: "${region}") {
-        name
-        best: zoneRankings(zoneID: ${zoneId}, difficulty: ${diffId}${metric})
-        oppo: zoneRankings(zoneID: ${zoneId}, difficulty: ${diffId}${oppoMetric})
-        ${bossAliases}
-      } } }`;
-
-      try {
-        const data     = await wclQuery(query);
-        if (data.errors) {
-          console.warn('WCL error for', player.name, JSON.stringify(data.errors));
-          results.push({ ...player, error: data.errors[0]?.message || 'API error' });
-          continue;
-        }
-        const charData = data?.data?.characterData?.character;
-        console.log('WCL result for', player.name, ':', charData ? 'found' : 'not found', '| server:', serverSlug, '| zone:', zoneId);
-        // Log raw data for first player to see structure
-        if (results.length === 0) {
-          console.log('[WCL raw best]', JSON.stringify(charData.best)?.slice(0, 500));
-  
-        }
-
-        if (!charData || !charData.best) {
-          results.push({ ...player, error: 'Not found' });
-          continue;
-        }
-
-        const parsejson = v => {
-          if (!v) return {};
-          if (typeof v === 'object') return v;
-          try { return JSON.parse(v); } catch(e) { return {}; }
-        };
-        const zr       = parsejson(charData.best);
-        const oppoZr   = parsejson(charData.oppo);
-        const rankings = zr.rankings || [];
-        const oppoRankings = oppoZr.rankings || [];
-
-        // Always update bossNames from player with most kills
-        if (rankings.length > bossNames.length) {
-          bossNames.length = 0;
-          rankings.forEach(r => bossNames.push(r.encounter?.name || 'Unknown'));
-        }
-
-        const fmt = v => v != null ? parseFloat(v).toFixed(1) : 'N/A';
-        // Raw DPS/HPS for a ranking entry -- WCL's field is `bestAmount` (confirmed
-        // against warcraftlogs.com's own "Highest DPS/HPS" display).
-        const fmtAmount = n => {
-          n = parseFloat(n);
-          if (isNaN(n)) return null;
-          if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
-          if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
-          return n.toFixed(0);
-        };
-        const rawOf    = r => r?.bestAmount != null ? fmtAmount(r.bestAmount) : null;
-        const rawNumOf = r => r?.bestAmount != null ? parseFloat(r.bestAmount) : null;
-
-        // Death %
-        const deaths     = zr.deaths     || 0;
-        const totalKills = zr.totalKills || 0;
-        const deathPct   = totalKills > 0 ? Math.min(100, ((deaths / totalKills) * 100)).toFixed(1) : 'N/A';
-
-        // First Kill: use per-boss encounterRankings aliases
-        // encounterRankings with killType:FastestKills returns all kills sorted fastest first
-        // The LAST entry (highest index) per boss = the first kill chronologically (slowest = earliest)
-        // Actually we want lowest startTime — sort and take first
-        const firstKillMap = {};
-        bossIds.forEach((id, i) => {
-          const bossName = STATE.bossOrder?.[i];
-          if (!bossName) return;
-          const raw = charData[`boss${i}`];
-          const enc = parsejson(raw);
-          const kills = enc.ranks || enc.rankings || enc.data || [];
-          if (kills.length === 0) return;
-          // Sort by startTime ascending — first entry = first kill
-          // Sort by startTime ascending — lowest startTime = earliest kill = first kill
-          const sorted = [...kills].sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
-          const first  = sorted[0];
-          if (first?.rankPercent != null) {
-            firstKillMap[bossName] = fmt(first.rankPercent);
-          }
-        });
-
-        // Log first player's first kill data for verification
-        if (results.length === 0) {
-          console.log('[FirstKill] bossOrder:', STATE.bossOrder);
-          console.log('[FirstKill] firstKillMap:', JSON.stringify(firstKillMap));
-          // Raw DPS/HPS verification -- check these logged keys for the actual field name
-          // if rawMap/oppoRawMap come back empty after deploying.
-          console.log('[WCL ranking keys]', rankings[0] ? Object.keys(rankings[0]).join(',') : 'no rankings', '| sample:', JSON.stringify(rankings[0]));
-        }
-
-        results.push({
-          ...player,
-          bestAvg:      fmt(zr.bestPerformanceAverage),
-          medianAvg:    fmt(zr.medianPerformanceAverage),
-          oppoBestAvg:  fmt(oppoZr.bestPerformanceAverage),
-          oppoMedianAvg: fmt(oppoZr.medianPerformanceAverage),
-          deathPct,
-          rankingMap:   Object.fromEntries(rankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
-          oppoRankingMap: Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, fmt(r.rankPercent)])),
-          rawMap:       Object.fromEntries(rankings.map(r => [r.encounter?.name, rawOf(r)])),
-          oppoRawMap:   Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawOf(r)])),
-          rawNumMap:      Object.fromEntries(rankings.map(r => [r.encounter?.name, rawNumOf(r)])),
-          oppoRawNumMap:  Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawNumOf(r)])),
-          firstKillMap,
-          rankings:     rankings.map(r => fmt(r.rankPercent)),
-          error:        null,
-        });
-
-        await sleep(200);
-      } catch(e) {
-        results.push({ ...player, error: e.message });
+      // Always update bossNames from player with most kills
+      if (encounterNames.length > bossNames.length) {
+        bossNames.length = 0;
+        encounterNames.forEach(n => bossNames.push(n));
       }
+
+      if (!result.error) await sleep(200);
     }
 
     STATE.scores           = results;
@@ -3492,14 +3497,9 @@ async function fetchScores() {
   btn.textContent = '↻ Refresh Scores';
 }
 
-function renderScoresTable(roleFilter) {
-  const wrap   = document.getElementById('scores-table-wrap');
-  const bosses = STATE.bossNames;
-  const view   = STATE.scoreView || 'performance';
-
-  if (!STATE.config?.hasWclCredentials) {
-    const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
-    wrap.innerHTML = `<div class="empty-state">
+function wclNotConnectedHtml() {
+  const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+  return `<div class="empty-state">
       <div class="empty-state-icon">🔒</div>
       <h3>Warcraft Logs Not Connected</h3>
       <p>${isOfficer
@@ -3512,6 +3512,15 @@ function renderScoresTable(roleFilter) {
         </div>
       ` : ''}
     </div>`;
+}
+
+function renderScoresTable(roleFilter) {
+  const wrap   = document.getElementById('scores-table-wrap');
+  const bosses = STATE.bossNames;
+  const view   = STATE.scoreView || 'performance';
+
+  if (!STATE.config?.hasWclCredentials) {
+    wrap.innerHTML = wclNotConnectedHtml();
     return;
   }
 
@@ -3533,6 +3542,26 @@ function renderScoresTable(roleFilter) {
     return;
   }
 
+  wrap.innerHTML = buildScoresTableHtml({
+    scores:     STATE.scores,
+    bossNames:  bosses,
+    view,
+    sortCol:    STATE.scoreSortCol,
+    roleFilter,
+    showRaw:    STATE.scoreShowRaw,
+  });
+}
+
+// The WCL scores table itself, shared by the roster's WCL Scores tab and
+// Team Management's recruit scores -- one implementation, so the two can't
+// drift apart. Takes its data and sort state as arguments rather than
+// reading the roster's STATE fields. `sortHandler` / `nameClick` are the
+// names of global functions wired into the header and name-cell onclicks
+// (nameClick null = name isn't clickable). Survival/Mitigation still read
+// the roster's guild-report maps, so only the roster table passes those views.
+function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, roleFilter = 'all',
+                                sortHandler = 'setScoreSort', showRaw = false, nameClick = 'openProfileByName' }) {
+  const bosses = bossNames || [];
   const roleGroups = [
     { keys: ['tank'],                   label: 'TANKS'   },
     { keys: ['heal','healer'],          label: 'HEALERS' },
@@ -3541,16 +3570,26 @@ function renderScoresTable(roleFilter) {
 
   // Sort by whichever column header was last clicked (defaults to 'best'), always
   // highest-to-lowest -- there's no ascending mode, it's not a useful view for this data.
-  const sortCol = STATE.scoreSortCol || 'best';
+  const sortCol = rawSortCol || 'best';
   const sortFn = (a, b) => {
-    const av = getScoreSortValue(a, view, sortCol);
-    const bv = getScoreSortValue(b, view, sortCol);
+    const av = getScoreSortValue(a, view, sortCol, showRaw);
+    const bv = getScoreSortValue(b, view, sortCol, showRaw);
     if (isNaN(av) && isNaN(bv)) return 0;
     if (isNaN(av)) return 1;  // NaN always sorts to the bottom
     if (isNaN(bv)) return -1;
     return bv - av;
   };
-  const sortArrow = col => STATE.scoreSortCol === col ? ' ▼' : '';
+  const sortArrow = col => rawSortCol === col ? ' ▼' : '';
+
+  const nameCell = (p, color) => `
+          <td style="width:110px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+            <div class="player-name-cell">
+              <div class="class-dot" style="background:${color};"></div>
+              <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600;${nameClick ? ' cursor:pointer;' : ''}"
+                ${nameClick ? `onclick="${nameClick}(${jsAttr(p.name)})"` : ''}>${escapeHtml(p.name)}</span>
+            </div>
+          </td>
+          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>`;
 
   // All views use same layout: summary cols + per-boss cols
   // Performance: Best | Median | per-boss best
@@ -3562,12 +3601,12 @@ function renderScoresTable(roleFilter) {
   const showMedian = view === 'performance' || view === 'oppoparse';
   const col1Label  = view === 'survival' ? 'Avg Surv%' : view === 'mitigation' ? 'Avg Mitig%' : 'Average';
   const headerCols = showMedian ? `
-    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="setScoreSort('best')" title="Sort by ${col1Label === 'Average' ? 'Best' : col1Label}">Best${sortArrow('best')}</th><th class="sep-col"></th>
-    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="setScoreSort('median')" title="Sort by Median">Median${sortArrow('median')}</th><th class="sep-col"></th>`
-  : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="setScoreSort('best')" title="Sort by ${col1Label}">${col1Label}${sortArrow('best')}</th><th class="sep-col"></th>`;
+    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('best')" title="Sort by ${col1Label === 'Average' ? 'Best' : col1Label}">Best${sortArrow('best')}</th><th class="sep-col"></th>
+    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('median')" title="Sort by Median">Median${sortArrow('median')}</th><th class="sep-col"></th>`
+  : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('best')" title="Sort by ${col1Label}">${col1Label}${sortArrow('best')}</th><th class="sep-col"></th>`;
 
   const bossHeaders = bosses.map(b =>
-    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${b}" onclick="setScoreSort('${b.replace(/'/g,"\\'")}')">
+    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${b}" onclick="${sortHandler}('${b.replace(/'/g,"\\'")}')">
       <span style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px;">${b.substring(0,5)}${sortArrow(b)}</span>
     </th>`
   ).join('');
@@ -3581,7 +3620,7 @@ function renderScoresTable(roleFilter) {
   </tr></thead><tbody>`;
 
   roleGroups.forEach(group => {
-    let players = STATE.scores.filter(p => group.keys.includes(p.role));
+    let players = scores.filter(p => group.keys.includes(p.role));
     if (roleFilter !== 'all') {
       const filterKeys = { tank:['tank'], heal:['heal','healer'], dps:['melee','ranged','dps'] }[roleFilter] || [];
       if (!group.keys.some(k => filterKeys.includes(k))) return;
@@ -3623,15 +3662,7 @@ function renderScoresTable(roleFilter) {
           const fg   = bg ? '#000' : 'var(--text-mute)';
           return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${disp}</td>`;
         }).join('');
-        html += `<tr>
-          <td style="width:110px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <div class="player-name-cell">
-              <div class="class-dot" style="background:${color};"></div>
-              <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
-            </div>
-          </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
+        html += `<tr>${nameCell(p, color)}
           ${summaryCols}${bossCols}
         </tr>`;
         return;
@@ -3652,15 +3683,7 @@ function renderScoresTable(roleFilter) {
           const fg   = bg ? '#000' : 'var(--text-mute)';
           return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${disp}</td>`;
         }).join('');
-        html += `<tr>
-          <td style="width:110px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <div class="player-name-cell">
-              <div class="class-dot" style="background:${color};"></div>
-              <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
-            </div>
-          </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
+        html += `<tr>${nameCell(p, color)}
           ${summaryCols}${bossCols}
         </tr>`;
         return;
@@ -3685,15 +3708,7 @@ function renderScoresTable(roleFilter) {
           return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}</td>`;
         }).join('');
         // Return early with firstkill-specific row
-        html += `<tr>
-          <td style="width:110px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <div class="player-name-cell">
-              <div class="class-dot" style="background:${color};"></div>
-              <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
-            </div>
-          </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
+        html += `<tr>${nameCell(p, color)}
           ${summaryCols}
           ${bossCols}
         </tr>`;
@@ -3724,23 +3739,15 @@ function renderScoresTable(roleFilter) {
           val = p.rankingMap?.[bossName] || 'N/A';
           raw = p.rawMap?.[bossName];
         }
-        const showVal = STATE.scoreShowRaw ? (raw || '—') : val;
-        const bg = !STATE.scoreShowRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
-        const fg = STATE.scoreShowRaw ? 'var(--text-dim)' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
-        const fw = STATE.scoreShowRaw ? 400 : 700;
+        const showVal = showRaw ? (raw || '—') : val;
+        const bg = !showRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
+        const fg = showRaw ? 'var(--text-dim)' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
+        const fw = showRaw ? 400 : 700;
         return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:${fw}; font-size:13px; text-align:center;">${showVal}</td>`;
       }).join('');
 
       if (view !== 'firstkill') {
-        html += `<tr>
-          <td style="width:110px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <div class="player-name-cell">
-              <div class="class-dot" style="background:${color};"></div>
-              <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600; cursor:pointer;"
-                onclick="openProfileByName(${jsAttr(p.name)})">${escapeHtml(p.name)}</span>
-            </div>
-          </td>
-          <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>
+        html += `<tr>${nameCell(p, color)}
           ${summaryCols}
           ${bossCols}
         </tr>`;
@@ -3749,7 +3756,7 @@ function renderScoresTable(roleFilter) {
   });
 
   html += '</tbody></table></div>';
-  wrap.innerHTML = html;
+  return html;
 }
 
 // Debug function — call from console: diagSurvival('REPORTCODE', fightId, startTime, endTime)
@@ -4117,8 +4124,9 @@ function setScoreMetricMode(mode) {
 }
 
 // Returns the numeric value used to sort a given player by a given column, for the
-// current score view. `column` is either 'best', 'median', or a boss name.
-function getScoreSortValue(player, view, column) {
+// current score view. `column` is either 'best', 'median', or a boss name. `showRaw`
+// defaults to the roster tab's own toggle; the recruit table passes its own.
+function getScoreSortValue(player, view, column, showRaw = STATE.scoreShowRaw) {
   const avgOf = obj => {
     const vals = Object.values(obj || {}).map(v => parseFloat(v)).filter(v => !isNaN(v));
     return vals.length > 0 ? vals.reduce((a,b) => a+b, 0) / vals.length : NaN;
@@ -4137,7 +4145,7 @@ function getScoreSortValue(player, view, column) {
   // Otherwise: column is a boss name
   // When the Raw DPS/HPS toggle is on, sort by the actual raw amount instead of parse % --
   // the displayed cell shows the raw number, so sorting should match what's on screen.
-  if (STATE.scoreShowRaw && ['performance','oppoparse'].includes(view)) {
+  if (showRaw && ['performance','oppoparse'].includes(view)) {
     if (view === 'oppoparse') return player.oppoRawNumMap?.[column];
     return player.rawNumMap?.[column];
   }
@@ -5300,7 +5308,8 @@ function initMobileNav() {
   dropdown.innerHTML = '';
   document.querySelectorAll('#main-nav > .nav-btn').forEach(btn => {
     const item = document.createElement('button');
-    item.className = 'dropdown-item mobile-nav-item' + (btn.classList.contains('active') ? ' active' : '');
+    item.className = 'dropdown-item mobile-nav-item' + (btn.classList.contains('active') ? ' active' : '')
+      + (btn.classList.contains('role-hidden') ? ' role-hidden' : ''); // officer-only tabs stay hidden until applyRolePermissions says otherwise
     item.textContent = btn.textContent;
     item.dataset.tab = btn.dataset.tab;
     item.onclick = () => {
@@ -6514,6 +6523,15 @@ function applyRolePermissions(role) {
   const addCharacterBtn = document.getElementById('add-character-btn');
   if (addCharacterBtn) addCharacterBtn.style.display = isOfficer ? 'inline-flex' : 'none';
   updateWowauditImportBtn();
+
+  // Team Management tab -- officers only. Toggled with a class, not an inline
+  // style.display: below 1440px wide the stylesheet hides every .nav-btn in
+  // favor of the hamburger menu, and an inline display would override that
+  // and leak this one button back into the tablet/mobile header. The
+  // hamburger's copy of the button has to be toggled too.
+  document.querySelectorAll('.nav-btn[data-tab="team"], .mobile-nav-item[data-tab="team"]')
+    .forEach(el => el.classList.toggle('role-hidden', !isOfficer));
+  if (!isOfficer && document.getElementById('tab-team')?.classList.contains('active')) showTab('roster');
 }
 
 // The Import button is officer-only AND needs a WowAudit key connected --
@@ -6568,5 +6586,628 @@ async function fetchZoneBosses(zoneId) {
   }`;
   const resp = await wclQuery(query);
   return resp?.data?.worldData?.zone?.encounters || [];
+}
+
+// ─────────────────────────────────────────────
+//  TEAM MANAGEMENT (officers only) -- Recruits
+// ─────────────────────────────────────────────
+// Recruiting pipeline: people an officer reached out to (and, once the
+// Applicants sub-tab lands, applicants promoted out of that triage inbox),
+// reusable outreach message templates, and the same WCL scores the roster
+// gets. Backed by api/recruiting.js, which re-checks officer role on every
+// action -- hiding the tab is only a UX nicety, not the security boundary.
+const TEAM_MGMT = {
+  recruits:          [],
+  templates:         [],
+  view:              'list',        // list | scores
+  statusFilter:      'active',      // active | followup | history | all
+  scoreView:         'performance', // performance | oppoparse | firstkill
+  scoreDifficulty:   'mythic',
+  scoreSortCol:      'best',
+  scoresInFlight:    false,
+  lookupTimer:       null,
+  lookupToken:       0,
+  editingTemplateId: null,
+};
+
+const RECRUIT_STATUSES = [
+  { value: 'contacted',   label: 'Contacted' },
+  { value: 'replied',     label: 'Replied' },
+  { value: 'interested',  label: 'Interested' },
+  { value: 'applied',     label: 'Applied' },
+  { value: 'trial',       label: 'Trial' },
+  { value: 'joined',      label: 'Joined' },
+  { value: 'declined',    label: 'Declined' },
+  { value: 'no_response', label: 'No response' },
+];
+const RECRUIT_CLOSED_STATUSES = ['joined', 'declined', 'no_response'];
+const RECRUIT_CHANNEL_LABELS  = { mail: 'Mail', whisper: 'Whisper', discord: 'Discord', form: 'Application', other: 'Other' };
+const RECRUIT_FOLLOW_UP_DAYS  = 7;
+// WoW's own caps: chat/whisper lines at 255 characters, in-game mail bodies at 500.
+const WHISPER_CHAR_LIMIT = 255;
+const MAIL_CHAR_LIMIT    = 500;
+
+async function recruitingApi(action, body) {
+  const resp = await fetch('/api/recruiting?action=' + encodeURIComponent(action), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamId: STATE.teamId, ...(body || {}) }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const err = new Error(data.error || 'Request failed');
+    err.status = resp.status;
+    err.data   = data;
+    throw err;
+  }
+  return data;
+}
+
+async function loadTeamTab() {
+  const dateInput = document.getElementById('ra-date');
+  if (dateInput && !dateInput.value) dateInput.value = attendanceDateStr(new Date());
+  const realmInput = document.getElementById('ra-realm');
+  if (realmInput && !realmInput.value) realmInput.value = titleCaseServer(STATE.config?.server);
+
+  const listEl = document.getElementById('recruit-list');
+  if (TEAM_MGMT.recruits.length === 0) {
+    listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading recruits...</div></div>';
+  }
+  try {
+    const [r, t] = await Promise.all([recruitingApi('listRecruits'), recruitingApi('listTemplates')]);
+    TEAM_MGMT.recruits  = r.recruits  || [];
+    TEAM_MGMT.templates = t.templates || [];
+  } catch (e) {
+    listEl.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load recruits</h3><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderRecruitTab();
+}
+
+function renderRecruitTab() {
+  renderRecruits();
+  renderRecruitTemplates();
+  if (TEAM_MGMT.view === 'scores') renderRecruitScores();
+}
+
+function setTeamSubTab(name, btn) {
+  document.querySelectorAll('#team-subtab-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  ['recruits'].forEach(n => {
+    const el = document.getElementById('team-subtab-' + n);
+    if (el) el.style.display = n === name ? '' : 'none';
+  });
+}
+
+function setRecruitView(view, btn) {
+  TEAM_MGMT.view = view;
+  document.querySelectorAll('#recruit-view-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('recruit-view-list').style.display   = view === 'list'   ? '' : 'none';
+  document.getElementById('recruit-view-scores').style.display = view === 'scores' ? '' : 'none';
+  if (view === 'scores') renderRecruitScores();
+}
+
+function setRecruitStatusFilter(filter, btn) {
+  TEAM_MGMT.statusFilter = filter;
+  document.querySelectorAll('#recruit-status-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRecruitTab();
+}
+
+// "YYYY-MM-DD" parsed as a LOCAL date (not UTC), so something contacted
+// today never reads as "1d ago" for anyone west of UTC.
+function parseLocalDate(dateStr) {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  return y ? new Date(y, m - 1, d) : null;
+}
+
+function daysSinceDate(dateStr) {
+  const then = parseLocalDate(dateStr);
+  if (!then) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((today - then) / 86400000);
+}
+
+function formatRecruitDate(dateStr) {
+  const d = parseLocalDate(dateStr);
+  return d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—';
+}
+
+function isRecruitFollowUp(r) {
+  return r.status === 'contacted' && (daysSinceDate(r.contacted_at) ?? 0) >= RECRUIT_FOLLOW_UP_DAYS;
+}
+
+function recruitMatchesFilter(r, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'followup') return isRecruitFollowUp(r);
+  const closed = RECRUIT_CLOSED_STATUSES.includes(r.status);
+  return filter === 'history' ? closed : !closed;
+}
+
+function visibleRecruits() {
+  return TEAM_MGMT.recruits.filter(r => recruitMatchesFilter(r, TEAM_MGMT.statusFilter));
+}
+
+function sortRecruits() {
+  TEAM_MGMT.recruits.sort((a, b) =>
+    (b.contacted_at || '').localeCompare(a.contacted_at || '') || (b.created_at || '').localeCompare(a.created_at || ''));
+}
+
+function recruitLinks(r) {
+  const region = toWclRegion(STATE.config?.region || 'us');
+  const name   = encodeURIComponent(r.name);
+  const lower  = encodeURIComponent(r.name.toLowerCase());
+  const rioUrl = r.lookup?.profileUrl;
+  return {
+    raiderio: rioUrl && rioUrl.startsWith('https://raider.io/') ? rioUrl : `https://raider.io/characters/${region}/${r.realm_slug}/${name}`,
+    wcl:      `https://www.warcraftlogs.com/character/${region}/${r.realm_slug}/${lower}`,
+    armory:   `https://worldofwarcraft.blizzard.com/en-us/character/${region}/${r.realm_slug}/${lower}`,
+  };
+}
+
+function titleCaseClass(cls) {
+  return cls ? cls.replace(/\b\w/g, c => c.toUpperCase()) : '';
+}
+
+// "Devastation Evoker · 316 ilvl · 3,140 M+ · 6/8 M"
+function recruitStatLine(spec, cls, lookup) {
+  const l = lookup || {};
+  return [
+    [spec, titleCaseClass(cls)].filter(Boolean).join(' '),
+    l.ilvl ? `${Math.round(l.ilvl)} ilvl` : null,
+    l.mplusScore ? `${Math.round(l.mplusScore).toLocaleString()} M+` : null,
+    l.raidProgress || null,
+  ].filter(Boolean).join(' · ');
+}
+
+function alreadyTrackedMessage(existing) {
+  const who    = existing.creator?.display_name || existing.creator?.battletag || 'an officer';
+  const status = RECRUIT_STATUSES.find(s => s.value === existing.status)?.label || existing.status;
+  return `Already tracked: ${existing.name} was added by ${who}, contacted ${formatRecruitDate(existing.contacted_at)} (${status}).`;
+}
+
+function renderRecruits() {
+  const wrap = document.getElementById('recruit-list');
+  if (!wrap) return;
+
+  if (TEAM_MGMT.recruits.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">✉</div><h3>Track your first recruit</h3>
+      <p>Add someone you've mailed or whispered above. RaidLead pulls their class, item level, and M+ score from Raider.io, and flags them for follow-up after ${RECRUIT_FOLLOW_UP_DAYS} days without a reply.</p></div>`;
+    return;
+  }
+  const list = visibleRecruits();
+  if (list.length === 0) {
+    wrap.innerHTML = '<div class="recruit-empty-filter">No recruits match this filter.</div>';
+    return;
+  }
+
+  const templateOptions = TEAM_MGMT.templates
+    .map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.title)}</option>`).join('');
+
+  wrap.innerHTML = list.map(r => {
+    const color    = CLASS_COLORS[r.class] || 'var(--text)';
+    const days     = daysSinceDate(r.contacted_at);
+    const ago      = days == null ? '' : days <= 0 ? 'today' : `${days}d ago`;
+    const followUp = isRecruitFollowUp(r);
+    const closed   = RECRUIT_CLOSED_STATUSES.includes(r.status);
+    const links    = recruitLinks(r);
+    const stat     = recruitStatLine(r.spec, r.class, r.lookup);
+    const addedBy  = r.creator?.display_name || r.creator?.battletag || '';
+    const statusOptions = RECRUIT_STATUSES
+      .map(s => `<option value="${s.value}"${s.value === r.status ? ' selected' : ''}>${s.label}</option>`).join('');
+    return `
+      <div class="recruit-row${followUp ? ' follow-up' : ''}${closed ? ' closed' : ''}">
+        <div class="recruit-main">
+          <div class="recruit-name-line">
+            <span class="recruit-name" style="color:${color};">${escapeHtml(r.name)}</span>
+            <span class="recruit-realm">${escapeHtml(r.realm)}</span>
+            ${r.source === 'application' ? '<span class="recruit-badge">Application</span>' : ''}
+          </div>
+          <div class="recruit-sub">${stat ? escapeHtml(stat) : 'No Raider.io data'}</div>
+          <div class="recruit-links">
+            <a href="${escapeHtml(links.raiderio)}" target="_blank" rel="noopener noreferrer">Raider.io</a>
+            <a href="${escapeHtml(links.wcl)}" target="_blank" rel="noopener noreferrer">WCL</a>
+            <a href="${escapeHtml(links.armory)}" target="_blank" rel="noopener noreferrer">Armory</a>
+          </div>
+        </div>
+        <div class="recruit-contact">
+          <div>${formatRecruitDate(r.contacted_at)} <span class="recruit-sub">· ${ago}</span></div>
+          <div class="recruit-sub">${escapeHtml(RECRUIT_CHANNEL_LABELS[r.channel] || '—')}${addedBy ? ' · ' + escapeHtml(addedBy) : ''}</div>
+          ${followUp ? '<div class="recruit-followup">Follow up</div>' : ''}
+        </div>
+        <div class="recruit-status">
+          <select onchange="updateRecruitField(${jsAttr(r.id)}, 'status', this.value)">${statusOptions}</select>
+          ${r.status === 'joined' ? `<button class="btn-secondary recruit-small-btn" onclick="addRecruitToRoster(${jsAttr(r.id)})">Add to roster</button>` : ''}
+        </div>
+        <div class="recruit-notes">
+          <input type="text" value="${escapeHtml(r.notes || '')}" placeholder="Notes" maxlength="500"
+            onchange="updateRecruitField(${jsAttr(r.id)}, 'notes', this.value)" />
+        </div>
+        <div class="recruit-actions">
+          ${templateOptions ? `<select class="recruit-template-select" title="Copy a message template with this recruit's name filled in"
+            onchange="copyTemplateForRecruit(this.value, ${jsAttr(r.id)}); this.value='';"><option value="">Copy template…</option>${templateOptions}</select>` : ''}
+          <button class="recruit-delete" title="Stop tracking" onclick="deleteRecruit(${jsAttr(r.id)})">✕</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// Raider.io preview while typing -- debounced, and a token discards any
+// response that a newer keystroke's lookup has already superseded.
+function scheduleRecruitLookup() {
+  clearTimeout(TEAM_MGMT.lookupTimer);
+  TEAM_MGMT.lookupTimer = setTimeout(runRecruitLookup, 600);
+}
+
+async function runRecruitLookup() {
+  const name  = document.getElementById('ra-name').value.trim();
+  const realm = document.getElementById('ra-realm').value.trim();
+  const el    = document.getElementById('ra-lookup');
+  const token = ++TEAM_MGMT.lookupToken;
+  el.className = 'recruit-lookup';
+  if (!name || !realm) { el.textContent = ''; return; }
+  el.textContent = 'Looking up on Raider.io...';
+  try {
+    const data = await recruitingApi('lookupCharacter', { name, realm });
+    if (token !== TEAM_MGMT.lookupToken) return;
+    if (data.existing) {
+      el.className   = 'recruit-lookup warn';
+      el.textContent = alreadyTrackedMessage(data.existing);
+      return;
+    }
+    const s = data.summary;
+    if (!s) {
+      el.textContent = 'Not found on Raider.io. You can still add them.';
+      return;
+    }
+    el.className = 'recruit-lookup found';
+    el.innerHTML = `<span style="color:${CLASS_COLORS[s.class] || 'var(--text)'}; font-weight:700;">${escapeHtml(s.name)}</span>
+      <span class="recruit-sub">${escapeHtml(s.realmName || '')}</span> · ${escapeHtml(recruitStatLine(s.spec, s.class, s))}`;
+  } catch (e) {
+    if (token === TEAM_MGMT.lookupToken) el.textContent = '';
+  }
+}
+
+async function addRecruit() {
+  const nameEl   = document.getElementById('ra-name');
+  const realmEl  = document.getElementById('ra-realm');
+  const notesEl  = document.getElementById('ra-notes');
+  const lookupEl = document.getElementById('ra-lookup');
+  const name  = nameEl.value.trim();
+  const realm = realmEl.value.trim();
+  if (!name || !realm) {
+    lookupEl.className   = 'recruit-lookup warn';
+    lookupEl.textContent = 'Enter a character name and realm.';
+    return;
+  }
+
+  const btn = document.getElementById('ra-add-btn');
+  btn.disabled = true;
+  try {
+    const data = await recruitingApi('addRecruit', {
+      name,
+      realm,
+      channel:     document.getElementById('ra-channel').value,
+      contactedAt: document.getElementById('ra-date').value || attendanceDateStr(new Date()),
+      notes:       notesEl.value,
+    });
+    TEAM_MGMT.recruits.push(data.recruit);
+    sortRecruits();
+    nameEl.value = '';
+    notesEl.value = '';
+    TEAM_MGMT.lookupToken++; // drop any lookup still in flight for the name just added
+    lookupEl.textContent = '';
+    lookupEl.className   = 'recruit-lookup';
+    renderRecruitTab();
+    showToast(`${data.recruit.name} added`, 'success');
+    if (STATE.config?.hasWclCredentials && STATE.zoneId) fetchRecruitScores([data.recruit], { silent: true });
+  } catch (e) {
+    lookupEl.className   = 'recruit-lookup warn';
+    lookupEl.textContent = e.status === 409 && e.data?.existing ? alreadyTrackedMessage(e.data.existing) : e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function updateRecruitField(recruitId, field, value) {
+  try {
+    const data = await recruitingApi('updateRecruit', { recruitId, [field]: value });
+    const i = TEAM_MGMT.recruits.findIndex(r => r.id === recruitId);
+    if (i >= 0) TEAM_MGMT.recruits[i] = data.recruit;
+    // A status change can move the row between filters (or add the Add to
+    // roster button); a notes edit doesn't need a re-render.
+    if (field !== 'notes') renderRecruitTab();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    renderRecruits(); // put the control back to the saved value
+  }
+}
+
+async function deleteRecruit(recruitId) {
+  const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
+  if (!r) return;
+  if (!confirm(`Stop tracking ${r.name}? Their notes and scores are deleted. To keep a record instead, set their status to Declined.`)) return;
+  try {
+    await recruitingApi('deleteRecruit', { recruitId });
+    TEAM_MGMT.recruits = TEAM_MGMT.recruits.filter(x => x.id !== recruitId);
+    renderRecruitTab();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// Joined -> hands off to the existing Add Character modal, pre-filled the
+// same way pickGuildCharacter pre-fills it from the guild roster.
+function addRecruitToRoster(recruitId) {
+  const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
+  if (!r) return;
+  openAddCharacterModal();
+  document.getElementById('cm-name').value = r.name;
+  if (r.class && CLASS_COLORS[r.class]) document.getElementById('cm-class').value = r.class;
+  if (r.role) document.getElementById('cm-role').value = r.role;
+  document.getElementById('cm-server').value = r.realm;
+  const msg = document.getElementById('cm-msg');
+  msg.textContent = `Filled in from ${r.name}'s recruit entry. Check the role and rank, then Save.`;
+  msg.className   = 'status-msg';
+}
+
+// ── Message templates ──
+function fillRecruitTemplate(body, recruit) {
+  return body
+    .replace(/\{name\}/gi,  () => recruit?.name  || '{name}')
+    .replace(/\{realm\}/gi, () => recruit?.realm || '{realm}')
+    .replace(/\{guild\}/gi, () => STATE.config?.guild || '{guild}');
+}
+
+function templateLengthNote(len) {
+  if (len > MAIL_CHAR_LIMIT)    return { level: 'error', text: `${len} characters: too long for in-game mail (${MAIL_CHAR_LIMIT} max)` };
+  if (len > WHISPER_CHAR_LIMIT) return { level: 'warn',  text: `${len} characters: fits in-game mail, too long for a whisper (${WHISPER_CHAR_LIMIT} max)` };
+  return { level: 'ok', text: `${len} characters: fits a whisper or in-game mail` };
+}
+
+async function copyRecruitText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    prompt('Copy this message:', text);
+    return false;
+  }
+}
+
+async function copyTemplateForRecruit(templateId, recruitId) {
+  if (!templateId) return;
+  const t = TEAM_MGMT.templates.find(x => x.id === templateId);
+  const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
+  if (!t || !r) return;
+  const text = fillRecruitTemplate(t.body, r);
+  if (await copyRecruitText(text)) {
+    const note = templateLengthNote(text.length);
+    showToast(`Copied "${t.title}" for ${r.name}. ${note.text}`, note.level === 'error' ? 'error' : 'success');
+  }
+}
+
+async function copyTemplateRaw(templateId) {
+  const t = TEAM_MGMT.templates.find(x => x.id === templateId);
+  if (t && await copyRecruitText(fillRecruitTemplate(t.body, null))) showToast(`Copied "${t.title}"`, 'success');
+}
+
+function renderRecruitTemplates() {
+  const wrap = document.getElementById('recruit-template-list');
+  if (!wrap) return;
+  if (TEAM_MGMT.templates.length === 0) {
+    wrap.innerHTML = `<div style="font-size:13px; color:var(--text-dim);">No templates yet. Save the messages you send most often, then copy them from any recruit's row with their name already filled in.</div>`;
+    return;
+  }
+  wrap.innerHTML = TEAM_MGMT.templates.map(t => {
+    const note = templateLengthNote(t.body.length);
+    return `<div class="template-card">
+      <div class="template-card-header">
+        <div class="template-card-title">${escapeHtml(t.title)}</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn-secondary recruit-small-btn" onclick="copyTemplateRaw(${jsAttr(t.id)})">Copy</button>
+          <button class="btn-secondary recruit-small-btn" onclick="openRecruitTemplateModal(${jsAttr(t.id)})">Edit</button>
+        </div>
+      </div>
+      <div class="template-card-body">${escapeHtml(t.body)}</div>
+      <div class="template-count ${note.level}">${escapeHtml(note.text)}</div>
+    </div>`;
+  }).join('');
+}
+
+function openRecruitTemplateModal(templateId) {
+  const t = templateId ? TEAM_MGMT.templates.find(x => x.id === templateId) : null;
+  TEAM_MGMT.editingTemplateId = t ? t.id : null;
+  document.getElementById('rt-modal-title').textContent  = t ? 'Edit template' : 'New template';
+  document.getElementById('rt-title').value              = t ? t.title : '';
+  document.getElementById('rt-body').value               = t ? t.body  : '';
+  document.getElementById('rt-delete-btn').style.display = t ? 'inline-block' : 'none';
+  document.getElementById('rt-msg').textContent          = '';
+  updateTemplateCharCount();
+  document.getElementById('recruit-template-modal').classList.add('open');
+}
+
+function closeRecruitTemplateModal() {
+  document.getElementById('recruit-template-modal').classList.remove('open');
+}
+
+function updateTemplateCharCount() {
+  const note = templateLengthNote(document.getElementById('rt-body').value.length);
+  const el   = document.getElementById('rt-count');
+  el.textContent = `${note.text} (placeholders count as written)`;
+  el.className   = 'template-count ' + note.level;
+}
+
+async function saveRecruitTemplate() {
+  const title = document.getElementById('rt-title').value.trim();
+  const body  = document.getElementById('rt-body').value.trim();
+  const msg   = document.getElementById('rt-msg');
+  if (!title || !body) {
+    msg.textContent = 'Add a title and a message.';
+    msg.className   = 'status-msg error';
+    return;
+  }
+  msg.textContent = 'Saving...';
+  msg.className   = 'status-msg loading';
+  try {
+    const data = await recruitingApi('saveTemplate', { templateId: TEAM_MGMT.editingTemplateId, title, body });
+    const i = TEAM_MGMT.templates.findIndex(x => x.id === data.template.id);
+    if (i >= 0) TEAM_MGMT.templates[i] = data.template;
+    else TEAM_MGMT.templates.push(data.template);
+    closeRecruitTemplateModal();
+    renderRecruitTab(); // each row's "Copy template" menu lists the titles
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className   = 'status-msg error';
+  }
+}
+
+async function deleteRecruitTemplate() {
+  const id = TEAM_MGMT.editingTemplateId;
+  if (!id || !confirm('Delete this template?')) return;
+  try {
+    await recruitingApi('deleteTemplate', { templateId: id });
+    TEAM_MGMT.templates = TEAM_MGMT.templates.filter(x => x.id !== id);
+    closeRecruitTemplateModal();
+    renderRecruitTab();
+  } catch (e) {
+    const msg = document.getElementById('rt-msg');
+    msg.textContent = e.message;
+    msg.className   = 'status-msg error';
+  }
+}
+
+// ── Recruit WCL scores ──
+// Same Performance / Oppo-Parse / First Kill data and table as the roster's
+// WCL Scores tab (fetchCharacterWclScores + buildScoresTableHtml). Stored
+// per recruit per difficulty through api/recruiting.js, so every officer
+// sees them without refetching.
+function setRecruitScoreView(view, btn) {
+  TEAM_MGMT.scoreView    = view;
+  TEAM_MGMT.scoreSortCol = 'best';
+  document.querySelectorAll('#recruit-score-view-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRecruitScores();
+}
+
+function setRecruitScoreDifficulty(diff, btn) {
+  TEAM_MGMT.scoreDifficulty = diff;
+  document.querySelectorAll('#recruit-difficulty-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRecruitScores();
+}
+
+function setRecruitScoreSort(column) {
+  TEAM_MGMT.scoreSortCol = column;
+  renderRecruitScores();
+}
+
+// Only counts as this recruit's score if it was fetched for the zone the
+// team is on now -- numbers from an older tier aren't "their score".
+function recruitScoreEntry(r) {
+  const entry = r.wcl_scores?.[TEAM_MGMT.scoreDifficulty];
+  return entry && entry.zoneId === STATE.zoneId ? entry : null;
+}
+
+function renderRecruitScores() {
+  const wrap = document.getElementById('recruit-scores-wrap');
+  if (!wrap) return;
+  if (!STATE.config?.hasWclCredentials) { wrap.innerHTML = wclNotConnectedHtml(); return; }
+
+  const list = visibleRecruits();
+  if (list.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><h3>No recruits to show</h3><p>Add recruits in the List view, or change the filter above.</p></div>';
+    return;
+  }
+
+  let bossNames = [];
+  const rows = list.map(r => {
+    const entry = recruitScoreEntry(r);
+    if ((entry?.bossNames?.length || 0) > bossNames.length) bossNames = entry.bossNames;
+    return {
+      // 'N/A' defaults keep not-yet-fetched rows blank rather than grey-shaded.
+      bestAvg: 'N/A', medianAvg: 'N/A', oppoBestAvg: 'N/A', oppoMedianAvg: 'N/A',
+      ...(entry?.result || {}),
+      name:          r.name,
+      server:        r.realm_slug,
+      serverDisplay: r.realm,
+      class:         r.class,
+      role:          r.role || 'dps',
+    };
+  });
+  if (bossNames.length === 0 && STATE.bossIdsZoneId === STATE.zoneId) bossNames = STATE.bossOrder || [];
+
+  const diffLabel    = titleCaseClass(TEAM_MGMT.scoreDifficulty);
+  const unfetched    = list.filter(r => !recruitScoreEntry(r)).length;
+  const fetchedTimes = list.map(r => recruitScoreEntry(r)?.fetchedAt).filter(Boolean);
+  const note = unfetched > 0
+    ? `${unfetched} of ${list.length} haven't been fetched for ${diffLabel} yet. Click Refresh Scores.`
+    : fetchedTimes.length ? `Last refreshed ${formatTimeAgo(Math.max(...fetchedTimes))}.` : '';
+
+  wrap.innerHTML = (note ? `<div class="recruit-scores-note">${escapeHtml(note)}</div>` : '') + buildScoresTableHtml({
+    scores:      rows,
+    bossNames,
+    view:        TEAM_MGMT.scoreView,
+    sortCol:     TEAM_MGMT.scoreSortCol,
+    sortHandler: 'setRecruitScoreSort',
+    showRaw:     false,
+    nameClick:   null,
+  });
+}
+
+async function refreshRecruitScores() {
+  if (!STATE.config?.hasWclCredentials) { renderRecruitScores(); return; }
+  const list = visibleRecruits();
+  if (list.length === 0) { showToast('No recruits in this filter to refresh.', ''); return; }
+  await fetchRecruitScores(list);
+}
+
+// One character at a time, with the same 200ms spacing the roster uses,
+// against the team's own WCL credentials.
+async function fetchRecruitScores(recruits, { silent = false } = {}) {
+  if (TEAM_MGMT.scoresInFlight) {
+    if (!silent) showToast('Already refreshing recruit scores. Wait for it to finish.', '');
+    return;
+  }
+  const zoneId = STATE.zoneId;
+  if (!zoneId) {
+    if (!silent) showToast('This team has no current raid zone set yet.', 'error');
+    return;
+  }
+  TEAM_MGMT.scoresInFlight = true;
+  const btn        = document.getElementById('recruit-scores-btn');
+  const difficulty = TEAM_MGMT.scoreDifficulty;
+  const diffId     = DIFF_MAP[difficulty] || 5;
+  const region     = toWclRegion(STATE.config.region);
+  let ok = 0;
+  try {
+    const { bossIds, bossOrder } = await ensureZoneBosses(zoneId);
+    for (let i = 0; i < recruits.length; i++) {
+      const r = recruits[i];
+      if (btn) { btn.disabled = true; btn.textContent = `⏳ ${i + 1} / ${recruits.length}...`; }
+      const { result } = await fetchCharacterWclScores(
+        { name: r.name, server: r.realm_slug, role: r.role || 'dps' },
+        { zoneId, diffId, region, bossIds, bossOrder });
+      try {
+        const saved = await recruitingApi('saveRecruitScores', {
+          recruitId: r.id, difficulty, entry: { zoneId, bossNames: bossOrder, result },
+        });
+        const local = TEAM_MGMT.recruits.find(x => x.id === r.id);
+        if (local) local.wcl_scores = saved.wclScores;
+        if (!result.error) ok++;
+      } catch (e) { /* counted as not refreshed below */ }
+      if (TEAM_MGMT.view === 'scores') renderRecruitScores();
+      if (!result.error) await sleep(200);
+    }
+    if (!silent) {
+      showToast(`Scores refreshed for ${ok} of ${recruits.length} recruit${recruits.length === 1 ? '' : 's'}.`, ok === 0 ? 'error' : 'success');
+    }
+  } finally {
+    TEAM_MGMT.scoresInFlight = false;
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh Scores'; }
+    if (TEAM_MGMT.view === 'scores') renderRecruitScores();
+  }
 }
 

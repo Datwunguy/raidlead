@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260924">
+<link rel="stylesheet" href="styles.css?v=20260926">
 </head>
 <body>
 <div id="app">
@@ -70,6 +70,7 @@
       <button class="nav-btn" data-tab="scores" onclick="showTab('scores')">WCL Scores</button>
       <button class="nav-btn" data-tab="loot" onclick="showTab('loot')">Loot</button>
       <button class="nav-btn" data-tab="resources" onclick="showTab('resources')">Resources</button>
+      <button class="nav-btn role-hidden" data-tab="team" onclick="showTab('team')">Team Management</button>
 
       <!-- Mobile-only: collapses the tab row above into a hamburger + flyout,
            built by cloning the .nav-btn list above so it can never drift out
@@ -773,6 +774,137 @@
         <div id="resources-content" style="margin-top:18px;"></div>
       </div>
 
+      <!-- TEAM MANAGEMENT TAB (officers/owners only -- see applyRolePermissions) -->
+      <div class="tab-content" id="tab-team">
+        <div class="section-header">
+          <div class="section-title">Team Management</div>
+        </div>
+        <div style="font-size:12px; color:var(--text-dim); margin-top:4px;">Officer-only recruiting tools. Nothing here is visible to members.</div>
+
+        <div class="role-filter" id="team-subtab-filter" style="margin-top:18px;">
+          <button class="filter-btn active" onclick="setTeamSubTab('recruits', this)">Recruits</button>
+        </div>
+
+        <div id="team-subtab-recruits" style="margin-top:18px;">
+          <div class="recruit-toolbar">
+            <div class="role-filter" id="recruit-view-filter">
+              <button class="filter-btn active" onclick="setRecruitView('list', this)">List</button>
+              <button class="filter-btn" onclick="setRecruitView('scores', this)">WCL Scores</button>
+            </div>
+            <div class="role-filter" id="recruit-status-filter">
+              <button class="filter-btn active" onclick="setRecruitStatusFilter('active', this)">Active</button>
+              <button class="filter-btn" onclick="setRecruitStatusFilter('followup', this)">Needs follow-up</button>
+              <button class="filter-btn" onclick="setRecruitStatusFilter('history', this)">History</button>
+              <button class="filter-btn" onclick="setRecruitStatusFilter('all', this)">All</button>
+            </div>
+          </div>
+
+          <!-- LIST VIEW -->
+          <div id="recruit-view-list">
+            <div class="recruit-add-card">
+              <div class="recruit-add-grid">
+                <div class="form-group">
+                  <label>Character</label>
+                  <input type="text" id="ra-name" placeholder="Kaelthara" autocomplete="off" oninput="scheduleRecruitLookup()" />
+                </div>
+                <div class="form-group">
+                  <label>Realm</label>
+                  <input type="text" id="ra-realm" placeholder="Sargeras" autocomplete="off" oninput="scheduleRecruitLookup()" />
+                </div>
+                <div class="form-group">
+                  <label>Contacted via</label>
+                  <select id="ra-channel">
+                    <option value="mail">In-game mail</option>
+                    <option value="whisper">Whisper</option>
+                    <option value="discord">Discord</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Date</label>
+                  <input type="date" id="ra-date" />
+                </div>
+              </div>
+              <div class="form-group full" style="margin-top:12px;">
+                <label>Notes</label>
+                <input type="text" id="ra-notes" placeholder="Saw them in trade chat, 6/8 Mythic last tier" autocomplete="off" />
+              </div>
+              <div class="recruit-add-footer">
+                <div id="ra-lookup" class="recruit-lookup"></div>
+                <button class="btn-primary" id="ra-add-btn" onclick="addRecruit()">Add recruit</button>
+              </div>
+            </div>
+            <div id="recruit-list" style="margin-top:16px;"></div>
+
+            <div class="recruit-templates">
+              <div class="recruit-templates-header">
+                <div class="section-title" style="font-size:16px;">Message templates</div>
+                <button class="btn-secondary" onclick="openRecruitTemplateModal()">+ New template</button>
+              </div>
+              <div style="font-size:12px; color:var(--text-dim); margin-top:4px;">
+                Use {name}, {realm}, and {guild} -- they're filled in when you copy a template from a recruit's row.
+              </div>
+              <div id="recruit-template-list" style="margin-top:12px;"></div>
+            </div>
+          </div>
+
+          <!-- WCL SCORES VIEW -->
+          <div id="recruit-view-scores" style="display:none;">
+            <div style="font-size:12px; color:var(--text-dim); margin-bottom:10px;">
+              Same Performance, Oppo-Parse, and First Kill numbers as the roster's WCL Scores tab. Survival and Mitigation aren't available here -- those come from your guild's own logs, which recruits aren't in.
+            </div>
+            <div class="scores-container">
+              <div class="scores-toolbar">
+                <div class="scores-toolbar-left">
+                  <div class="role-filter" id="recruit-score-view-filter">
+                    <button class="filter-btn active" onclick="setRecruitScoreView('performance', this)">Performance</button>
+                    <button class="filter-btn" onclick="setRecruitScoreView('oppoparse', this)">Oppo-Parse</button>
+                    <button class="filter-btn" onclick="setRecruitScoreView('firstkill', this)">First Kill</button>
+                  </div>
+                  <div class="role-filter" id="recruit-difficulty-filter" style="margin-left:8px;">
+                    <button class="filter-btn" onclick="setRecruitScoreDifficulty('lfr', this)">LFR</button>
+                    <button class="filter-btn" onclick="setRecruitScoreDifficulty('normal', this)">Normal</button>
+                    <button class="filter-btn" onclick="setRecruitScoreDifficulty('heroic', this)">Heroic</button>
+                    <button class="filter-btn active" onclick="setRecruitScoreDifficulty('mythic', this)">Mythic</button>
+                  </div>
+                </div>
+                <button class="fetch-btn" id="recruit-scores-btn" onclick="refreshRecruitScores()">↻ Refresh Scores</button>
+              </div>
+              <div id="recruit-scores-wrap" style="overflow-x:auto; -webkit-overflow-scrolling:touch;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECRUIT MESSAGE TEMPLATE MODAL -->
+      <div class="modal-overlay" id="recruit-template-modal">
+        <div class="modal" style="max-width:520px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;" id="rt-modal-title">New template</div>
+            <button class="modal-close" onclick="closeRecruitTemplateModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group full">
+              <label>Title</label>
+              <input type="text" id="rt-title" maxlength="100" placeholder="First mail" autocomplete="off" />
+            </div>
+            <div class="form-group full" style="margin-top:14px;">
+              <label>Message</label>
+              <textarea id="rt-body" rows="7" maxlength="2000" oninput="updateTemplateCharCount()" placeholder="Hey {name}! {guild} is recruiting for Mythic..."></textarea>
+              <div id="rt-count" class="template-count"></div>
+            </div>
+            <div id="rt-msg" class="status-msg" style="margin-top:6px;"></div>
+            <div style="display:flex; justify-content:space-between; gap:10px; margin-top:16px;">
+              <button class="btn-secondary" id="rt-delete-btn" style="display:none; color:#ff6b6b;" onclick="deleteRecruitTemplate()">Delete</button>
+              <div style="display:flex; gap:10px; margin-left:auto;">
+                <button class="btn-secondary" onclick="closeRecruitTemplateModal()">Cancel</button>
+                <button class="btn-primary" onclick="saveRecruitTemplate()">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- COMPANION APP PAIRING MODAL -->
       <div class="modal-overlay" id="companion-pair-modal">
         <div class="modal" style="max-width:420px;">
@@ -1084,6 +1216,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260924f"></script>
+<script src="app.js?v=20260926"></script>
 </body>
 </html>

@@ -119,12 +119,19 @@
 
   .pill-short-text, .account-icon { display: none; }
 
-  /* Mid-width screens: tighten nav further before the mobile breakpoint */
-  @media (max-width: 1300px) {
+  /* Mid-width screens: compact the header so the full tab row fits before
+     the hamburger breakpoint below takes over. Measured with all 8 tabs
+     (incl. the officer-only Team Management tab) and a real guild badge:
+     the uncompacted header only fits the row from ~1675px up, so anything
+     narrower gets the icon-only account button, the short Invite pill, no
+     logo subtitle, and a capped guild badge. */
+  @media (max-width: 1700px) {
     .pill-full-text { display: none; }
     .pill-short-text { display: inline; }
     .account-battletag-text { display: none; }
     .account-icon { display: inline-block; }
+    .logo span { display: none; }
+    .guild-badge span:last-child { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
   }
 
   .nav-btn:hover { color: var(--text); border-color: var(--border2); }
@@ -1455,8 +1462,11 @@
   /* Tablet: 600–900px, and also tall/narrow windows (e.g. 1200x1900) where
      the full tab row runs out of room well before true mobile widths --
      swap it for the same hamburger + flyout used on mobile, rather than
-     relying on nav's horizontal-scroll fallback. */
-  @media (max-width: 1300px) {
+     relying on nav's horizontal-scroll fallback (its scrollbar is hidden,
+     so tabs past the edge were effectively invisible). Even with the
+     compact header above, the 8-tab row needs ~1433px; this was 1300px
+     back when the row was shorter. */
+  @media (max-width: 1440px) {
     .guild-badge span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
     .nav-btn { display: none; }
     .mobile-nav-menu { display: block; }
@@ -1625,4 +1635,106 @@
     .progress-boss-stats { flex-basis: 100%; justify-content: flex-end; gap: 20px; }
     .progress-boss-stat  { font-size: 13px; min-width: 0; }
     .progress-boss-stat-label { font-size: 8px; }
+  }
+
+  /* Role-gated elements (e.g. the officer-only Team Management nav button).
+     !important so it beats every display value the element's own rules set
+     at any breakpoint -- see applyRolePermissions. */
+  .role-hidden { display: none !important; }
+
+  .form-group textarea {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.5;
+    padding: 10px 14px;
+    outline: none;
+    resize: vertical;
+    width: 100%;
+  }
+  .form-group textarea:focus { border-color: var(--gold-dim); box-shadow: 0 0 0 2px rgba(200,168,75,0.08); }
+  .form-group textarea::placeholder { color: var(--text-mute); }
+
+  /* Team Management -- Recruits */
+  .recruit-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+
+  .recruit-add-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 16px 18px; }
+  .recruit-add-grid { display: grid; grid-template-columns: 1.3fr 1.2fr 1fr 1fr; gap: 12px; }
+  .recruit-add-grid input[type="date"] { color-scheme: dark; } /* native calendar icon/popup match the dark theme */
+  .recruit-add-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+  .recruit-lookup { font-size: 13px; color: var(--text-dim); flex: 1; min-width: 200px; }
+  .recruit-lookup.found { color: var(--text); }
+  .recruit-lookup.warn  { color: #ffb020; }
+
+  .recruit-row {
+    display: grid;
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.6fr) auto;
+    gap: 14px;
+    align-items: center;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+  }
+  .recruit-row.follow-up { border-left: 3px solid #ffb020; border-radius: 0 6px 6px 0; }
+  .recruit-row.closed    { opacity: 0.65; }
+  .recruit-name-line { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .recruit-name  { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 16px; }
+  .recruit-realm { font-size: 13px; color: var(--text-dim); }
+  .recruit-badge {
+    font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--gold); border: 1px solid var(--gold-dim); border-radius: 3px; padding: 1px 6px;
+  }
+  .recruit-sub   { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .recruit-links { display: flex; gap: 12px; margin-top: 4px; font-size: 12px; }
+  .recruit-links a { color: var(--text-dim); text-decoration: none; } /* not --gold-dim: ~3:1 contrast at 12px, too faint */
+  .recruit-links a:hover { color: var(--gold); text-decoration: underline; }
+  .recruit-contact { font-size: 13px; color: var(--text); }
+  .recruit-followup { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #ffb020; margin-top: 3px; }
+  .recruit-status { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  .recruit-status select, .recruit-notes input, .recruit-template-select {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-family: 'Rajdhani', sans-serif; font-size: 14px; font-weight: 500; padding: 6px 8px; outline: none; width: 100%;
+  }
+  .recruit-status select:focus, .recruit-notes input:focus, .recruit-template-select:focus { border-color: var(--gold-dim); }
+  .recruit-notes input::placeholder { color: var(--text-mute); }
+  .recruit-actions { display: flex; align-items: center; gap: 8px; }
+  .recruit-template-select { width: 150px; color: var(--text-dim); }
+  .recruit-small-btn { padding: 4px 10px; font-size: 11px; letter-spacing: 1px; }
+  .recruit-delete {
+    background: none; border: 1px solid transparent; border-radius: 4px; color: var(--text-dim);
+    cursor: pointer; font-size: 14px; padding: 4px 8px;
+  }
+  .recruit-delete:hover { color: #ff6b6b; border-color: rgba(196,30,58,0.4); }
+  .recruit-empty-filter { font-size: 13px; color: var(--text-dim); padding: 20px 4px; }
+
+  .recruit-templates { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .recruit-templates-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .template-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; }
+  .template-card-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .template-card-title  { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 15px; color: var(--text); }
+  .template-card-body {
+    font-size: 13px; color: var(--text-dim); margin-top: 6px; white-space: pre-wrap; line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .template-count { font-size: 12px; color: var(--text-dim); margin-top: 6px; }
+  .template-count.warn  { color: #ffb020; }
+  .template-count.error { color: #ff6b6b; }
+
+  .recruit-scores-note { font-size: 12px; color: var(--text-dim); padding: 10px 14px; }
+
+  @media (max-width: 900px) {
+    .recruit-add-grid { grid-template-columns: 1fr 1fr; }
+    .recruit-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .recruit-notes, .recruit-actions { grid-column: span 1; }
+  }
+  @media (max-width: 600px) {
+    .recruit-add-grid { grid-template-columns: 1fr; }
+    .recruit-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .recruit-template-select { flex: 1; width: auto; }
   }
