@@ -18,6 +18,7 @@ const { slugifyServer } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
 const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
+const { canonicalSpec, roleForSpec, parseSpec } = require('../lib/wowSpecs');
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
@@ -291,12 +292,32 @@ module.exports = async (req, res) => {
         updates.role = b.role || null;
       }
       if (b.contactedAt !== undefined) {
-        if (!isValidDate(b.contactedAt)) return res.status(400).json({ error: 'Invalid contacted date' });
+        if (!isValidDate(b.contactedAt) || b.contactedAt < '2004-01-01') return res.status(400).json({ error: 'Invalid contacted date' });
+        // Any past date is fine (fixing a wrong one); the future isn't. A day of
+        // slack covers officers whose local "today" is already tomorrow in UTC.
+        if (b.contactedAt > new Date(Date.now() + 86400000).toISOString().slice(0, 10)) {
+          return res.status(400).json({ error: "The contacted date can't be in the future" });
+        }
         updates.contacted_at = b.contactedAt;
       }
       if (b.notes !== undefined) updates.notes = (b.notes || '').trim() || null;
       if (b.class !== undefined) updates.class = b.class ? String(b.class).toLowerCase() : null;
-      if (b.spec  !== undefined) updates.spec  = b.spec || null;
+
+      if (b.spec !== undefined || updates.role !== undefined || updates.class !== undefined) {
+        const { data: current, error: readErr } = await supabase
+          .from('recruits').select('class, role').eq('id', b.recruitId).eq('team_id', teamId).single();
+        if (readErr) throw readErr;
+        const cls = updates.class !== undefined ? updates.class : current.class;
+        if (b.spec !== undefined) {
+          // A known spec also sets the role, unless one was sent explicitly.
+          updates.spec = b.spec ? (canonicalSpec(cls, b.spec) || String(b.spec).trim().slice(0, 40)) : null;
+          const specRole = roleForSpec(cls, updates.spec);
+          if (b.role === undefined && specRole) updates.role = specRole;
+        }
+        // WCL scores are fetched by role -- healers by HPS, everyone else by
+        // DPS -- so crossing that line makes the saved ones the wrong metric.
+        if (updates.role !== undefined && (updates.role === 'heal') !== (current.role === 'heal')) updates.wcl_scores = {};
+      }
 
       const { data, error } = await supabase
         .from('recruits').update(updates)
@@ -538,6 +559,11 @@ module.exports = async (req, res) => {
           return data;
         };
 
+        // The spec they applied as beats Raider.io's, which is just whatever
+        // spec they last logged out in.
+        const cls         = summary?.class || app.class || null;
+        const appliedSpec = parseSpec(app.classSpec, cls);
+
         let recruit = null, linked = false;
         const existing = await findExisting(name, realmSlug)
           || (summary?.renamedFrom ? await findExisting(typedName, slugifyServer(typedRealm)) : null);
@@ -552,9 +578,9 @@ module.exports = async (req, res) => {
               name,
               realm,
               realm_slug:      realmSlug,
-              class:           summary?.class || app.class || null,
-              spec:            summary?.spec || null,
-              role:            summary?.role || null,
+              class:           cls,
+              spec:            appliedSpec || summary?.spec || null,
+              role:            (appliedSpec && roleForSpec(cls, appliedSpec)) || summary?.role || null,
               source:          'application',
               application_key: responseKey,
               contacted_at:    app.submittedDate || new Date().toISOString().slice(0, 10),

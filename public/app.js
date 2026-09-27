@@ -3369,6 +3369,16 @@ async function fetchCharacterWclScores(char, { zoneId, diffId, region, bossIds, 
     const rawOf    = r => r?.bestAmount != null ? fmtAmount(r.bestAmount) : null;
     const rawNumOf = r => r?.bestAmount != null ? parseFloat(r.bestAmount) : null;
 
+    // The spec their ranked logs are actually on (most common across
+    // bosses; the other metric's rankings if this one has none). Recruits'
+    // listed spec comes from Raider.io -- whatever they last logged out in --
+    // so Recruits compares the two.
+    const specCounts = {};
+    const rankedSpecs = list => list.filter(r => r.rankPercent != null && (r.spec || r.bestSpec));
+    const specSource  = rankedSpecs(rankings).length ? rankedSpecs(rankings) : rankedSpecs(oppoRankings);
+    specSource.forEach(r => { const sp = r.spec || r.bestSpec; specCounts[sp] = (specCounts[sp] || 0) + 1; });
+    const loggedSpec = Object.entries(specCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
     const deaths     = zr.deaths     || 0;
     const totalKills = zr.totalKills || 0;
     const deathPct   = totalKills > 0 ? Math.min(100, ((deaths / totalKills) * 100)).toFixed(1) : 'N/A';
@@ -3408,6 +3418,7 @@ async function fetchCharacterWclScores(char, { zoneId, diffId, region, bossIds, 
         rawNumMap:      Object.fromEntries(rankings.map(r => [r.encounter?.name, rawNumOf(r)])),
         oppoRawNumMap:  Object.fromEntries(oppoRankings.map(r => [r.encounter?.name, rawNumOf(r)])),
         firstKillMap,
+        loggedSpec,
         rankings:       rankings.map(r => fmt(r.rankPercent)),
         error:          null,
       },
@@ -6627,6 +6638,30 @@ const RECRUIT_STATUSES = [
 ];
 // Outcome settled -> shown under History instead of Active.
 const RECRUIT_CLOSED_STATUSES = ['no_response', 'not_interested', 'joined'];
+// Every class's specs and the role each fills -- must match CLASS_SPECS in
+// lib/wowSpecs.js (the server derives a recruit's role from the same table).
+const CLASS_SPECS = {
+  'death knight': [['Blood', 'tank'], ['Frost', 'melee'], ['Unholy', 'melee']],
+  'demon hunter': [['Havoc', 'melee'], ['Vengeance', 'tank'], ['Devourer', 'ranged']],
+  'druid':        [['Balance', 'ranged'], ['Feral', 'melee'], ['Guardian', 'tank'], ['Restoration', 'heal']],
+  'evoker':       [['Augmentation', 'ranged'], ['Devastation', 'ranged'], ['Preservation', 'heal']],
+  'hunter':       [['Beast Mastery', 'ranged'], ['Marksmanship', 'ranged'], ['Survival', 'melee']],
+  'mage':         [['Arcane', 'ranged'], ['Fire', 'ranged'], ['Frost', 'ranged']],
+  'monk':         [['Brewmaster', 'tank'], ['Mistweaver', 'heal'], ['Windwalker', 'melee']],
+  'paladin':      [['Holy', 'heal'], ['Protection', 'tank'], ['Retribution', 'melee']],
+  'priest':       [['Discipline', 'heal'], ['Holy', 'heal'], ['Shadow', 'ranged']],
+  'rogue':        [['Assassination', 'melee'], ['Outlaw', 'melee'], ['Subtlety', 'melee']],
+  'shaman':       [['Elemental', 'ranged'], ['Enhancement', 'melee'], ['Restoration', 'heal']],
+  'warlock':      [['Affliction', 'ranged'], ['Demonology', 'ranged'], ['Destruction', 'ranged']],
+  'warrior':      [['Arms', 'melee'], ['Fury', 'melee'], ['Protection', 'tank']],
+};
+// "Beast Mastery" / "BeastMastery" (WCL's spelling) -> "beastmastery"
+const specKey = s => String(s || '').toLowerCase().replace(/[^a-z]/g, '');
+// The class's own spelling of a spec, or null if it isn't one of theirs.
+function canonicalSpecFor(cls, spec) {
+  const key = specKey(spec);
+  return (CLASS_SPECS[cls] || []).find(([name]) => specKey(name) === key)?.[0] || null;
+}
 const RECRUIT_CHANNEL_LABELS  = { mail: 'Mail', whisper: 'Whisper', discord: 'Discord', form: 'Application', other: 'Other' };
 // WoW's own caps: chat/whisper lines at 255 characters, in-game mail bodies at 500.
 const WHISPER_CHAR_LIMIT = 255;
@@ -6701,10 +6736,7 @@ async function refreshStaleRecruitLookups() {
       if (recruit.name !== r.name || recruit.realm_slug !== r.realm_slug) renamed.push(recruit);
     } catch (e) { /* keep the old snapshot */ }
   });
-  // Don't redraw out from under an officer mid-way through typing a note --
-  // the fresh data shows on the next render instead.
-  const listEl = document.getElementById('recruit-list');
-  if (!(listEl && document.activeElement && listEl.contains?.(document.activeElement))) renderRecruitTab();
+  renderRecruitsUnlessEditing();
   // Their scores were looked up under the old name -- fetch them again.
   if (renamed.length && STATE.config?.hasWclCredentials && STATE.zoneId) fetchRecruitScores(renamed, { silent: true });
 }
@@ -6730,7 +6762,7 @@ function setRecruitView(view, btn) {
   btn.classList.add('active');
   document.getElementById('recruit-view-list').style.display   = view === 'list'   ? '' : 'none';
   document.getElementById('recruit-view-scores').style.display = view === 'scores' ? '' : 'none';
-  if (view === 'scores') renderRecruitScores();
+  if (view === 'scores') renderRecruitScores(); else renderRecruits(); // picks up a score refresh's WCL spec hints
 }
 
 function setRecruitStatusFilter(filter, btn) {
@@ -6816,6 +6848,75 @@ function alreadyTrackedMessage(existing) {
   return `Already tracked: ${existing.name} was added by ${who}, contacted ${formatRecruitDate(existing.contacted_at)} (${status}).`;
 }
 
+// "[Elemental v] Shaman · 316 ilvl · 3,140 M+ · 6/8 M" -- the spec is a
+// picker, since Raider.io only knows the spec they last logged out in.
+function recruitSpecLineHtml(r) {
+  const specs = CLASS_SPECS[r.class];
+  if (!specs) {
+    const stat = recruitStatLine(r.spec, r.class, r.lookup);
+    return stat ? escapeHtml(stat) : 'No Raider.io data';
+  }
+  const current = canonicalSpecFor(r.class, r.spec);
+  const options = (current ? '' : `<option value="" selected>${escapeHtml(r.spec || 'Spec?')}</option>`)
+    + specs.map(([name]) => `<option value="${escapeHtml(name)}"${name === current ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('');
+  const rest = recruitStatLine(null, r.class, r.lookup);
+  return `<select class="recruit-spec-select" aria-label="Spec"
+      title="Their main spec. Sets their role, and whether WCL scores use DPS or HPS."
+      onchange="setRecruitSpec(${jsAttr(r.id)}, this.value)">${options}</select> ${escapeHtml(rest)}`;
+}
+
+// The spec their WCL logs are on, from the last score fetch (the selected
+// difficulty first) -- or null if it matches what's listed, or is unknown.
+function recruitLoggedSpec(r) {
+  const order = [TEAM_MGMT.scoreDifficulty, 'mythic', 'heroic', 'normal', 'lfr'];
+  for (const diff of order) {
+    const logged = canonicalSpecFor(r.class, r.wcl_scores?.[diff]?.result?.loggedSpec);
+    if (logged) return specKey(logged) === specKey(r.spec) ? null : logged;
+  }
+  return null;
+}
+
+function recruitSpecHintHtml(r) {
+  const logged = recruitLoggedSpec(r);
+  if (!logged) return '';
+  return `<button class="recruit-spec-hint" title="Their ranked Warcraft Logs parses are on ${escapeHtml(logged)}. Switch their spec to match."
+    onclick="setRecruitSpec(${jsAttr(r.id)}, ${jsAttr(logged)})">Logs as ${escapeHtml(logged)} on WCL · Use ${escapeHtml(logged)}</button>`;
+}
+
+async function setRecruitSpec(recruitId, spec) {
+  const before = TEAM_MGMT.recruits.find(r => r.id === recruitId);
+  if (!before || !spec) return;
+  try {
+    const { recruit } = await recruitingApi('updateRecruit', { recruitId, spec });
+    const i = TEAM_MGMT.recruits.findIndex(r => r.id === recruitId);
+    if (i >= 0) TEAM_MGMT.recruits[i] = recruit;
+    renderRecruitTab();
+    // Healer <-> non-healer switches the WCL metric (HPS vs DPS); the server
+    // already dropped the old-metric scores, so fetch the right ones.
+    if ((recruit.role === 'heal') === (before.role === 'heal')) return;
+    const metric = recruit.role === 'heal' ? 'HPS' : 'DPS';
+    if (!STATE.config?.hasWclCredentials || !STATE.zoneId) return;
+    if (TEAM_MGMT.scoresInFlight) {
+      showToast(`${recruit.name} is now ${recruit.spec}. Refresh scores once the current refresh finishes to get their ${metric} parses.`, '');
+      return;
+    }
+    showToast(`${recruit.name} is now ${recruit.spec} -- fetching their ${metric} parses`, 'success');
+    await fetchRecruitScores([recruit], { silent: true });
+    renderRecruitsUnlessEditing();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    renderRecruits(); // put the picker back
+  }
+}
+
+// Background updates re-render the list, but not out from under an officer
+// mid-way through typing a note -- the fresh data shows on the next render.
+function renderRecruitsUnlessEditing() {
+  const listEl = document.getElementById('recruit-list');
+  if (listEl && document.activeElement && listEl.contains?.(document.activeElement)) return;
+  renderRecruitTab();
+}
+
 function renderRecruits() {
   const wrap = document.getElementById('recruit-list');
   if (!wrap) return;
@@ -6840,7 +6941,6 @@ function renderRecruits() {
     const ago      = days == null ? '' : days <= 0 ? 'today' : `${days}d ago`;
     const closed   = RECRUIT_CLOSED_STATUSES.includes(r.status);
     const links    = recruitLinks(r);
-    const stat     = recruitStatLine(r.spec, r.class, r.lookup);
     const addedBy  = r.creator?.display_name || r.creator?.battletag || '';
     const statusOptions = RECRUIT_STATUSES
       .map(s => `<option value="${s.value}"${s.value === r.status ? ' selected' : ''}>${s.label}</option>`).join('');
@@ -6853,7 +6953,8 @@ function renderRecruits() {
             ${r.lookup?.renamedFrom ? `<span class="recruit-renamed" title="${escapeHtml(RENAMED_TOOLTIP)}">formerly ${escapeHtml(formerCharacterText(r.lookup.renamedFrom))}</span>` : ''}
             ${r.application_key ? `<button class="recruit-badge clickable" title="View their application" onclick="openApplicationModal(${jsAttr(r.application_key)})">Application</button>` : ''}
           </div>
-          <div class="recruit-sub">${stat ? escapeHtml(stat) : 'No Raider.io data'}</div>
+          <div class="recruit-sub">${recruitSpecLineHtml(r)}</div>
+          ${recruitSpecHintHtml(r)}
           <div class="recruit-links">
             <a href="${escapeHtml(links.raiderio)}" target="_blank" rel="noopener noreferrer">Raider.io</a>
             <a href="${escapeHtml(links.wcl)}" target="_blank" rel="noopener noreferrer">WCL</a>
@@ -6861,7 +6962,12 @@ function renderRecruits() {
           </div>
         </div>
         <div class="recruit-contact">
-          <div>${formatRecruitDate(r.contacted_at)} <span class="recruit-sub">· ${ago}</span></div>
+          <div class="recruit-date-line">
+            <input type="date" class="recruit-date-input" value="${escapeHtml(r.contacted_at || '')}" max="${attendanceDateStr(new Date())}"
+              title="When you last contacted them. Change it if you've talked to them again, or to fix a wrong date."
+              aria-label="Last contacted" onchange="queueRecruitDateSave(${jsAttr(r.id)}, this)" onblur="queueRecruitDateSave(${jsAttr(r.id)}, this, true)" />
+            <span class="recruit-sub">${ago}</span>
+          </div>
           <div class="recruit-sub">${escapeHtml(RECRUIT_CHANNEL_LABELS[r.channel] || '—')}${addedBy ? ' · ' + escapeHtml(addedBy) : ''}</div>
         </div>
         <div class="recruit-status">
@@ -6959,11 +7065,32 @@ async function addRecruit() {
   }
 }
 
+// Date inputs fire change on every keystroke while a date is typed (a year
+// of "2" is briefly 0002-09-25), so the save waits for a pause in typing,
+// or happens right away when they leave the field.
+function queueRecruitDateSave(recruitId, input, now = false) {
+  clearTimeout(TEAM_MGMT.dateSaveTimer);
+  const save = () => {
+    const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
+    if (!r) return;
+    const value = input.value;
+    const valid = value && value >= '2004-01-01' && value <= attendanceDateStr(new Date());
+    if (valid && value !== r.contacted_at) return updateRecruitField(recruitId, 'contactedAt', value);
+    if (now) renderRecruitsUnlessEditing(); // left the field: show the saved date (and fresh "days ago")
+  };
+  if (now) save(); else TEAM_MGMT.dateSaveTimer = setTimeout(save, 800);
+}
+
 async function updateRecruitField(recruitId, field, value) {
   try {
     const data = await recruitingApi('updateRecruit', { recruitId, [field]: value });
     const i = TEAM_MGMT.recruits.findIndex(r => r.id === recruitId);
     if (i >= 0) TEAM_MGMT.recruits[i] = data.recruit;
+    if (field === 'contactedAt') { // re-sort, newest contact first -- once they're done with the picker
+      sortRecruits();
+      renderRecruitsUnlessEditing();
+      return;
+    }
     // A status change can move the row between filters (or add the Add to
     // roster button); a notes edit doesn't need a re-render.
     if (field !== 'notes') renderRecruitTab();

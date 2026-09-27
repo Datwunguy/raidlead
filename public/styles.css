@@ -1695,6 +1695,25 @@
   .recruit-links a { color: var(--text-dim); text-decoration: none; } /* not --gold-dim: ~3:1 contrast at 12px, too faint */
   .recruit-links a:hover { color: var(--gold); text-decoration: underline; }
   .recruit-contact { font-size: 13px; color: var(--text); }
+  .recruit-date-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .recruit-date-line .recruit-sub { margin-top: 0; }
+  .recruit-date-input {
+    color-scheme: dark; /* native calendar icon/popup match the dark theme */
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 500; padding: 3px 6px; outline: none;
+  }
+  .recruit-date-input:hover, .recruit-date-input:focus { border-color: var(--gold-dim); }
+  .recruit-spec-select {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; color: var(--text);
+    font-family: inherit; font-size: 12px; padding: 1px 4px; outline: none; cursor: pointer;
+  }
+  .recruit-spec-select:hover, .recruit-spec-select:focus { border-color: var(--gold-dim); }
+  .recruit-spec-hint {
+    display: inline-block; margin-top: 4px; background: none; cursor: pointer;
+    border: 1px dashed var(--gold-dim); border-radius: 3px; padding: 2px 8px;
+    color: var(--gold); font-family: inherit; font-size: 12px;
+  }
+  .recruit-spec-hint:hover { background: rgba(200, 168, 75, 0.12); border-style: solid; }
   .recruit-status { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
   .recruit-status select, .recruit-notes input, .recruit-template-select {
     background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
