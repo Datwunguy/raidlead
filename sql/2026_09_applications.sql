@@ -15,7 +15,7 @@ create table if not exists application_reviews (
   id           uuid primary key default gen_random_uuid(),
   team_id      uuid not null references teams(id) on delete cascade,
   response_key text not null,                -- stable hash of the response's timestamp + contact + character
-  decision     text not null,                -- rejected | promoted
+  decision     text not null,                -- promoted | rejected | resolved (handled outside RaidLead)
   recruit_id   uuid references recruits(id) on delete set null,
   reject_note  text,
   decided_by   uuid references accounts(id),

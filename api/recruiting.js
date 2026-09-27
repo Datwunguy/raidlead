@@ -5,7 +5,7 @@
 //           listTemplates, saveTemplate, deleteTemplate,
 //           listApplications, getApplication, saveApplicationSheet,
 //           saveApplicationColumnMap, promoteApplication,
-//           rejectApplication, undoApplicationRejection
+//           rejectApplication, resolveApplications, undoApplicationDecision
 //
 //  This is the 12th and last serverless function the Vercel Hobby plan
 //  allows -- future Team Management features (Applicants, Next Season) add
@@ -53,6 +53,13 @@ function isValidDate(s) {
 // -- a short per-team cache keeps that to one Google call.
 const sheetCache = new Map(); // teamId -> { sheetId, gid, data, fetchedAt }
 const SHEET_CACHE_MS = 60 * 1000;
+
+// responseKey (single) or responseKeys (bulk) from a request, validated
+// against the shape lib/applications.js produces (24 hex chars).
+function requestedKeys(body) {
+  const raw = Array.isArray(body?.responseKeys) ? body.responseKeys : (body?.responseKey ? [body.responseKey] : []);
+  return [...new Set(raw.filter(k => typeof k === 'string' && /^[a-f0-9]{24}$/.test(k)))].slice(0, 500);
+}
 
 function friendlySheetError(err, email) {
   // A 403 also comes back when the Sheets API isn't enabled on the Google
@@ -498,28 +505,38 @@ module.exports = async (req, res) => {
       }
     }
 
-    if (action === 'rejectApplication') {
+    // Reject, or Resolve ("handled outside RaidLead" -- already on the
+    // roster, or long gone -- with no recruit created and nobody rejected).
+    // Takes one responseKey or a responseKeys array for bulk selection;
+    // applications that already have a decision are skipped, not failed.
+    if (action === 'rejectApplication' || action === 'resolveApplications') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-      const { responseKey } = req.body || {};
-      if (!responseKey) return res.status(400).json({ error: 'responseKey required' });
-      const note = String(req.body?.note || '').trim().slice(0, 500) || null;
-      const { error } = await supabase.from('application_reviews')
-        .insert({ team_id: teamId, response_key: responseKey, decision: 'rejected', reject_note: note, decided_by: session.id });
-      if (error) {
-        if (error.code === '23505') return res.status(409).json({ error: 'This application already has a decision.' });
-        throw error;
+      const keys = requestedKeys(req.body);
+      if (keys.length === 0) return res.status(400).json({ error: 'responseKey or responseKeys required' });
+      const decision = action === 'rejectApplication' ? 'rejected' : 'resolved';
+      const note = decision === 'rejected' ? (String(req.body?.note || '').trim().slice(0, 500) || null) : null;
+
+      const { data, error } = await supabase.from('application_reviews')
+        .upsert(
+          keys.map(k => ({ team_id: teamId, response_key: k, decision, reject_note: note, decided_by: session.id })),
+          { onConflict: 'team_id,response_key', ignoreDuplicates: true })
+        .select('response_key');
+      if (error) throw error;
+      const decided = (data || []).map(r => r.response_key);
+      if (keys.length === 1 && decided.length === 0) {
+        return res.status(409).json({ error: 'This application already has a decision.' });
       }
-      return res.status(200).json({ success: true });
+      return res.status(200).json({ decided, skipped: keys.filter(k => !decided.includes(k)) });
     }
 
-    // Only rejections can be undone here -- a promoted applicant is a
-    // recruit now, and is managed from the Recruits list.
-    if (action === 'undoApplicationRejection') {
+    // Undo a Reject or Resolve (back to "Needs decision"). A promoted
+    // applicant is a recruit now, and is managed from the Recruits list.
+    if (action === 'undoApplicationDecision') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-      const { responseKey } = req.body || {};
-      if (!responseKey) return res.status(400).json({ error: 'responseKey required' });
+      const [key] = requestedKeys(req.body);
+      if (!key) return res.status(400).json({ error: 'responseKey required' });
       const { error } = await supabase.from('application_reviews').delete()
-        .eq('team_id', teamId).eq('response_key', responseKey).eq('decision', 'rejected');
+        .eq('team_id', teamId).eq('response_key', key).in('decision', ['rejected', 'resolved']);
       if (error) throw error;
       return res.status(200).json({ success: true });
     }

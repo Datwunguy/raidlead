@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260927c">
+<link rel="stylesheet" href="styles.css?v=20260927d">
 </head>
 <body>
 <div id="app">
@@ -792,6 +792,7 @@
             <div class="role-filter" id="applicant-filter">
               <button class="filter-btn active" onclick="setApplicantFilter('pending', this)">Needs decision</button>
               <button class="filter-btn" onclick="setApplicantFilter('promoted', this)">Added to Recruits</button>
+              <button class="filter-btn" onclick="setApplicantFilter('resolved', this)">Resolved</button>
               <button class="filter-btn" onclick="setApplicantFilter('rejected', this)">Rejected</button>
               <button class="filter-btn" onclick="setApplicantFilter('all', this)">All</button>
             </div>
@@ -801,6 +802,7 @@
             </div>
           </div>
           <div id="applicant-settings" class="recruit-add-card" style="display:none; margin-bottom:16px;"></div>
+          <div id="applicant-bulk-bar" class="applicant-bulk-bar" style="display:none;"></div>
           <div id="applicant-list"></div>
         </div>
 
@@ -1245,6 +1247,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260927c"></script>
+<script src="app.js?v=20260927d"></script>
 </body>
 </html>

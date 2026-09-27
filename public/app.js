@@ -6613,6 +6613,8 @@ const TEAM_MGMT = {
   applicantFilter:       'pending', // pending | promoted | rejected | all
   applicantSettingsOpen: false,
   applicantLookups:      {},        // response key -> { summary, existing } from Raider.io, per session
+  selectedApplicants:    new Set(), // response keys ticked for a bulk action
+  bulkInFlight:          false,
 };
 
 // Must match STATUSES in api/recruiting.js.
@@ -7250,9 +7252,25 @@ function findApplication(key) {
 
 function setApplicantFilter(filter, btn) {
   TEAM_MGMT.applicantFilter = filter;
+  TEAM_MGMT.selectedApplicants.clear(); // never act on rows you can't see
   document.querySelectorAll('#applicant-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   renderApplicants();
+}
+
+const RESOLVE_TOOLTIP = "Mark as already handled outside RaidLead -- e.g. they're already on the roster, or they left. "
+  + "No recruit is created and nobody is rejected. Shows as \"On roster\" or \"Not on roster\" based on your current roster. You can undo it.";
+
+// Whether this applicant's character is on the team's active roster right
+// now. Exact name match (not accent-folded -- Häzey and Hazey are different
+// characters), plus the realm when the application gives one.
+function applicantOnRoster(a) {
+  const summary = TEAM_MGMT.applicantLookups[a.key]?.summary;
+  const name = (summary?.name || a.name || '').trim().toLowerCase();
+  if (!name) return false;
+  const slug = realmSlugClient(summary?.realmName || a.realm);
+  return (STATE.players || []).some(p =>
+    (p.name || '').trim().toLowerCase() === name && (!slug || (p.server || '') === slug));
 }
 
 function toggleApplicantSettings() {
@@ -7281,15 +7299,25 @@ function renderApplicants() {
   if (!wrap || !data) return;
 
   // Not connected yet -- the settings panel above is the whole page.
-  if (!data.serverReady || !data.configured) { wrap.innerHTML = ''; return; }
-  if (data.error) { wrap.innerHTML = ''; return; } // shown in the settings panel, next to how to fix it
+  if (!data.serverReady || !data.configured || data.error) { // an error shows in the settings panel, next to how to fix it
+    wrap.innerHTML = '';
+    renderApplicantBulkBar([]);
+    return;
+  }
 
   const all = data.applications || [];
   if (all.length === 0) {
     wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><h3>No applications yet</h3><p>New responses to your application form show up here automatically.</p></div>';
+    renderApplicantBulkBar([]);
     return;
   }
   const list = all.filter(a => TEAM_MGMT.applicantFilter === 'all' || a.decision === TEAM_MGMT.applicantFilter);
+  const pendingVisible = list.filter(a => a.decision === 'pending');
+  // Drop selections that are no longer pending/visible (e.g. decided elsewhere).
+  const visibleKeys = new Set(pendingVisible.map(a => a.key));
+  [...TEAM_MGMT.selectedApplicants].forEach(k => { if (!visibleKeys.has(k)) TEAM_MGMT.selectedApplicants.delete(k); });
+  renderApplicantBulkBar(pendingVisible);
+
   if (list.length === 0) {
     wrap.innerHTML = `<div class="recruit-empty-filter">${TEAM_MGMT.applicantFilter === 'pending'
       ? 'All caught up -- every application has a decision.'
@@ -7323,31 +7351,51 @@ function renderApplicants() {
     else if (lk === 'loading') statLine = 'Looking up on Raider.io...';
     else if (lk && !summary && name && realm) statLine = 'Not found on Raider.io';
 
-    const alreadyTracked = a.decision === 'pending' && lk?.existing
-      ? `<span class="recruit-badge" title="Already in Recruits -- adding them links this application to that entry">In Recruits</span>` : '';
+    const pending  = a.decision === 'pending';
+    const onRoster = applicantOnRoster(a);
+    const badges = (pending && onRoster
+        ? `<span class="recruit-badge on-roster" title="This character is on your active roster -- Resolve is probably what you want">On roster</span>` : '')
+      + (pending && lk?.existing
+        ? `<span class="recruit-badge" title="Already in Recruits -- adding them links this application to that entry">In Recruits</span>` : '');
 
+    const by = a.decidedBy ? ' by ' + escapeHtml(a.decidedBy) : '';
     let decisionHtml = '';
     if (a.decision === 'promoted') {
-      decisionHtml = `<div class="applicant-decision promoted">Added to Recruits${a.decidedBy ? ' by ' + escapeHtml(a.decidedBy) : ''}${a.recruitId ? '' : ' (since removed)'}</div>`;
+      decisionHtml = `<div class="applicant-decision promoted">Added to Recruits${by}${a.recruitId ? '' : ' (since removed)'}</div>`;
     } else if (a.decision === 'rejected') {
-      decisionHtml = `<div class="applicant-decision rejected">Rejected${a.decidedBy ? ' by ' + escapeHtml(a.decidedBy) : ''}</div>`
+      decisionHtml = `<div class="applicant-decision rejected">Rejected${by}</div>`
         + (a.rejectNote ? `<div class="recruit-sub">"${escapeHtml(a.rejectNote)}"</div>` : '');
+    } else if (a.decision === 'resolved') {
+      // Worked out from today's roster, so it stays true if they join or leave later.
+      decisionHtml = `<div class="applicant-decision resolved${onRoster ? ' on-roster' : ''}" title="${escapeHtml(RESOLVE_TOOLTIP)}">`
+        + `Resolved · ${onRoster ? 'On roster' : 'Not on roster'}</div>`
+        + (a.decidedBy ? `<div class="recruit-sub">by ${escapeHtml(a.decidedBy)}</div>` : '');
     }
 
-    const actions = a.decision === 'pending'
-      ? `<button class="btn-primary recruit-small-btn" onclick="promoteApplication(${jsAttr(a.key)})">Add to Recruitment</button>
-         <button class="btn-secondary recruit-small-btn applicant-reject" onclick="rejectApplication(${jsAttr(a.key)})">Reject</button>`
-      : a.decision === 'rejected'
-        ? `<button class="btn-secondary recruit-small-btn" onclick="undoApplicationRejection(${jsAttr(a.key)})">Undo reject</button>`
+    // Whichever action is likely -- Resolve when they're already on the
+    // roster, otherwise Add to Recruitment -- gets the highlighted button.
+    const promoteBtn = cls => `<button class="${cls} recruit-small-btn" onclick="promoteApplication(${jsAttr(a.key)})">Add to Recruitment</button>`;
+    const resolveBtn = cls => `<button class="${cls} recruit-small-btn" title="${escapeHtml(RESOLVE_TOOLTIP)}" onclick="resolveApplication(${jsAttr(a.key)})">Resolve</button>`;
+    const actions = pending
+      ? (onRoster ? resolveBtn('btn-primary') + promoteBtn('btn-secondary') : promoteBtn('btn-primary') + resolveBtn('btn-secondary'))
+        + `<button class="btn-secondary recruit-small-btn applicant-reject" onclick="rejectApplication(${jsAttr(a.key)})">Reject</button>`
+      : (a.decision === 'rejected' || a.decision === 'resolved')
+        ? `<button class="btn-secondary recruit-small-btn" title="Move back to Needs decision" onclick="undoApplicationDecision(${jsAttr(a.key)})">Undo</button>`
         : '';
 
+    const selectCell = pending
+      ? `<input type="checkbox" class="applicant-check" aria-label="Select ${escapeHtml(name || 'application')}"
+           ${TEAM_MGMT.selectedApplicants.has(a.key) ? 'checked' : ''} onchange="toggleApplicantSelected(${jsAttr(a.key)}, this.checked)" />`
+      : '<span></span>';
+
     return `
-      <div class="recruit-row applicant-row${a.decision !== 'pending' ? ' closed' : ''}">
+      <div class="recruit-row applicant-row${pending ? '' : ' closed'}${TEAM_MGMT.selectedApplicants.has(a.key) ? ' selected' : ''}">
+        ${selectCell}
         <div class="recruit-main">
           <div class="recruit-name-line">
             <span class="recruit-name" style="color:${color};">${escapeHtml(name || 'No character given')}</span>
             <span class="recruit-realm">${escapeHtml(realm || 'realm not given')}</span>
-            ${alreadyTracked}
+            ${badges}
           </div>
           <div class="recruit-sub">${escapeHtml([a.classSpec, a.contact].filter(Boolean).join(' · ') || '—')}</div>
           ${statLine ? `<div class="recruit-sub">${escapeHtml(statLine)}</div>` : ''}
@@ -7414,12 +7462,7 @@ async function promoteApplication(key, override) {
 
   try {
     const data = await recruitingApi('promoteApplication', body);
-    app.decision  = 'promoted';
-    app.recruitId = data.recruit.id;
-    app.decidedBy = 'you';
-    const i = TEAM_MGMT.recruits.findIndex(r => r.id === data.recruit.id);
-    if (i >= 0) TEAM_MGMT.recruits[i] = data.recruit; else TEAM_MGMT.recruits.push(data.recruit);
-    sortRecruits();
+    applyPromotion(app, data.recruit);
     renderApplicants();
     renderRecruitTab();
     showToast(data.linked
@@ -7438,28 +7481,66 @@ async function promoteApplication(key, override) {
   }
 }
 
+// Local bookkeeping after a successful promote (single or bulk).
+function applyPromotion(app, recruit) {
+  app.decision  = 'promoted';
+  app.recruitId = recruit.id;
+  app.decidedBy = 'you';
+  TEAM_MGMT.selectedApplicants.delete(app.key);
+  const i = TEAM_MGMT.recruits.findIndex(r => r.id === recruit.id);
+  if (i >= 0) TEAM_MGMT.recruits[i] = recruit; else TEAM_MGMT.recruits.push(recruit);
+  sortRecruits();
+}
+
+// Reject or Resolve one or more applications in a single request. The
+// server skips any another officer already decided; those get reloaded so
+// this officer sees what was chosen.
+async function decideApplications(decision, keys, note) {
+  const action = decision === 'rejected' ? 'rejectApplication' : 'resolveApplications';
+  const data = await recruitingApi(action, { responseKeys: keys, note });
+  for (const key of data.decided || []) {
+    const app = findApplication(key);
+    if (!app) continue;
+    app.decision   = decision;
+    app.rejectNote = decision === 'rejected' ? ((note || '').trim() || null) : null;
+    app.decidedBy  = 'you';
+    TEAM_MGMT.selectedApplicants.delete(key);
+  }
+  if ((data.skipped || []).length) {
+    showToast(`${data.skipped.length} already had a decision from another officer. Refreshing.`, '');
+    loadApplications(true);
+  }
+  renderApplicants();
+  return data;
+}
+
 async function rejectApplication(key) {
   const app = findApplication(key);
   if (!app) return;
   const note = prompt(`Reject ${app.name || 'this applicant'}? Optional note for the other officers:`, '');
   if (note === null) return;
   try {
-    await recruitingApi('rejectApplication', { responseKey: key, note });
-    app.decision   = 'rejected';
-    app.rejectNote = note.trim() || null;
-    app.decidedBy  = 'you';
-    renderApplicants();
+    await decideApplications('rejected', [key], note);
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
     if (e.status === 409) loadApplications(true);
   }
 }
 
-async function undoApplicationRejection(key) {
+async function resolveApplication(key) {
+  try {
+    await decideApplications('resolved', [key]);
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    if (e.status === 409) loadApplications(true);
+  }
+}
+
+async function undoApplicationDecision(key) {
   const app = findApplication(key);
   if (!app) return;
   try {
-    await recruitingApi('undoApplicationRejection', { responseKey: key });
+    await recruitingApi('undoApplicationDecision', { responseKey: key });
     app.decision   = 'pending';
     app.rejectNote = null;
     app.decidedBy  = null;
@@ -7467,6 +7548,106 @@ async function undoApplicationRejection(key) {
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
   }
+}
+
+// ── Bulk selection ──
+function toggleApplicantSelected(key, checked) {
+  if (checked) TEAM_MGMT.selectedApplicants.add(key); else TEAM_MGMT.selectedApplicants.delete(key);
+  renderApplicants();
+}
+
+function selectAllApplicants(checked) {
+  const visiblePending = (TEAM_MGMT.applications?.applications || []).filter(a =>
+    a.decision === 'pending' && (TEAM_MGMT.applicantFilter === 'all' || TEAM_MGMT.applicantFilter === 'pending'));
+  TEAM_MGMT.selectedApplicants = new Set(checked ? visiblePending.map(a => a.key) : []);
+  renderApplicants();
+}
+
+function selectedPendingApplications() {
+  return [...TEAM_MGMT.selectedApplicants].map(findApplication).filter(a => a && a.decision === 'pending');
+}
+
+function renderApplicantBulkBar(pendingVisible) {
+  const bar = document.getElementById('applicant-bulk-bar');
+  if (!bar) return;
+  if (!pendingVisible.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  const n = selectedPendingApplications().length;
+  const allChecked = n > 0 && n === pendingVisible.length;
+  const busy = TEAM_MGMT.bulkInFlight ? ' disabled' : '';
+  bar.style.display = '';
+  bar.innerHTML = `
+    <label class="applicant-select-all">
+      <input type="checkbox" ${allChecked ? 'checked' : ''}${busy} onchange="selectAllApplicants(this.checked)" />
+      ${n ? `${n} selected` : 'Select all'}
+    </label>
+    ${n ? `<div class="applicant-bulk-actions">
+      <button class="btn-primary recruit-small-btn" id="bulk-promote-btn"${busy} onclick="bulkPromoteApplications()">Add to Recruitment</button>
+      <button class="btn-secondary recruit-small-btn"${busy} title="${escapeHtml(RESOLVE_TOOLTIP)}" onclick="bulkDecideApplications('resolved')">Resolve</button>
+      <button class="btn-secondary recruit-small-btn applicant-reject"${busy} onclick="bulkDecideApplications('rejected')">Reject</button>
+      <button class="applicant-clear-selection"${busy} onclick="selectAllApplicants(false)">Clear</button>
+    </div>` : ''}`;
+}
+
+async function bulkDecideApplications(decision) {
+  const apps = selectedPendingApplications();
+  if (!apps.length) return;
+  let note = null;
+  if (decision === 'rejected') {
+    note = prompt(`Reject ${apps.length} application${apps.length === 1 ? '' : 's'}? Optional note for the other officers (applies to all of them):`, '');
+    if (note === null) return;
+  } else if (!confirm(`Resolve ${apps.length} application${apps.length === 1 ? '' : 's'}? They move to Resolved -- you can undo any of them from there.`)) {
+    return;
+  }
+  TEAM_MGMT.bulkInFlight = true;
+  renderApplicants();
+  try {
+    const data = await decideApplications(decision, apps.map(a => a.key), note);
+    const done = (data.decided || []).length;
+    showToast(`${decision === 'rejected' ? 'Rejected' : 'Resolved'} ${done} application${done === 1 ? '' : 's'}`, 'success');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  } finally {
+    TEAM_MGMT.bulkInFlight = false;
+    renderApplicants();
+  }
+}
+
+// One at a time: each promote does a Raider.io lookup and creates a recruit,
+// so a big batch done server-side could hit the host's time limit.
+// Applications with no readable realm are skipped -- those need the
+// one-at-a-time flow, which asks for Name-Realm.
+async function bulkPromoteApplications() {
+  const apps = selectedPendingApplications();
+  if (!apps.length) return;
+  const ready     = apps.filter(a => a.name && a.realm);
+  const needRealm = apps.length - ready.length;
+  if (!ready.length) { showToast("None of the selected applications list a realm. Add those one at a time.", 'error'); return; }
+  if (!confirm(`Add ${ready.length} application${ready.length === 1 ? '' : 's'} to Recruitment?`
+      + (needRealm ? `\n\n${needRealm} without a realm will be skipped. Add those one at a time.` : ''))) return;
+
+  TEAM_MGMT.bulkInFlight = true;
+  renderApplicants();
+  const added = [];
+  let failed = 0;
+  for (let i = 0; i < ready.length; i++) {
+    const btn = document.getElementById('bulk-promote-btn');
+    if (btn) btn.textContent = `⏳ ${i + 1} / ${ready.length}...`;
+    try {
+      const data = await recruitingApi('promoteApplication', { responseKey: ready[i].key });
+      applyPromotion(ready[i], data.recruit);
+      added.push(data.recruit);
+    } catch (e) {
+      failed++;
+    }
+  }
+  TEAM_MGMT.bulkInFlight = false;
+  renderApplicants();
+  renderRecruitTab();
+  showToast(`Added ${added.length} to Recruits`
+    + (failed ? `. ${failed} couldn't be added (possibly decided by another officer).` : '')
+    + (needRealm ? ` ${needRealm} skipped for a missing realm.` : ''), failed ? 'error' : 'success');
+  if (failed) loadApplications(true);
+  if (added.length && STATE.config?.hasWclCredentials && STATE.zoneId) fetchRecruitScores(added, { silent: true });
 }
 
 // ── Connecting the form's response sheet ──
