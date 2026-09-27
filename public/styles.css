@@ -1725,14 +1725,59 @@
   .template-count.error { color: #ff6b6b; }
 
   .recruit-scores-note { font-size: 12px; color: var(--text-dim); padding: 10px 14px; }
+  button.recruit-badge.clickable { background: none; cursor: pointer; font-family: inherit; }
+  button.recruit-badge.clickable:hover { color: var(--gold2); border-color: var(--gold); }
+
+  /* Team Management -- Applicants */
+  .subtab-count {
+    display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px; border-radius: 9px;
+    background: var(--gold); color: #0a0c0f; font-size: 11px; font-weight: 700; letter-spacing: 0; line-height: 18px;
+  }
+  .subtab-count:empty { display: none; }
+  .applicant-toolbar-actions { display: flex; gap: 8px; }
+  .applicant-row { grid-template-columns: minmax(0, 2.4fr) minmax(0, 1.2fr) auto; }
+  .applicant-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .applicant-actions .btn-primary.recruit-small-btn { padding: 5px 12px; }
+  .applicant-reject:hover { color: #ff6b6b; border-color: rgba(196,30,58,0.5); }
+  .applicant-decision { font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-top: 3px; }
+  .applicant-decision.promoted { color: #1EFF00; }
+  .applicant-decision.rejected { color: #ff6b6b; }
+
+  .applicant-setup-title { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 16px; color: var(--text); margin-bottom: 4px; }
+  .applicant-step { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; font-size: 14px; color: var(--text); }
+  .applicant-step-num {
+    flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--gold-dim);
+    color: var(--gold); font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center;
+  }
+  .applicant-email-row, .applicant-url-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .applicant-email-row code {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px;
+    font-size: 13px; color: var(--gold2); word-break: break-all;
+  }
+  .applicant-url-row input {
+    flex: 1; min-width: 220px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-family: 'Rajdhani', sans-serif; font-size: 14px; padding: 7px 10px; outline: none;
+  }
+  .applicant-url-row input:focus { border-color: var(--gold-dim); }
+  .applicant-map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+
+  .application-qa { padding: 12px 0; border-top: 1px solid var(--border); }
+  .application-qa:first-of-type { border-top: none; padding-top: 0; }
+  .application-q { font-size: 12px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 4px; white-space: pre-wrap; }
+  .application-a { font-size: 15px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+  .application-a a { color: var(--gold); }
 
   @media (max-width: 900px) {
     .recruit-add-grid { grid-template-columns: 1fr 1fr; }
     .recruit-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .recruit-notes, .recruit-actions { grid-column: span 1; }
   }
+  @media (max-width: 900px) {
+    .applicant-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .applicant-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  }
   @media (max-width: 600px) {
     .recruit-add-grid { grid-template-columns: 1fr; }
-    .recruit-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .recruit-row, .applicant-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .recruit-template-select { flex: 1; width: auto; }
   }

@@ -6608,6 +6608,11 @@ const TEAM_MGMT = {
   lookupTimer:       null,
   lookupToken:       0,
   editingTemplateId: null,
+  // Applicants (the guild's Google Form responses)
+  applications:          null,      // last listApplications payload
+  applicantFilter:       'pending', // pending | promoted | rejected | all
+  applicantSettingsOpen: false,
+  applicantLookups:      {},        // response key -> { summary, existing } from Raider.io, per session
 };
 
 // Must match STATUSES in api/recruiting.js.
@@ -6647,6 +6652,10 @@ async function loadTeamTab() {
   const realmInput = document.getElementById('ra-realm');
   if (realmInput && !realmInput.value) realmInput.value = titleCaseServer(STATE.config?.server);
 
+  // Applications read a Google Sheet, which can be slower -- loaded on its
+  // own so it never holds up the Recruits list.
+  loadApplications();
+
   const listEl = document.getElementById('recruit-list');
   if (TEAM_MGMT.recruits.length === 0) {
     listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading recruits...</div></div>';
@@ -6671,7 +6680,7 @@ function renderRecruitTab() {
 function setTeamSubTab(name, btn) {
   document.querySelectorAll('#team-subtab-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['recruits'].forEach(n => {
+  ['applicants', 'recruits'].forEach(n => {
     const el = document.getElementById('team-subtab-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
@@ -6795,7 +6804,7 @@ function renderRecruits() {
           <div class="recruit-name-line">
             <span class="recruit-name" style="color:${color};">${escapeHtml(r.name)}</span>
             <span class="recruit-realm">${escapeHtml(r.realm)}</span>
-            ${r.source === 'application' ? '<span class="recruit-badge">Application</span>' : ''}
+            ${r.application_key ? `<button class="recruit-badge clickable" title="View their application" onclick="openApplicationModal(${jsAttr(r.application_key)})">Application</button>` : ''}
           </div>
           <div class="recruit-sub">${stat ? escapeHtml(stat) : 'No Raider.io data'}</div>
           <div class="recruit-links">
@@ -7200,5 +7209,424 @@ async function fetchRecruitScores(recruits, { silent = false } = {}) {
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh Scores'; }
     if (TEAM_MGMT.view === 'scores') renderRecruitScores();
   }
+}
+
+// ── Applicants ──
+// A triage inbox over the guild's existing Google Form: every response
+// either gets rejected or promoted with "Add to Recruitment". Anything
+// still under "Needs decision" hasn't been looked at yet. The answers
+// themselves stay in the Google Sheet (read through api/recruiting.js);
+// only the decisions are stored in RaidLead.
+const APPLICANT_FIELD_LABELS = {
+  character: 'Character (Name-Realm)',
+  classSpec: 'Class and spec',
+  contact:   'BattleTag / Discord',
+  wcl:       'Warcraft Logs link',
+  raiderio:  'Raider.io link',
+  armory:    'Armory link',
+  timestamp: 'Timestamp',
+};
+
+async function loadApplications(force) {
+  const btn    = document.getElementById('applicant-refresh-btn');
+  const listEl = document.getElementById('applicant-list');
+  if (force && btn) { btn.disabled = true; btn.textContent = '⏳ Refreshing...'; }
+  if (!TEAM_MGMT.applications && listEl) {
+    listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading applications...</div></div>';
+  }
+  try {
+    TEAM_MGMT.applications = await recruitingApi('listApplications', { force: !!force });
+  } catch (e) {
+    TEAM_MGMT.applications = { serverReady: true, configured: true, error: e.message, applications: [] };
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
+  }
+  renderApplicants();
+}
+
+function findApplication(key) {
+  return TEAM_MGMT.applications?.applications?.find(a => a.key === key) || null;
+}
+
+function setApplicantFilter(filter, btn) {
+  TEAM_MGMT.applicantFilter = filter;
+  document.querySelectorAll('#applicant-filter .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderApplicants();
+}
+
+function toggleApplicantSettings() {
+  TEAM_MGMT.applicantSettingsOpen = !TEAM_MGMT.applicantSettingsOpen;
+  renderApplicantSettings();
+}
+
+function renderApplicantCount() {
+  const el = document.getElementById('applicant-pending-count');
+  if (!el) return;
+  const pending = (TEAM_MGMT.applications?.applications || []).filter(a => a.decision === 'pending').length;
+  el.textContent = pending > 0 ? String(pending) : '';
+  el.style.display = pending > 0 ? '' : 'none';
+}
+
+// Client-side twin of lib/serverSlug.js's slugifyServer, for building links.
+function realmSlugClient(realm) {
+  return String(realm || '').toLowerCase().replace(/\s+/g, '-').replace(/'/g, '').replace(/[^a-z0-9-]/g, '');
+}
+
+function renderApplicants() {
+  renderApplicantCount();
+  renderApplicantSettings();
+  const wrap = document.getElementById('applicant-list');
+  const data = TEAM_MGMT.applications;
+  if (!wrap || !data) return;
+
+  // Not connected yet -- the settings panel above is the whole page.
+  if (!data.serverReady || !data.configured) { wrap.innerHTML = ''; return; }
+  if (data.error) { wrap.innerHTML = ''; return; } // shown in the settings panel, next to how to fix it
+
+  const all = data.applications || [];
+  if (all.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><h3>No applications yet</h3><p>New responses to your application form show up here automatically.</p></div>';
+    return;
+  }
+  const list = all.filter(a => TEAM_MGMT.applicantFilter === 'all' || a.decision === TEAM_MGMT.applicantFilter);
+  if (list.length === 0) {
+    wrap.innerHTML = `<div class="recruit-empty-filter">${TEAM_MGMT.applicantFilter === 'pending'
+      ? 'All caught up -- every application has a decision.'
+      : 'No applications match this filter.'}</div>`;
+    return;
+  }
+
+  const region = toWclRegion(STATE.config?.region || 'us');
+  wrap.innerHTML = list.map(a => {
+    const lk      = TEAM_MGMT.applicantLookups[a.key];
+    const summary = lk?.summary || null;
+    const cls     = summary?.class || a.class;
+    const color   = CLASS_COLORS[cls] || 'var(--text)';
+    const name    = summary?.name || a.name;
+    const realm   = summary?.realmName || a.realm;
+    const slug    = realmSlugClient(realm);
+    const days    = daysSinceDate(a.submittedDate);
+    const ago     = days == null ? '' : days <= 0 ? 'today' : `${days}d ago`;
+
+    const links = {
+      raiderio: a.links?.raiderio || (name && slug ? `https://raider.io/characters/${region}/${slug}/${encodeURIComponent(name)}` : null),
+      wcl:      a.links?.wcl      || (name && slug ? `https://www.warcraftlogs.com/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
+      armory:   a.links?.armory   || (name && slug ? `https://worldofwarcraft.blizzard.com/en-us/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
+    };
+    const linkHtml = [['Raider.io', links.raiderio], ['WCL', links.wcl], ['Armory', links.armory]]
+      .filter(([, url]) => url && /^https?:\/\//.test(url))
+      .map(([label, url]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`).join('');
+
+    let statLine = '';
+    if (summary) statLine = recruitStatLine(summary.spec, summary.class, summary);
+    else if (lk === 'loading') statLine = 'Looking up on Raider.io...';
+    else if (lk && !summary && name && realm) statLine = 'Not found on Raider.io';
+
+    const alreadyTracked = a.decision === 'pending' && lk?.existing
+      ? `<span class="recruit-badge" title="Already in Recruits -- adding them links this application to that entry">In Recruits</span>` : '';
+
+    let decisionHtml = '';
+    if (a.decision === 'promoted') {
+      decisionHtml = `<div class="applicant-decision promoted">Added to Recruits${a.decidedBy ? ' by ' + escapeHtml(a.decidedBy) : ''}${a.recruitId ? '' : ' (since removed)'}</div>`;
+    } else if (a.decision === 'rejected') {
+      decisionHtml = `<div class="applicant-decision rejected">Rejected${a.decidedBy ? ' by ' + escapeHtml(a.decidedBy) : ''}</div>`
+        + (a.rejectNote ? `<div class="recruit-sub">"${escapeHtml(a.rejectNote)}"</div>` : '');
+    }
+
+    const actions = a.decision === 'pending'
+      ? `<button class="btn-primary recruit-small-btn" onclick="promoteApplication(${jsAttr(a.key)})">Add to Recruitment</button>
+         <button class="btn-secondary recruit-small-btn applicant-reject" onclick="rejectApplication(${jsAttr(a.key)})">Reject</button>`
+      : a.decision === 'rejected'
+        ? `<button class="btn-secondary recruit-small-btn" onclick="undoApplicationRejection(${jsAttr(a.key)})">Undo reject</button>`
+        : '';
+
+    return `
+      <div class="recruit-row applicant-row${a.decision !== 'pending' ? ' closed' : ''}">
+        <div class="recruit-main">
+          <div class="recruit-name-line">
+            <span class="recruit-name" style="color:${color};">${escapeHtml(name || 'No character given')}</span>
+            <span class="recruit-realm">${escapeHtml(realm || 'realm not given')}</span>
+            ${alreadyTracked}
+          </div>
+          <div class="recruit-sub">${escapeHtml([a.classSpec, a.contact].filter(Boolean).join(' · ') || '—')}</div>
+          ${statLine ? `<div class="recruit-sub">${escapeHtml(statLine)}</div>` : ''}
+          ${linkHtml ? `<div class="recruit-links">${linkHtml}</div>` : ''}
+        </div>
+        <div class="recruit-contact">
+          <div>Applied ${escapeHtml(formatRecruitDate(a.submittedDate))} <span class="recruit-sub">· ${ago}</span></div>
+          ${decisionHtml}
+        </div>
+        <div class="applicant-actions">
+          <button class="btn-secondary recruit-small-btn" onclick="openApplicationModal(${jsAttr(a.key)})">View application</button>
+          ${actions}
+        </div>
+      </div>`;
+  }).join('');
+
+  enrichApplicants(list.filter(a => a.decision === 'pending'));
+}
+
+async function runWithConcurrency(items, limit, fn) {
+  const queue = [...items];
+  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) await fn(queue.shift());
+  }));
+}
+
+// Raider.io stats (and "already in Recruits") for pending applicants,
+// fetched a few at a time after the list is on screen, once per session.
+async function enrichApplicants(apps) {
+  const todo = apps.filter(a => a.name && a.realm && TEAM_MGMT.applicantLookups[a.key] === undefined);
+  if (todo.length === 0) return;
+  todo.forEach(a => { TEAM_MGMT.applicantLookups[a.key] = 'loading'; });
+  await runWithConcurrency(todo, 4, async a => {
+    try {
+      const data = await recruitingApi('lookupCharacter', { name: a.name, realm: a.realm });
+      TEAM_MGMT.applicantLookups[a.key] = { summary: data.summary, existing: data.existing };
+    } catch (e) {
+      TEAM_MGMT.applicantLookups[a.key] = { summary: null, existing: null };
+    }
+  });
+  renderApplicants();
+}
+
+// "Vuk-Sargeras" / "Vuk Sargeras" / "Vuk-Azjol-Nerub" -> { name, realm } --
+// same rules as lib/applications.js's parseCharacterText.
+function splitNameRealm(text) {
+  const m = String(text || '').trim().match(/^([^\s\-\/(,@]+)\s*[-\/(,@ ]\s*(.+?)\)?$/);
+  return m ? { name: m[1], realm: m[2].trim() } : null;
+}
+
+async function promoteApplication(key, override) {
+  const app = findApplication(key);
+  if (!app) return;
+  const body = { responseKey: key, ...(override || {}) };
+
+  // Couldn't read a Name-Realm out of their answers -- ask the officer.
+  if (!override && (!app.name || !app.realm)) {
+    const typed = prompt('Which character is this? Enter it as Name-Realm (for example Vuk-Sargeras):', app.name ? app.name + '-' : '');
+    if (typed === null) return;
+    const parsed = splitNameRealm(typed);
+    if (!parsed) { showToast('Enter it as Name-Realm, for example Vuk-Sargeras.', 'error'); return; }
+    return promoteApplication(key, parsed);
+  }
+
+  try {
+    const data = await recruitingApi('promoteApplication', body);
+    app.decision  = 'promoted';
+    app.recruitId = data.recruit.id;
+    app.decidedBy = 'you';
+    const i = TEAM_MGMT.recruits.findIndex(r => r.id === data.recruit.id);
+    if (i >= 0) TEAM_MGMT.recruits[i] = data.recruit; else TEAM_MGMT.recruits.push(data.recruit);
+    sortRecruits();
+    renderApplicants();
+    renderRecruitTab();
+    showToast(data.linked
+      ? `${data.recruit.name} was already in Recruits -- linked their application`
+      : `${data.recruit.name} added to Recruits`, 'success');
+    if (STATE.config?.hasWclCredentials && STATE.zoneId) fetchRecruitScores([data.recruit], { silent: true });
+  } catch (e) {
+    if (e.data?.needsCharacter && !override) {
+      const typed = prompt('Which character is this? Enter it as Name-Realm (for example Vuk-Sargeras):', '');
+      const parsed = typed && splitNameRealm(typed);
+      if (parsed) return promoteApplication(key, parsed);
+      return;
+    }
+    showToast('Error: ' + e.message, 'error');
+    if (e.status === 409) loadApplications(true); // someone else decided first -- show what they chose
+  }
+}
+
+async function rejectApplication(key) {
+  const app = findApplication(key);
+  if (!app) return;
+  const note = prompt(`Reject ${app.name || 'this applicant'}? Optional note for the other officers:`, '');
+  if (note === null) return;
+  try {
+    await recruitingApi('rejectApplication', { responseKey: key, note });
+    app.decision   = 'rejected';
+    app.rejectNote = note.trim() || null;
+    app.decidedBy  = 'you';
+    renderApplicants();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    if (e.status === 409) loadApplications(true);
+  }
+}
+
+async function undoApplicationRejection(key) {
+  const app = findApplication(key);
+  if (!app) return;
+  try {
+    await recruitingApi('undoApplicationRejection', { responseKey: key });
+    app.decision   = 'pending';
+    app.rejectNote = null;
+    app.decidedBy  = null;
+    renderApplicants();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Connecting the form's response sheet ──
+function renderApplicantSettings() {
+  const el = document.getElementById('applicant-settings');
+  const d  = TEAM_MGMT.applications;
+  if (!el) return;
+  if (!d) { el.style.display = 'none'; return; }
+
+  // Setup and errors always show; the field mapping only when asked for.
+  const mustShow = !d.serverReady || !d.configured || !!d.error;
+  el.style.display = (mustShow || TEAM_MGMT.applicantSettingsOpen) ? '' : 'none';
+
+  if (!d.serverReady) {
+    el.innerHTML = `<div class="applicant-setup-title">Google Sheets isn't set up on this RaidLead server yet</div>
+      <div class="recruit-sub">The site admin needs to add a Google service account key (the GOOGLE_SERVICE_ACCOUNT_JSON setting in Vercel). Once that's in, this is where you'll connect your application form.</div>`;
+    return;
+  }
+
+  const shareStep = `
+    <div class="applicant-step"><span class="applicant-step-num">1</span><div style="flex:1; min-width:0;">
+      <div>Open your application form's <strong>responses spreadsheet</strong> and share it with this address as a <strong>Viewer</strong>:</div>
+      <div class="applicant-email-row"><code>${escapeHtml(d.serviceEmail || '')}</code>
+        <button class="btn-secondary recruit-small-btn" onclick="copyServiceEmail()">Copy</button></div>
+    </div></div>`;
+  const urlStep = `
+    <div class="applicant-step"><span class="applicant-step-num">2</span><div style="flex:1; min-width:0;">
+      <div>Paste the spreadsheet's link:</div>
+      <div class="applicant-url-row">
+        <input type="text" id="applicant-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off" />
+        <button class="btn-primary recruit-small-btn" id="applicant-connect-btn" onclick="connectApplicationSheet()">Connect</button>
+      </div>
+      <div id="applicant-connect-msg" class="status-msg" style="margin-top:6px;"></div>
+    </div></div>`;
+
+  if (!d.configured) {
+    el.innerHTML = `<div class="applicant-setup-title">Connect your application form</div>
+      <div class="recruit-sub" style="margin-bottom:14px;">Applicants keep using your existing Google Form -- RaidLead just reads its responses so officers can sort through them here.</div>
+      ${shareStep}${urlStep}`;
+    return;
+  }
+
+  if (d.error) {
+    el.innerHTML = `<div class="applicant-setup-title">Couldn't read your application responses</div>
+      <div class="recruit-lookup warn" style="margin:6px 0 14px;">${escapeHtml(d.error)}</div>
+      ${shareStep}${urlStep}
+      <div style="display:flex; justify-content:flex-end;"><button class="btn-secondary recruit-small-btn" onclick="disconnectApplicationSheet()">Disconnect</button></div>`;
+    return;
+  }
+
+  const headerOptions = selected => ['<option value="-1">(not in this form)</option>']
+    .concat((d.headers || []).map((h, i) => {
+      const label = h.length > 70 ? h.slice(0, 70) + '…' : h;
+      return `<option value="${i}"${selected === i ? ' selected' : ''}>${escapeHtml(label || `Column ${i + 1}`)}</option>`;
+    })).join('');
+  const mapFields = Object.entries(APPLICANT_FIELD_LABELS).map(([field, label]) => `
+    <div class="form-group"><label>${label}</label>
+      <select data-field="${field}">${headerOptions(d.columnMap?.[field] ?? -1)}</select></div>`).join('');
+
+  el.innerHTML = `<div class="applicant-setup-title">Connected: ${escapeHtml(d.sheet?.title || 'Spreadsheet')} › ${escapeHtml(d.sheet?.tab || '')}</div>
+    <div class="recruit-sub" style="margin:4px 0 14px;">RaidLead matched your form's questions to these fields automatically. Fix any that are wrong -- every question still shows in full on each application.</div>
+    <div class="applicant-map-grid" id="applicant-column-map">${mapFields}</div>
+    <div class="recruit-add-footer">
+      <div id="applicant-map-msg" class="status-msg"></div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-secondary recruit-small-btn" onclick="disconnectApplicationSheet()">Disconnect</button>
+        <button class="btn-primary recruit-small-btn" onclick="saveApplicantColumnMap()">Save fields</button>
+      </div>
+    </div>`;
+}
+
+async function copyServiceEmail() {
+  const email = TEAM_MGMT.applications?.serviceEmail;
+  if (email && await copyRecruitText(email)) showToast('Email copied', 'success');
+}
+
+async function connectApplicationSheet() {
+  const url = document.getElementById('applicant-sheet-url').value.trim();
+  const msg = document.getElementById('applicant-connect-msg');
+  if (!url) { msg.textContent = 'Paste the spreadsheet link first.'; msg.className = 'status-msg error'; return; }
+  const btn = document.getElementById('applicant-connect-btn');
+  btn.disabled = true;
+  msg.textContent = 'Connecting...';
+  msg.className = 'status-msg loading';
+  try {
+    TEAM_MGMT.applications = await recruitingApi('saveApplicationSheet', { url });
+    TEAM_MGMT.applicantSettingsOpen = true; // show the detected fields so they can be checked
+    renderApplicants();
+    showToast('Application form connected', 'success');
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = 'status-msg error';
+    btn.disabled = false;
+  }
+}
+
+async function disconnectApplicationSheet() {
+  if (!confirm("Disconnect the application form? Decisions you've already made are kept, and come back if you reconnect the same sheet.")) return;
+  try {
+    TEAM_MGMT.applications = await recruitingApi('saveApplicationSheet', { url: '' });
+    TEAM_MGMT.applicantSettingsOpen = false;
+    renderApplicants();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function saveApplicantColumnMap() {
+  const columnMap = {};
+  document.querySelectorAll('#applicant-column-map select[data-field]').forEach(sel => {
+    columnMap[sel.dataset.field] = parseInt(sel.value, 10);
+  });
+  const msg = document.getElementById('applicant-map-msg');
+  msg.textContent = 'Saving...';
+  msg.className = 'status-msg loading';
+  try {
+    TEAM_MGMT.applications = await recruitingApi('saveApplicationColumnMap', { columnMap });
+    TEAM_MGMT.applicantLookups = {}; // names may have changed with the new mapping
+    renderApplicants();
+    const saved = document.getElementById('applicant-map-msg');
+    if (saved) { saved.textContent = 'Saved'; saved.className = 'status-msg'; }
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = 'status-msg error';
+  }
+}
+
+// ── Full application viewer ──
+// URLs in answers become links; everything else is escaped text.
+function linkifyText(text) {
+  return String(text ?? '').split(/(https?:\/\/[^\s<>"]+)/g).map((part, i) => i % 2
+    ? `<a href="${escapeHtml(part)}" target="_blank" rel="noopener noreferrer">${escapeHtml(part)}</a>`
+    : escapeHtml(part)).join('');
+}
+
+async function openApplicationModal(key) {
+  const modal = document.getElementById('application-modal');
+  const title = document.getElementById('application-modal-title');
+  const body  = document.getElementById('application-modal-body');
+  let app = findApplication(key);
+  title.textContent = 'Application';
+  modal.classList.add('open');
+  if (!app) {
+    body.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading application...</div></div>';
+    try {
+      app = (await recruitingApi('getApplication', { responseKey: key })).application;
+    } catch (e) {
+      body.innerHTML = `<div class="recruit-lookup warn">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+  }
+  title.textContent = app.name ? `${app.name}'s application` : 'Application';
+  body.innerHTML = `<div class="recruit-sub" style="margin-bottom:16px;">Submitted ${escapeHtml(formatRecruitDate(app.submittedDate))}</div>`
+    + app.answers.map(qa => `<div class="application-qa">
+        <div class="application-q">${escapeHtml(qa.question)}</div>
+        <div class="application-a">${linkifyText(qa.answer)}</div>
+      </div>`).join('');
+}
+
+function closeApplicationModal() {
+  document.getElementById('application-modal').classList.remove('open');
 }
 
