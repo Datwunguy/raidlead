@@ -1,7 +1,7 @@
 // ============================================================
 //  recruiting.js — Team Management tab (officers only)
 //  Actions: listRecruits, addRecruit, updateRecruit, deleteRecruit,
-//           lookupCharacter, saveRecruitScores,
+//           lookupCharacter, refreshRecruitLookup, saveRecruitScores,
 //           listTemplates, saveTemplate, deleteTemplate,
 //           listApplications, getApplication, saveApplicationSheet,
 //           saveApplicationColumnMap, promoteApplication,
@@ -17,6 +17,7 @@ const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
+const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
@@ -94,9 +95,38 @@ module.exports = async (req, res) => {
     return data?.guilds?.region || 'us';
   }
 
-  async function lookup(name, realm) {
-    const region = await teamRegion();
-    return fetchCharacterSummary(region, realm, name, await currentRaidSlug(region));
+  // Raider.io only knows a character by its current name and realm, so
+  // anyone who renamed or transferred since applying comes back empty.
+  // Warcraft Logs keeps one identity across both -- when Raider.io misses,
+  // ask WCL (the team's own credentials) who this character is now, then
+  // retry Raider.io under that name. A summary found that way carries
+  // renamedFrom: { name, realm } and the WCL id. Pass the applicant's WCL
+  // link (wclUrl) or a saved wclId when known: an id link resolves even if
+  // the name they typed is stale.
+  async function lookup(name, realm, { wclUrl, wclId } = {}) {
+    const region   = await teamRegion();
+    const raidSlug = await currentRaidSlug(region);
+    const direct   = await fetchCharacterSummary(region, realm, name, raidSlug);
+    if (direct) return direct;
+
+    const current = await resolveCurrentCharacter(supabase, teamId, {
+      region, name: name.trim(), realmSlug: slugifyServer(realm),
+      wclCharacterId: wclId || wclCharacterIdFromUrl(wclUrl),
+    });
+    if (!current) return null;
+    const moved = current.name.toLowerCase() !== name.trim().toLowerCase()
+      || slugifyServer(current.realmName) !== slugifyServer(realm);
+    if (!moved) return null; // same character -- Raider.io just doesn't have it
+
+    const summary = await fetchCharacterSummary(region, current.realmName, current.name, raidSlug);
+    return {
+      ...(summary || {
+        name: current.name, realmName: current.realmName, class: null, spec: null, role: null,
+        ilvl: null, mplusScore: null, raidProgress: null, profileUrl: null, fetchedAt: new Date().toISOString(),
+      }),
+      renamedFrom: { name: name.trim(), realm },
+      wclId:       current.wclId,
+    };
   }
 
   async function findExisting(name, realmSlug) {
@@ -184,7 +214,10 @@ module.exports = async (req, res) => {
       const name  = (req.query.name  || req.body?.name  || '').trim();
       const realm = (req.query.realm || req.body?.realm || '').trim();
       if (!name || !realm) return res.status(400).json({ error: 'name and realm required' });
-      const [summary, existing] = await Promise.all([lookup(name, realm), findExisting(name, slugifyServer(realm))]);
+      const summary = await lookup(name, realm, { wclUrl: req.body?.wclUrl });
+      // A renamed character may already be tracked under either name.
+      const existing = (summary?.renamedFrom && await findExisting(summary.name, slugifyServer(summary.realmName)))
+        || await findExisting(name, slugifyServer(realm));
       return res.status(200).json({ summary, existing });
     }
 
@@ -269,6 +302,45 @@ module.exports = async (req, res) => {
         .from('recruits').update(updates)
         .eq('id', b.recruitId).eq('team_id', teamId)
         .select(RECRUIT_FIELDS).single();
+      if (error) throw error;
+      return res.status(200).json({ recruit: data });
+    }
+
+    // ── REFRESH RECRUIT LOOKUP: re-pulls a recruit's Raider.io snapshot.
+    // Raider.io misses renamed or transferred characters, so the recruit
+    // row follows WCL to the current name and realm instead of keeping a
+    // dead link. The UI runs this quietly for missing or stale snapshots. ──
+    if (action === 'refreshRecruitLookup') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { recruitId } = req.body || {};
+      if (!recruitId) return res.status(400).json({ error: 'recruitId required' });
+      const { data: current, error: readErr } = await supabase
+        .from('recruits').select('id, name, realm, class, spec, role, lookup')
+        .eq('id', recruitId).eq('team_id', teamId).single();
+      if (readErr) throw readErr;
+
+      const summary = await lookup(current.name, current.realm, { wclId: current.lookup?.wclId });
+      // Keep "formerly X" (and the WCL id) once they're found by their new name.
+      if (summary && !summary.renamedFrom && current.lookup?.renamedFrom) {
+        summary.renamedFrom = current.lookup.renamedFrom;
+        summary.wclId = summary.wclId || current.lookup.wclId;
+      }
+      // Not found anywhere: remember when we checked, so it isn't retried every visit.
+      const updates = { lookup: summary || { notFound: true, fetchedAt: new Date().toISOString() } };
+      if (summary) {
+        if (!current.class && summary.class) updates.class = summary.class;
+        if (!current.spec  && summary.spec)  updates.spec  = summary.spec;
+        if (!current.role  && summary.role)  updates.role  = summary.role;
+      }
+      const renamed = summary && (summary.name !== current.name || summary.realmName !== current.realm);
+      const save = u => supabase.from('recruits').update(u)
+        .eq('id', recruitId).eq('team_id', teamId).select(RECRUIT_FIELDS).single();
+
+      let { data, error } = await save(renamed
+        ? { ...updates, name: summary.name, realm: summary.realmName, realm_slug: slugifyServer(summary.realmName), updated_at: new Date().toISOString() }
+        : updates);
+      // Someone's already tracking them under the new name -- keep both rows, just refresh the snapshot.
+      if (error && error.code === '23505') ({ data, error } = await save(updates));
       if (error) throw error;
       return res.status(200).json({ recruit: data });
     }
@@ -444,15 +516,22 @@ module.exports = async (req, res) => {
       }
 
       try {
-        const summary   = await lookup(typedName, typedRealm);
+        // Their WCL link only speaks for the character they applied with --
+        // not for one an officer typed in by hand.
+        const overridden = !!(req.body?.name || req.body?.realm);
+        const summary   = await lookup(typedName, typedRealm, { wclUrl: overridden ? null : app.links?.wcl });
         const name      = summary?.name || typedName;
         const realm     = summary?.realmName || typedRealm;
         const realmSlug = slugifyServer(realm);
 
+        // Linking also moves an entry saved under their old name over to
+        // the current one.
         const linkExisting = async existing => {
+          const updates = { status: 'interested', application_key: responseKey, updated_at: new Date().toISOString() };
+          if (summary) Object.assign(updates, { name, realm, realm_slug: realmSlug, lookup: summary });
           const { data, error } = await supabase
             .from('recruits')
-            .update({ status: 'interested', application_key: responseKey, updated_at: new Date().toISOString() })
+            .update(updates)
             .eq('id', existing.id).eq('team_id', teamId)
             .select(RECRUIT_FIELDS).single();
           if (error) throw error;
@@ -460,7 +539,8 @@ module.exports = async (req, res) => {
         };
 
         let recruit = null, linked = false;
-        const existing = await findExisting(name, realmSlug);
+        const existing = await findExisting(name, realmSlug)
+          || (summary?.renamedFrom ? await findExisting(typedName, slugifyServer(typedRealm)) : null);
         if (existing) {
           recruit = await linkExisting(existing);
           linked = true;

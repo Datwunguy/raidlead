@@ -6671,6 +6671,42 @@ async function loadTeamTab() {
     return;
   }
   renderRecruitTab();
+  refreshStaleRecruitLookups();
+}
+
+// Raider.io snapshots older than this get re-pulled when the tab opens.
+const RECRUIT_LOOKUP_MAX_AGE_MS = 3 * 86400000;
+
+// Quietly re-pulls missing or stale Raider.io snapshots, a few at a time.
+// This is also what repairs a recruit who renamed or transferred: the
+// server follows them through Warcraft Logs and saves the new name, so
+// their links and WCL scores work again. Each recruit is tried at most
+// once per session.
+async function refreshStaleRecruitLookups() {
+  TEAM_MGMT.lookupRefreshTried ||= new Set();
+  const stale = TEAM_MGMT.recruits.filter(r => {
+    if (TEAM_MGMT.lookupRefreshTried.has(r.id)) return false;
+    const fetched = Date.parse(r.lookup?.fetchedAt || '');
+    return !r.lookup || !fetched || Date.now() - fetched > RECRUIT_LOOKUP_MAX_AGE_MS;
+  });
+  if (stale.length === 0) return;
+  stale.forEach(r => TEAM_MGMT.lookupRefreshTried.add(r.id));
+
+  const renamed = [];
+  await runWithConcurrency(stale, 3, async r => {
+    try {
+      const { recruit } = await recruitingApi('refreshRecruitLookup', { recruitId: r.id });
+      const i = TEAM_MGMT.recruits.findIndex(x => x.id === recruit.id);
+      if (i >= 0) TEAM_MGMT.recruits[i] = recruit;
+      if (recruit.name !== r.name || recruit.realm_slug !== r.realm_slug) renamed.push(recruit);
+    } catch (e) { /* keep the old snapshot */ }
+  });
+  // Don't redraw out from under an officer mid-way through typing a note --
+  // the fresh data shows on the next render instead.
+  const listEl = document.getElementById('recruit-list');
+  if (!(listEl && document.activeElement && listEl.contains?.(document.activeElement))) renderRecruitTab();
+  // Their scores were looked up under the old name -- fetch them again.
+  if (renamed.length && STATE.config?.hasWclCredentials && STATE.zoneId) fetchRecruitScores(renamed, { silent: true });
 }
 
 function renderRecruitTab() {
@@ -6751,6 +6787,14 @@ function recruitLinks(r) {
   };
 }
 
+// { name, realm } a lookup found them under before a rename or realm
+// transfer -> "Vuk-Sargeras".
+function formerCharacterText(renamedFrom) {
+  return renamedFrom ? `${renamedFrom.name}-${titleCaseServer(renamedFrom.realm)}` : '';
+}
+
+const RENAMED_TOOLTIP = 'Renamed or transferred since then -- RaidLead found their current character through Warcraft Logs';
+
 function titleCaseClass(cls) {
   return cls ? cls.replace(/\b\w/g, c => c.toUpperCase()) : '';
 }
@@ -6806,6 +6850,7 @@ function renderRecruits() {
           <div class="recruit-name-line">
             <span class="recruit-name" style="color:${color};">${escapeHtml(r.name)}</span>
             <span class="recruit-realm">${escapeHtml(r.realm)}</span>
+            ${r.lookup?.renamedFrom ? `<span class="recruit-renamed" title="${escapeHtml(RENAMED_TOOLTIP)}">formerly ${escapeHtml(formerCharacterText(r.lookup.renamedFrom))}</span>` : ''}
             ${r.application_key ? `<button class="recruit-badge clickable" title="View their application" onclick="openApplicationModal(${jsAttr(r.application_key)})">Application</button>` : ''}
           </div>
           <div class="recruit-sub">${stat ? escapeHtml(stat) : 'No Raider.io data'}</div>
@@ -6866,7 +6911,8 @@ async function runRecruitLookup() {
     }
     el.className = 'recruit-lookup found';
     el.innerHTML = `<span style="color:${CLASS_COLORS[s.class] || 'var(--text)'}; font-weight:700;">${escapeHtml(s.name)}</span>
-      <span class="recruit-sub">${escapeHtml(s.realmName || '')}</span> · ${escapeHtml(recruitStatLine(s.spec, s.class, s))}`;
+      <span class="recruit-sub">${escapeHtml(s.realmName || '')}</span> · ${escapeHtml(recruitStatLine(s.spec, s.class, s) || 'Not on Raider.io')}`
+      + (s.renamedFrom ? ` · <span class="recruit-renamed" title="${escapeHtml(RENAMED_TOOLTIP)}">renamed from ${escapeHtml(formerCharacterText(s.renamedFrom))}</span>` : '');
   } catch (e) {
     if (token === TEAM_MGMT.lookupToken) el.textContent = '';
   }
@@ -7337,17 +7383,23 @@ function renderApplicants() {
     const days    = daysSinceDate(a.submittedDate);
     const ago     = days == null ? '' : days <= 0 ? 'today' : `${days}d ago`;
 
+    // After a rename or transfer, the links they pasted into the form point
+    // at a character that no longer exists (Raider.io and the Armory error
+    // out), so build them from the current name instead.
+    const renamed = summary?.renamedFrom || null;
+    const given   = renamed ? {} : (a.links || {});
+    const rioUrl  = summary?.profileUrl && summary.profileUrl.startsWith('https://raider.io/') ? summary.profileUrl : null;
     const links = {
-      raiderio: a.links?.raiderio || (name && slug ? `https://raider.io/characters/${region}/${slug}/${encodeURIComponent(name)}` : null),
-      wcl:      a.links?.wcl      || (name && slug ? `https://www.warcraftlogs.com/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
-      armory:   a.links?.armory   || (name && slug ? `https://worldofwarcraft.blizzard.com/en-us/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
+      raiderio: rioUrl || given.raiderio || (name && slug ? `https://raider.io/characters/${region}/${slug}/${encodeURIComponent(name)}` : null),
+      wcl:      given.wcl    || (name && slug ? `https://www.warcraftlogs.com/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
+      armory:   given.armory || (name && slug ? `https://worldofwarcraft.blizzard.com/en-us/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
     };
     const linkHtml = [['Raider.io', links.raiderio], ['WCL', links.wcl], ['Armory', links.armory]]
       .filter(([, url]) => url && /^https?:\/\//.test(url))
       .map(([label, url]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`).join('');
 
     let statLine = '';
-    if (summary) statLine = recruitStatLine(summary.spec, summary.class, summary);
+    if (summary) statLine = recruitStatLine(summary.spec, summary.class, summary) || 'Not found on Raider.io';
     else if (lk === 'loading') statLine = 'Looking up on Raider.io...';
     else if (lk && !summary && name && realm) statLine = 'Not found on Raider.io';
 
@@ -7395,6 +7447,7 @@ function renderApplicants() {
           <div class="recruit-name-line">
             <span class="recruit-name" style="color:${color};">${escapeHtml(name || 'No character given')}</span>
             <span class="recruit-realm">${escapeHtml(realm || 'realm not given')}</span>
+            ${renamed ? `<span class="recruit-renamed" title="${escapeHtml(RENAMED_TOOLTIP)}">applied as ${escapeHtml(formerCharacterText(renamed))}</span>` : ''}
             ${badges}
           </div>
           <div class="recruit-sub">${escapeHtml([a.classSpec, a.contact].filter(Boolean).join(' · ') || '—')}</div>
@@ -7430,7 +7483,8 @@ async function enrichApplicants(apps) {
   todo.forEach(a => { TEAM_MGMT.applicantLookups[a.key] = 'loading'; });
   await runWithConcurrency(todo, 4, async a => {
     try {
-      const data = await recruitingApi('lookupCharacter', { name: a.name, realm: a.realm });
+      // Their WCL link lets the server find them again after a rename.
+      const data = await recruitingApi('lookupCharacter', { name: a.name, realm: a.realm, wclUrl: a.links?.wcl || null });
       TEAM_MGMT.applicantLookups[a.key] = { summary: data.summary, existing: data.existing };
     } catch (e) {
       TEAM_MGMT.applicantLookups[a.key] = { summary: null, existing: null };
