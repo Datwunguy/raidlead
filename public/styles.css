@@ -1744,6 +1744,8 @@
   .applicant-decision.rejected { color: #ff6b6b; }
 
   .applicant-setup-title { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 16px; color: var(--text); margin-bottom: 4px; }
+  .applicant-setup-intro { font-size: 15px; color: #fff; line-height: 1.5; margin: 6px 0 16px; }
+  .applicant-setup-intro p { margin: 0 0 6px; }
   .applicant-step { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; font-size: 14px; color: var(--text); }
   .applicant-step-num {
     flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--gold-dim);

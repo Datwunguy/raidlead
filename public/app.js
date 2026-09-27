@@ -7504,7 +7504,10 @@ function renderApplicantSettings() {
 
   if (!d.configured) {
     el.innerHTML = `<div class="applicant-setup-title">Connect your application form</div>
-      <div class="recruit-sub" style="margin-bottom:14px;">Applicants keep using your existing Google Form -- RaidLead just reads its responses so officers can sort through them here.</div>
+      <div class="applicant-setup-intro">
+        <p>If you use a Google Form to receive applications, the spreadsheet of answers can be linked here.</p>
+        <p>Applicants keep using your existing Google Form -- RaidLead just reads its responses so officers can sort through them here.</p>
+      </div>
       ${shareStep}${urlStep}`;
     return;
   }
