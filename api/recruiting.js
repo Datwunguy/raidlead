@@ -15,7 +15,7 @@ const { slugifyServer } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
 
-const STATUSES     = ['contacted', 'replied', 'interested', 'applied', 'trial', 'joined', 'declined', 'no_response'];
+const STATUSES     = ['contacted', 'no_response', 'not_interested', 'interested', 'joined']; // must match RECRUIT_STATUSES in app.js
 const CHANNELS     = ['mail', 'whisper', 'discord', 'form', 'other'];
 const ROLES        = ['tank', 'heal', 'melee', 'ranged'];
 const DIFFICULTIES = ['lfr', 'normal', 'heroic', 'mythic'];

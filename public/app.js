@@ -6600,7 +6600,7 @@ const TEAM_MGMT = {
   recruits:          [],
   templates:         [],
   view:              'list',        // list | scores
-  statusFilter:      'active',      // active | followup | history | all
+  statusFilter:      'active',      // active | history | all
   scoreView:         'performance', // performance | oppoparse | firstkill
   scoreDifficulty:   'mythic',
   scoreSortCol:      'best',
@@ -6610,19 +6610,17 @@ const TEAM_MGMT = {
   editingTemplateId: null,
 };
 
+// Must match STATUSES in api/recruiting.js.
 const RECRUIT_STATUSES = [
-  { value: 'contacted',   label: 'Contacted' },
-  { value: 'replied',     label: 'Replied' },
-  { value: 'interested',  label: 'Interested' },
-  { value: 'applied',     label: 'Applied' },
-  { value: 'trial',       label: 'Trial' },
-  { value: 'joined',      label: 'Joined' },
-  { value: 'declined',    label: 'Declined' },
-  { value: 'no_response', label: 'No response' },
+  { value: 'contacted',      label: 'Contacted' },
+  { value: 'no_response',    label: 'No Response' },
+  { value: 'not_interested', label: 'Not Interested' },
+  { value: 'interested',     label: 'Interested' },
+  { value: 'joined',         label: 'Joined' },
 ];
-const RECRUIT_CLOSED_STATUSES = ['joined', 'declined', 'no_response'];
+// Outcome settled -> shown under History instead of Active.
+const RECRUIT_CLOSED_STATUSES = ['no_response', 'not_interested', 'joined'];
 const RECRUIT_CHANNEL_LABELS  = { mail: 'Mail', whisper: 'Whisper', discord: 'Discord', form: 'Application', other: 'Other' };
-const RECRUIT_FOLLOW_UP_DAYS  = 7;
 // WoW's own caps: chat/whisper lines at 255 characters, in-game mail bodies at 500.
 const WHISPER_CHAR_LIMIT = 255;
 const MAIL_CHAR_LIMIT    = 500;
@@ -6715,13 +6713,8 @@ function formatRecruitDate(dateStr) {
   return d ? d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—';
 }
 
-function isRecruitFollowUp(r) {
-  return r.status === 'contacted' && (daysSinceDate(r.contacted_at) ?? 0) >= RECRUIT_FOLLOW_UP_DAYS;
-}
-
 function recruitMatchesFilter(r, filter) {
   if (filter === 'all') return true;
-  if (filter === 'followup') return isRecruitFollowUp(r);
   const closed = RECRUIT_CLOSED_STATUSES.includes(r.status);
   return filter === 'history' ? closed : !closed;
 }
@@ -6774,7 +6767,7 @@ function renderRecruits() {
 
   if (TEAM_MGMT.recruits.length === 0) {
     wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">✉</div><h3>Track your first recruit</h3>
-      <p>Add someone you've mailed or whispered above. RaidLead pulls their class, item level, and M+ score from Raider.io, and flags them for follow-up after ${RECRUIT_FOLLOW_UP_DAYS} days without a reply.</p></div>`;
+      <p>Add someone you've mailed or whispered above. RaidLead pulls their class, item level, and M+ score from Raider.io.</p></div>`;
     return;
   }
   const list = visibleRecruits();
@@ -6790,7 +6783,6 @@ function renderRecruits() {
     const color    = CLASS_COLORS[r.class] || 'var(--text)';
     const days     = daysSinceDate(r.contacted_at);
     const ago      = days == null ? '' : days <= 0 ? 'today' : `${days}d ago`;
-    const followUp = isRecruitFollowUp(r);
     const closed   = RECRUIT_CLOSED_STATUSES.includes(r.status);
     const links    = recruitLinks(r);
     const stat     = recruitStatLine(r.spec, r.class, r.lookup);
@@ -6798,7 +6790,7 @@ function renderRecruits() {
     const statusOptions = RECRUIT_STATUSES
       .map(s => `<option value="${s.value}"${s.value === r.status ? ' selected' : ''}>${s.label}</option>`).join('');
     return `
-      <div class="recruit-row${followUp ? ' follow-up' : ''}${closed ? ' closed' : ''}">
+      <div class="recruit-row${closed ? ' closed' : ''}">
         <div class="recruit-main">
           <div class="recruit-name-line">
             <span class="recruit-name" style="color:${color};">${escapeHtml(r.name)}</span>
@@ -6815,7 +6807,6 @@ function renderRecruits() {
         <div class="recruit-contact">
           <div>${formatRecruitDate(r.contacted_at)} <span class="recruit-sub">· ${ago}</span></div>
           <div class="recruit-sub">${escapeHtml(RECRUIT_CHANNEL_LABELS[r.channel] || '—')}${addedBy ? ' · ' + escapeHtml(addedBy) : ''}</div>
-          ${followUp ? '<div class="recruit-followup">Follow up</div>' : ''}
         </div>
         <div class="recruit-status">
           <select onchange="updateRecruitField(${jsAttr(r.id)}, 'status', this.value)">${statusOptions}</select>
@@ -6928,7 +6919,7 @@ async function updateRecruitField(recruitId, field, value) {
 async function deleteRecruit(recruitId) {
   const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
   if (!r) return;
-  if (!confirm(`Stop tracking ${r.name}? Their notes and scores are deleted. To keep a record instead, set their status to Declined.`)) return;
+  if (!confirm(`Stop tracking ${r.name}? Their notes and scores are deleted. To keep a record instead, set their status to Not Interested.`)) return;
   try {
     await recruitingApi('deleteRecruit', { recruitId });
     TEAM_MGMT.recruits = TEAM_MGMT.recruits.filter(x => x.id !== recruitId);
