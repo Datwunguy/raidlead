@@ -16,7 +16,7 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
-const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
+const { resolveCurrentRaidByDate, fetchRaidCalendar, raidLaunchDate } = require('../lib/raiderioRaids');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
 const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 
@@ -186,6 +186,37 @@ module.exports = async (req, res) => {
   //      detection as a last resort.
   // zone_name is the identity key throughout (see sql/2026_09_seasons.sql
   // for why) -- zone_id is populated opportunistically, never required.
+  // Seasons recorded before advanceSeason used Raider.io's launch dates were
+  // stamped with the day someone first noticed the new zone (and shared
+  // across regions). Re-dates each of this team's seasons to its raid's real
+  // launch in the team's region, and ends each closed season the day the
+  // next one started. Only writes rows that are actually off, so it's cheap
+  // to run on every advanceSeason call; seasons whose zone Raider.io doesn't
+  // list keep their dates. Best-effort -- never fails the caller.
+  async function repairSeasonDates(teamId, region) {
+    try {
+      const raids = await fetchRaidCalendar(region);
+      if (!raids.length) return;
+      const { data: seasons, error } = await supabase
+        .from('seasons').select('id, zone_name, started_at, ended_at')
+        .eq('team_id', teamId).order('started_at', { ascending: true });
+      if (error || !seasons?.length) return;
+
+      const fixed = seasons
+        .map(s => ({ ...s, started_at: raidLaunchDate(raids, s.zone_name) || s.started_at }))
+        .sort((a, b) => a.started_at.localeCompare(b.started_at));
+      fixed.forEach((s, i) => {
+        if (s.ended_at && fixed[i + 1]) s.ended_at = fixed[i + 1].started_at;
+      });
+      for (const s of fixed) {
+        const before = seasons.find(o => o.id === s.id);
+        if (before.started_at === s.started_at && before.ended_at === s.ended_at) continue;
+        await supabase.from('seasons').update({ started_at: s.started_at, ended_at: s.ended_at })
+          .eq('id', s.id).eq('team_id', teamId);
+      }
+    } catch (e) { /* dates stay as they were */ }
+  }
+
   if (action === 'advanceSeason') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const { teamId } = req.body || {};
@@ -198,27 +229,36 @@ module.exports = async (req, res) => {
         .from('teams').select('zone_name, guilds ( region )').eq('id', teamId).single();
       if (!team) return res.status(404).json({ error: 'Team not found' });
 
-      let detected = await resolveCurrentRaidByDate(team.guilds?.region || 'us');
+      const region = team.guilds?.region || 'us';
+      let detected = await resolveCurrentRaidByDate(region);
       if (!detected) detected = await detectCurrentWclZone(supabase, teamId);
       if (!detected) return res.status(200).json({ success: true, changed: false, reason: 'no_source_available' });
 
       const zoneName = detected.zoneName;
-      if (zoneName === team.zone_name) return res.status(200).json({ success: true, changed: false });
+      if (zoneName === team.zone_name) {
+        await repairSeasonDates(teamId, region);
+        return res.status(200).json({ success: true, changed: false });
+      }
 
       const zoneId = detected.zoneId ?? await lookupWclZoneIdByName(supabase, teamId, zoneName);
 
-      // A raid tier launches on one real date -- every team transitioning
-      // into this same zone, whenever they get to it, should record the
-      // same date, not whichever day their own officer happened to check.
-      // The first team anywhere to notice a zone sets it once; upsert with
-      // ignoreDuplicates so a later team's advance doesn't overwrite it.
+      // A raid tier launches on one real date per region -- the season
+      // boundary is that date, not whichever day an officer next happened
+      // to load the page. Raider.io's per-region launch time is the source
+      // ("2026-08-18" in the US, "2026-08-19" in the EU).
+      //
+      // global_zone_transitions is only the fallback now, for a zone found
+      // through WCL when Raider.io couldn't answer: the first team anywhere
+      // to notice a zone sets that date once (upsert with ignoreDuplicates
+      // so a later team's advance doesn't overwrite it).
       const today = new Date().toISOString().slice(0, 10);
+      const launchDate = detected.startsAt ? new Date(detected.startsAt).toISOString().slice(0, 10) : null;
       await supabase
         .from('global_zone_transitions')
         .upsert({ zone_id: zoneId, zone_name: zoneName, first_detected_at: today }, { onConflict: 'zone_name', ignoreDuplicates: true });
       const { data: transition } = await supabase
         .from('global_zone_transitions').select('first_detected_at').eq('zone_name', zoneName).single();
-      const transitionDate = transition?.first_detected_at || today;
+      const transitionDate = launchDate || transition?.first_detected_at || today;
 
       // Close the current season (if one exists yet -- a brand-new team may
       // not have one at all, in which case there's nothing to close). The
@@ -241,6 +281,7 @@ module.exports = async (req, res) => {
       if (insertErr && insertErr.code !== '23505') throw insertErr; // 23505 = unique_violation (lost the race, fine)
 
       await supabase.from('teams').update({ zone_id: zoneId, zone_name: zoneName }).eq('id', teamId);
+      await repairSeasonDates(teamId, region);
 
       return res.status(200).json({ success: true, changed: true, zoneId, zoneName, startedAt: transitionDate });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
