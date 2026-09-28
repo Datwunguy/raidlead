@@ -61,10 +61,11 @@ module.exports = async (req, res) => {
     try {
       const myRole = await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
-      // Only owners can hand out the owner role -- promoting to officer is a normal
-      // officer-level action; becoming owner should only ever happen via transferOwner,
-      // which also demotes the current owner atomically so exactly one owner exists.
-      if (role === 'owner' && myRole !== 'owner') return res.status(403).json({ error: 'Owners only for this role' });
+      // Promoting to officer is a normal officer-level action. Becoming owner only
+      // ever happens via api/guild.js's transferOwner, which also steps the current
+      // owner down so exactly one owner exists -- never here.
+      if (role === 'owner') return res.status(400).json({ error: 'Use Transfer ownership to make someone the owner' });
+      if (!['viewer', 'member', 'officer'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
 
       // Prevent owner from removing their own owner status without a transfer
       if (targetAccountId === session.id && myRole === 'owner') {

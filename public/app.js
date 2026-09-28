@@ -735,6 +735,7 @@ async function importFromWowaudit() {
     renderRoster();
     loadFlexData();
     showToast(`Imported ${data.imported} character${data.imported === 1 ? '' : 's'} from WowAudit!`, 'success');
+    loadOfficerNudge();
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
   }
@@ -840,6 +841,7 @@ async function saveCharacterModal() {
     renderRoster();
     loadFlexData();
     if (!CHARACTER_MODAL_EDIT_ID) invalidateJoinOrder(); // a new Main joined the end of the order
+    loadOfficerNudge();
     showToast(CHARACTER_MODAL_EDIT_ID ? 'Character updated!' : 'Character added!', 'success');
   } catch (e) {
     msg.textContent = e.message;
@@ -1206,6 +1208,7 @@ function showDashboard() {
       applyGuildData(data);
       updateRosterTitle();
       loadMySurvey(); // Next Season survey banner, now that role + team are fresh
+      loadOfficerNudge(); // owners of a team with no officers yet
       if (STATE.config?.wclTeamId) localStorage.setItem('raidlead_wcl_team_id', STATE.config.wclTeamId);
       if (STATE.teamId) {
         loadFlexData();
@@ -5945,7 +5948,6 @@ function renderMembersListFromDB(members) {
     return;
   }
 
-  const isOwner   = STATE.myRole === 'owner';
   const isOfficer = ['owner','officer'].includes(STATE.myRole);
 
   el.innerHTML = members.map(m => {
@@ -5981,13 +5983,12 @@ function renderMembersListFromDB(members) {
             <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — click to change' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
             <button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
             ${m.role === 'owner'
-              ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Change ownership from Guild Settings">Owner</span>`
+              ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Hand the team to someone else from Team Management > Roles">Owner</span>`
               : `<select onchange="updateRoleFromDB('${accountId}', this.value)"
                   style="background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:13px; padding:4px 8px; cursor:pointer;">
                   <option value="viewer"  ${m.role==='viewer'  ?'selected':''}>Viewer</option>
                   <option value="member"  ${m.role==='member'  ?'selected':''}>Member</option>
                   <option value="officer" ${m.role==='officer'?'selected':''}>Officer</option>
-                  ${isOwner ? `<option value="owner" ${m.role==='owner'?'selected':''}>Owner</option>` : ''}
                 </select>`
             }
             ${(isOfficer && m.role !== 'owner') ? `<button onclick="removeMember('${accountId}')" style="background:rgba(196,30,58,0.1); border:1px solid rgba(196,30,58,0.3); border-radius:4px; color:#ff6b6b; font-family:'Rajdhani',sans-serif; font-size:12px; padding:4px 8px; cursor:pointer;">✕</button>` : ''}
@@ -6140,75 +6141,6 @@ async function claimCharacter(characterName) {
     }
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
-  }
-}
-
-function renderMembersList() {
-  const el = document.getElementById('members-list');
-  // For now show stored guild members from localStorage
-  // Will be replaced with Supabase query once DB integration is complete
-  const members = JSON.parse(localStorage.getItem('raidlead_members') || '[]');
-
-  if (members.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-mute); font-size:13px; padding:8px 0;">No members have signed in yet. Share the invite link to get started.</div>';
-    return;
-  }
-
-  el.innerHTML = members.map(m => `
-    <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:var(--bg3); border:1px solid var(--border); border-radius:6px; margin-bottom:8px;">
-      <div>
-        <div style="font-size:14px; font-weight:700; color:var(--gold);">${escapeHtml(m.battletag)}</div>
-        <div style="font-size:12px; color:var(--text-mute);">
-          ${m.character ? `<span style="color:var(--text-dim);">Playing: ${escapeHtml(m.character)}</span>` : '<span style="color:#ff6b6b;">No character claimed</span>'}
-        </div>
-      </div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <select onchange="updateMemberRole(${jsAttr(m.battletag)}, this.value)"
-          style="background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:13px; padding:4px 8px; cursor:pointer;">
-          <option value="viewer"  ${m.role === 'viewer'  ? 'selected' : ''}>Viewer</option>
-          <option value="member"  ${m.role === 'member'  ? 'selected' : ''}>Member</option>
-          <option value="officer" ${m.role === 'officer' ? 'selected' : ''}>Officer</option>
-          <option value="owner"   ${m.role === 'owner'   ? 'selected' : ''}>Owner</option>
-        </select>
-      </div>
-    </div>
-  `).join('');
-}
-
-function renderUnclaimedList() {
-  const el = document.getElementById('unclaimed-list');
-  const members = JSON.parse(localStorage.getItem('raidlead_members') || '[]');
-  const claimedChars = members.filter(m => m.character).map(m => m.character.toLowerCase());
-
-  const unclaimed = STATE.players.filter(p => !claimedChars.includes(p.name.toLowerCase()));
-
-  if (unclaimed.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-mute); font-size:13px;">All characters have been claimed!</div>';
-    return;
-  }
-
-  el.innerHTML = unclaimed.map(p => {
-    const color = CLASS_COLORS[p.class] || '#888';
-    return `<span style="font-size:13px; font-weight:600; color:${color}; padding:4px 10px; background:${color}15; border:1px solid ${color}33; border-radius:4px;">${escapeHtml(p.name)}</span>`;
-  }).join('');
-}
-
-function updateMemberRole(battletag, role) {
-  const members = JSON.parse(localStorage.getItem('raidlead_members') || '[]');
-  const idx = members.findIndex(m => m.battletag === battletag);
-  if (idx >= 0) {
-    members[idx].role = role;
-    localStorage.setItem('raidlead_members', JSON.stringify(members));
-    showToast('Updated ' + battletag + ' to ' + role, 'success');
-  }
-}
-
-// Register new member when they join via invite
-function registerMember(battletag) {
-  const members = JSON.parse(localStorage.getItem('raidlead_members') || '[]');
-  if (!members.find(m => m.battletag === battletag)) {
-    members.push({ battletag, role: 'member', character: null, joinedAt: Date.now() });
-    localStorage.setItem('raidlead_members', JSON.stringify(members));
   }
 }
 
@@ -6442,6 +6374,7 @@ async function switchActiveTeam(teamId) {
   STATE.mitigationMap = {}; STATE.mitigationFetched = false; STATE.mitigationMapDifficulty = null;
   STATE.plannerDate = null;
   STATE.attendanceLoaded = false; STATE.attendanceExtraDays = []; STATE.attendanceMarks = [];
+  ROLES.members = null; JOIN.list = null; JOIN.entries = []; SURVEY.results = null; SURVEY.surveys = []; SURVEY.selectedId = null;
   showDashboard();
   updateRosterTitle();
   renderScoresTable('all');
@@ -6827,12 +6760,13 @@ function renderRecruitTab() {
 function setTeamSubTab(name, btn) {
   document.querySelectorAll('#team-subtab-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['applicants', 'recruits', 'season', 'join'].forEach(n => {
+  ['applicants', 'recruits', 'season', 'join', 'roles'].forEach(n => {
     const el = document.getElementById('team-subtab-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
   if (name === 'season') return loadSeasonTab();
   if (name === 'join') return loadJoinOrderTab();
+  if (name === 'roles') return loadRolesTab();
 }
 
 function setRecruitView(view, btn) {
@@ -9516,4 +9450,211 @@ function restoreShowOrderJoined() {
   try { saved = localStorage.getItem('raidlead_show_join_order') === '1'; } catch (e) {}
   if (!STATE.teamId || !saved) return;
   if (!JOIN.showOnPlanner || JOIN.loadedFor !== STATE.teamId) toggleShowOrderJoined(true, { quiet: true });
+}
+
+// ─────────────────────────────────────────────
+//  ROLES (Team Management > Roles)
+// ─────────────────────────────────────────────
+// Who's on the team and what they can do -- the same member list as My
+// Profile's, where officers pick roles, easy to find. Owners also get a
+// nudge (loadOfficerNudge) until the team has an officer. Server side:
+// api/members.js (get, updateRole, removeMember) and api/guild.js
+// (transferOwner).
+
+const ROLE_INFO = [
+  ['owner',   'Owner',   'Everything an officer can do, plus handing the team to someone else.'],
+  ['officer', 'Officer', 'Runs the team: edits the roster, plans and publishes Raid Night, refreshes WCL scores, invites people, and uses Team Management.'],
+  ['member',  'Member',  'A raider: claims their character, marks their own attendance, and answers the season survey.'],
+  ['viewer',  'Viewer',  'Read-only, without a character of their own.'],
+];
+const ROLE_LABELS = Object.fromEntries(ROLE_INFO.map(([k, l]) => [k, l]));
+const ROLE_ORDER  = Object.fromEntries(ROLE_INFO.map(([k], i) => [k, i]));
+
+const ROLES = { members: null, busy: false };
+
+function memberAccount(m) {
+  return Array.isArray(m.accounts) ? m.accounts[0] : m.accounts;
+}
+
+function memberDisplayName(m) {
+  const acct = memberAccount(m);
+  return acct?.display_name || acct?.battletag || 'Unknown';
+}
+
+async function loadRolesTab() {
+  const panel = document.getElementById('roles-panel');
+  if (!panel) return;
+  if (!ROLES.members) panel.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading members...</div></div>';
+  const teamId = STATE.teamId;
+  const data = await fetchMembersFromDB(teamId);
+  if (teamId !== STATE.teamId) return;
+  ROLES.members = data.members || [];
+  renderRolesTab();
+}
+
+function renderRolesTab() {
+  const panel = document.getElementById('roles-panel');
+  if (!panel || !ROLES.members) return;
+  const isOwner = STATE.myRole === 'owner';
+  const me = AUTH.session?.id;
+  const members = [...ROLES.members].sort((a, b) =>
+    (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9) || memberDisplayName(a).localeCompare(memberDisplayName(b)));
+  const counts = ROLE_INFO.map(([k, l]) => {
+    const n = members.filter(m => m.role === k).length;
+    return n ? `${n} ${n === 1 ? l.toLowerCase() : l.toLowerCase() + 's'}` : null;
+  }).filter(Boolean).join(' · ');
+
+  const rows = members.map(m => {
+    const isSelf = m.account_id === me;
+    const chars = mainsFirst(Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []));
+    const charHtml = chars.length
+      ? chars.map(c => `<span style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>${(c.rank || 'Main') !== 'Main' ? '<span class="recruit-sub"> (alt)</span>' : ''}`).join(', ')
+      : '<span class="roles-none">No character claimed</span>';
+    const id = jsAttr(m.account_id);
+    let control;
+    if (m.role === 'owner' || isSelf) {
+      control = `<span class="roles-badge role-${escapeHtml(m.role)}">${escapeHtml(ROLE_LABELS[m.role] || m.role)}</span>`;
+    } else {
+      control = `<select class="roles-select" aria-label="Role for ${escapeHtml(memberDisplayName(m))}" onchange="changeMemberRole(${id}, this.value)"${ROLES.busy ? ' disabled' : ''}>
+          ${['viewer', 'member', 'officer'].map(r => `<option value="${r}"${m.role === r ? ' selected' : ''}>${ROLE_LABELS[r]}</option>`).join('')}
+        </select>
+        ${isOwner ? `<button class="btn-secondary recruit-small-btn" title="Hand this team over to them -- you become an officer" onclick="transferTeamOwnership(${id})">Make owner</button>` : ''}
+        <button class="survey-editor-icon" title="Remove from the team" onclick="removeTeamMember(${id})">✕</button>`;
+    }
+    return `<div class="roles-row">
+      <div class="roles-main">
+        <div class="roles-name">${escapeHtml(memberDisplayName(m))}${isSelf ? '<span class="recruit-sub"> · you</span>' : ''}</div>
+        <div class="roles-chars">${charHtml}</div>
+      </div>
+      <div class="roles-control">${control}</div>
+    </div>`;
+  }).join('');
+
+  const alone = members.length <= 1;
+  panel.innerHTML = `
+    <div class="season-header">
+      <div>
+        <div class="season-title">Roles</div>
+        <div class="recruit-sub">${counts || 'Nobody yet'}. Officers can change anyone's role except the owner's.</div>
+      </div>
+      <div class="season-header-actions"><button class="btn-secondary recruit-small-btn" onclick="showInviteModal()">Invite people</button></div>
+    </div>
+    <div class="roles-legend">
+      ${ROLE_INFO.map(([k, l, d]) => `<div class="roles-legend-item"><span class="roles-badge role-${k}">${l}</span><span>${escapeHtml(d)}</span></div>`).join('')}
+    </div>
+    <div class="season-section">
+      ${rows}
+      ${alone ? `<div class="recruit-empty-filter">Nobody else has joined yet. Send your invite link -- once people sign in, pick your officers here.</div>` : ''}
+    </div>`;
+}
+
+// Runs a role change / removal / transfer, then refreshes this tab and the owner nudge.
+async function rolesAction(fn) {
+  if (ROLES.busy) return;
+  ROLES.busy = true;
+  try {
+    await fn();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  } finally {
+    ROLES.busy = false;
+    await loadRolesTab();
+    loadOfficerNudge();
+  }
+}
+
+function changeMemberRole(accountId, role) {
+  const m = (ROLES.members || []).find(x => x.account_id === accountId);
+  if (!m) return;
+  const name = memberDisplayName(m);
+  if (role === 'officer' && !confirm(`Make ${name} an Officer? Officers can edit the roster, plan Raid Night, invite people, and use Team Management.`)) {
+    renderRolesTab();
+    return;
+  }
+  return rolesAction(async () => {
+    await updateMemberInDB(accountId, role, null, STATE.teamId);
+    showToast(`${name} is now ${ROLE_LABELS[role] === 'Officer' ? 'an Officer' : 'a ' + ROLE_LABELS[role]}`, 'success');
+  });
+}
+
+function removeTeamMember(accountId) {
+  const m = (ROLES.members || []).find(x => x.account_id === accountId);
+  if (!m || !confirm(`Remove ${memberDisplayName(m)} from the team? Their claimed characters are released. They can rejoin with an invite link.`)) return;
+  return rolesAction(async () => {
+    const resp = await fetch('/api/members?action=removeMember', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, targetAccountId: accountId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to remove member');
+    showToast(`${memberDisplayName(m)} removed`, 'success');
+  });
+}
+
+// Hands the team to another member; the owner steps down to officer.
+function transferTeamOwnership(accountId) {
+  const m = (ROLES.members || []).find(x => x.account_id === accountId);
+  if (!m) return;
+  const name = memberDisplayName(m);
+  if (!confirm(`Make ${name} the owner of this team? You'll become an officer, and only ${name} will be able to hand it back.`)) return;
+  return rolesAction(async () => {
+    const resp = await fetch('/api/guild?action=transferOwner', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teamId: STATE.teamId, targetAccountId: accountId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to transfer ownership');
+    applyRolePermissions('officer');
+    showToast(`${name} is now the owner. You're an officer.`, 'success');
+  });
+}
+
+function openRolesTab() {
+  showTab('team');
+  const btn = [...document.querySelectorAll('#team-subtab-filter .filter-btn')].find(b => (b.getAttribute('onclick') || '').includes("'roles'"));
+  if (btn) setTeamSubTab('roles', btn);
+}
+
+// ── Owner nudge: a new team's owner, once there's a roster, is asked to
+// pick officers (or, if nobody's joined yet, to invite people first). Gone
+// as soon as the team has an officer, or when dismissed for this team. ──
+const officerNudgeKey = () => `raidlead_officer_nudge_hidden_${STATE.teamId}`;
+
+async function loadOfficerNudge() {
+  const el = document.getElementById('officer-nudge-banner');
+  if (!el) return;
+  const hide = () => { el.style.display = 'none'; el.innerHTML = ''; };
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(officerNudgeKey()) === '1'; } catch (e) {}
+  if (STATE.myRole !== 'owner' || !STATE.teamId || dismissed || !(STATE.players || []).length) return hide();
+
+  const teamId = STATE.teamId;
+  const { members } = await fetchMembersFromDB(teamId);
+  if (teamId !== STATE.teamId) return;
+  if (!members?.length || members.some(m => m.role === 'officer')) return hide();
+
+  const others = members.filter(m => m.account_id !== AUTH.session?.id);
+  // This team's name -- or the guild's, for a guild with a single default "Main Team".
+  const teamName = STATE.teamName && STATE.teamName !== 'Main Team' ? STATE.teamName : STATE.config?.guild;
+  const team = teamName ? escapeHtml(teamName) : 'your team';
+  el.className = 'survey-banner';
+  el.style.display = '';
+  el.innerHTML = others.length
+    ? `<div class="survey-banner-text"><strong>Want help running ${team}?</strong> Make one or more members an Officer so they can edit the roster, plan Raid Night, and help with recruiting.</div>
+       <div class="survey-banner-actions">
+         <button class="btn-primary recruit-small-btn" onclick="openRolesTab()">Choose officers</button>
+         <button class="btn-secondary recruit-small-btn" onclick="dismissOfficerNudge()">Not now</button>
+       </div>`
+    : `<div class="survey-banner-text"><strong>Your roster's in.</strong> Invite your raiders next. Once they join, you can pick your officers in Team Management &rarr; Roles.</div>
+       <div class="survey-banner-actions">
+         <button class="btn-primary recruit-small-btn" onclick="showInviteModal()">Invite people</button>
+         <button class="btn-secondary recruit-small-btn" onclick="dismissOfficerNudge()">Not now</button>
+       </div>`;
+}
+
+function dismissOfficerNudge() {
+  try { localStorage.setItem(officerNudgeKey(), '1'); } catch (e) {}
+  loadOfficerNudge();
 }

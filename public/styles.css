@@ -2043,3 +2043,28 @@
     .join-row { flex-wrap: wrap; }
     .join-tools { width: 100%; justify-content: flex-end; }
   }
+
+  /* ── ROLES (Team Management) ── */
+  .roles-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-bottom: 16px; }
+  .roles-legend-item { display: flex; align-items: baseline; gap: 10px; font-size: 13px; color: var(--text-dim); line-height: 1.4; }
+  .roles-legend-item .roles-badge { flex-shrink: 0; min-width: 64px; text-align: center; }
+  .roles-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 4px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .roles-row:first-child { border-top: none; }
+  .roles-main { min-width: 0; }
+  .roles-name { font-size: 15px; font-weight: 700; color: var(--text); }
+  .roles-chars { font-size: 13px; margin-top: 2px; font-family: 'Rajdhani', sans-serif; font-weight: 600; }
+  .roles-none { color: var(--text-mute); font-weight: 500; }
+  .roles-control { display: flex; align-items: center; gap: 8px; }
+  .roles-select {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-family: 'Rajdhani', sans-serif; font-size: 14px; font-weight: 600; padding: 5px 8px; cursor: pointer; outline: none;
+  }
+  .roles-select:focus, .roles-select:hover { border-color: var(--gold-dim); }
+  .roles-badge {
+    font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    border: 1px solid var(--border); border-radius: 3px; padding: 2px 8px; color: var(--text-dim);
+  }
+  .roles-badge.role-owner   { color: var(--gold); border-color: var(--gold-dim); }
+  .roles-badge.role-officer { color: #69CCF0; border-color: rgba(105,204,240,0.4); }
+  .roles-badge.role-member  { color: var(--text); }
+  @media (max-width: 700px) { .roles-legend { grid-template-columns: 1fr; } }
