@@ -1,11 +1,15 @@
 // ============================================================
-//  recruiting.js — Team Management tab (officers only)
-//  Actions: listRecruits, addRecruit, updateRecruit, deleteRecruit,
+//  recruiting.js — Team Management tab
+//  Officer actions: listRecruits, addRecruit, updateRecruit, deleteRecruit,
 //           lookupCharacter, refreshRecruitLookup, saveRecruitScores,
 //           listTemplates, saveTemplate, deleteTemplate,
 //           listApplications, getApplication, saveApplicationSheet,
 //           saveApplicationColumnMap, promoteApplication,
-//           rejectApplication, resolveApplications, undoApplicationDecision
+//           rejectApplication, resolveApplications, undoApplicationDecision,
+//           listSurveys, getSurveyResults, openSurvey, updateSurvey,
+//           closeSurvey, reopenSurvey, deleteSurvey
+//  Raider actions (any team member but viewers): getSurvey,
+//           submitSurveyResponse -- the Next Season survey itself.
 //
 //  This is the 12th and last serverless function the Vercel Hobby plan
 //  allows -- future Team Management features (Applicants, Next Season) add
@@ -19,6 +23,7 @@ const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
 const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
 const { canonicalSpec, roleForSpec, parseSpec } = require('../lib/wowSpecs');
+const { normalizeSurveyDefinition, normalizeSurveyResponse } = require('../lib/seasonSurvey');
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
@@ -26,6 +31,12 @@ const STATUSES     = ['contacted', 'no_response', 'not_interested', 'interested'
 const CHANNELS     = ['mail', 'whisper', 'discord', 'form', 'other'];
 const ROLES        = ['tank', 'heal', 'melee', 'ranged'];
 const DIFFICULTIES = ['lfr', 'normal', 'heroic', 'mythic'];
+
+const SURVEY_FIELDS          = 'id, title, intro, questions, opened_at, closed_at, created_at, updated_at';
+const SURVEY_RESPONSE_FIELDS = `id, character_id, character_name, status, spec_choices, flex_roles, availability,
+  acknowledgements, answers, comments, submitted_at, updated_at`;
+// The Next Season survey is for every raider; the rest of this file is officer-only.
+const MEMBER_ACTIONS = new Set(['getSurvey', 'submitSurveyResponse']);
 
 const RECRUIT_FIELDS = `id, name, realm, realm_slug, class, spec, role, source, application_key,
   contacted_at, channel, status, notes, lookup, wcl_scores, created_at, updated_at,
@@ -83,13 +94,26 @@ module.exports = async (req, res) => {
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
   const teamId   = req.query.teamId || req.body?.teamId;
 
+  let myRole;
   try {
-    // Everything in this file is officer-only -- recruiting notes and
-    // outreach history aren't something regular members should see.
-    await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+    // Officer-only apart from the survey itself -- recruiting notes,
+    // outreach history, and everyone's survey answers aren't something
+    // regular members should see.
+    myRole = await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: !MEMBER_ACTIONS.has(action) });
   } catch (err) {
     return res.status(err.status || 500).json({ error: err.message });
   }
+
+  async function openSurvey() {
+    const { data, error } = await supabase
+      .from('season_surveys').select(SURVEY_FIELDS)
+      .eq('team_id', teamId).is('closed_at', null).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  // What a raider sees of a survey (no bookkeeping fields).
+  const publicSurvey = s => ({ id: s.id, title: s.title, intro: s.intro, questions: s.questions, openedAt: s.opened_at });
 
   async function teamRegion() {
     const { data } = await supabase.from('teams').select('guilds ( region )').eq('id', teamId).single();
@@ -643,6 +667,147 @@ module.exports = async (req, res) => {
       if (!key) return res.status(400).json({ error: 'responseKey required' });
       const { error } = await supabase.from('application_reviews').delete()
         .eq('team_id', teamId).eq('response_key', key).in('decision', ['rejected', 'resolved']);
+      if (error) throw error;
+      return res.status(200).json({ success: true });
+    }
+
+    // ══ NEXT SEASON SURVEY ══
+    // Raiders answer on-site; officers build the survey and read the results.
+
+    // ── GET SURVEY (any raider): this team's open survey, if any, plus the
+    // caller's own answers so they can edit them. Viewers aren't raiders,
+    // so they never get asked. ──
+    if (action === 'getSurvey') {
+      if (myRole === 'viewer') return res.status(200).json({ survey: null, response: null });
+      const survey = await openSurvey();
+      if (!survey) return res.status(200).json({ survey: null, response: null });
+      const { data: response, error } = await supabase
+        .from('season_survey_responses').select(SURVEY_RESPONSE_FIELDS)
+        .eq('survey_id', survey.id).eq('account_id', session.id).maybeSingle();
+      if (error) throw error;
+      return res.status(200).json({ survey: publicSurvey(survey), response: response || null });
+    }
+
+    // ── SUBMIT SURVEY RESPONSE (any raider): one per account, editable
+    // until the survey closes. ──
+    if (action === 'submitSurveyResponse') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      if (myRole === 'viewer') return res.status(403).json({ error: "Viewers don't answer the season survey." });
+      const b = req.body || {};
+      const survey = await openSurvey();
+      if (!survey || survey.id !== b.surveyId) {
+        return res.status(409).json({ error: 'This survey has closed. Refresh to see if there\'s a new one.' });
+      }
+
+      // Their pick must be a roster character this account has claimed.
+      let character = null;
+      if (b.characterId) {
+        const { data } = await supabase
+          .from('characters').select('id, name')
+          .eq('id', b.characterId).eq('team_id', teamId).eq('account_id', session.id).eq('active', true)
+          .maybeSingle();
+        if (!data) return res.status(400).json({ error: "That character isn't one you've claimed on this team." });
+        character = data;
+      }
+
+      const fields = normalizeSurveyResponse(b, survey, character);
+      const now = new Date().toISOString();
+      const { data: existing } = await supabase
+        .from('season_survey_responses').select('id')
+        .eq('survey_id', survey.id).eq('account_id', session.id).maybeSingle();
+      const write = existing
+        ? supabase.from('season_survey_responses').update({ ...fields, updated_at: now }).eq('id', existing.id)
+        : supabase.from('season_survey_responses').insert({ ...fields, survey_id: survey.id, team_id: teamId, account_id: session.id });
+      let { data, error } = await write.select(SURVEY_RESPONSE_FIELDS).single();
+      if (error && error.code === '23505') {
+        // Double-submitted from two tabs at once -- the other one won; update it.
+        ({ data, error } = await supabase.from('season_survey_responses').update({ ...fields, updated_at: now })
+          .eq('survey_id', survey.id).eq('account_id', session.id).select(SURVEY_RESPONSE_FIELDS).single());
+      }
+      if (error) throw error;
+      return res.status(200).json({ response: data });
+    }
+
+    // ── LIST SURVEYS (officers): every survey this team has run, newest first. ──
+    if (action === 'listSurveys') {
+      const { data, error } = await supabase
+        .from('season_surveys').select(SURVEY_FIELDS)
+        .eq('team_id', teamId).order('opened_at', { ascending: false });
+      if (error) throw error;
+      return res.status(200).json({ surveys: data || [] });
+    }
+
+    // ── SURVEY RESULTS (officers): one survey and every response to it. ──
+    if (action === 'getSurveyResults') {
+      const { surveyId } = req.body || {};
+      if (!surveyId) return res.status(400).json({ error: 'surveyId required' });
+      const { data: survey, error: surveyErr } = await supabase
+        .from('season_surveys').select(SURVEY_FIELDS).eq('id', surveyId).eq('team_id', teamId).maybeSingle();
+      if (surveyErr) throw surveyErr;
+      if (!survey) return res.status(404).json({ error: 'Survey not found' });
+      const { data: responses, error } = await supabase
+        .from('season_survey_responses')
+        .select(`${SURVEY_RESPONSE_FIELDS}, account_id, account:accounts ( battletag, display_name )`)
+        .eq('survey_id', surveyId).order('submitted_at', { ascending: true });
+      if (error) throw error;
+      return res.status(200).json({ survey, responses: responses || [] });
+    }
+
+    // ── OPEN SURVEY (officers): creates a new survey, open right away. ──
+    if (action === 'openSurvey') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const def = normalizeSurveyDefinition(req.body);
+      const { data, error } = await supabase
+        .from('season_surveys')
+        .insert({ team_id: teamId, ...def, created_by: session.id })
+        .select(SURVEY_FIELDS).single();
+      if (error) {
+        if (error.code === '23505') return res.status(409).json({ error: 'This team already has an open survey. Close it first.' });
+        throw error;
+      }
+      return res.status(200).json({ survey: data });
+    }
+
+    // ── UPDATE SURVEY (officers): title, intro, and questions. Answers are
+    // keyed by question id, so rewording keeps them; a removed question's
+    // answers just stop being shown. ──
+    if (action === 'updateSurvey') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { surveyId } = req.body || {};
+      if (!surveyId) return res.status(400).json({ error: 'surveyId required' });
+      const def = normalizeSurveyDefinition(req.body);
+      const { data, error } = await supabase
+        .from('season_surveys').update({ ...def, updated_at: new Date().toISOString() })
+        .eq('id', surveyId).eq('team_id', teamId)
+        .select(SURVEY_FIELDS).single();
+      if (error) throw error;
+      return res.status(200).json({ survey: data });
+    }
+
+    // ── CLOSE / REOPEN SURVEY (officers). Reopening fails if another
+    // survey has been opened since (one open survey per team). ──
+    if (action === 'closeSurvey' || action === 'reopenSurvey') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { surveyId } = req.body || {};
+      if (!surveyId) return res.status(400).json({ error: 'surveyId required' });
+      const closedAt = action === 'closeSurvey' ? new Date().toISOString() : null;
+      const { data, error } = await supabase
+        .from('season_surveys').update({ closed_at: closedAt, updated_at: new Date().toISOString() })
+        .eq('id', surveyId).eq('team_id', teamId)
+        .select(SURVEY_FIELDS).single();
+      if (error) {
+        if (error.code === '23505') return res.status(409).json({ error: 'Another survey is open. Close it before reopening this one.' });
+        throw error;
+      }
+      return res.status(200).json({ survey: data });
+    }
+
+    // ── DELETE SURVEY (officers): the survey and all its responses. ──
+    if (action === 'deleteSurvey') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { surveyId } = req.body || {};
+      if (!surveyId) return res.status(400).json({ error: 'surveyId required' });
+      const { error } = await supabase.from('season_surveys').delete().eq('id', surveyId).eq('team_id', teamId);
       if (error) throw error;
       return res.status(200).json({ success: true });
     }

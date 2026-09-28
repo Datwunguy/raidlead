@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260927i">
+<link rel="stylesheet" href="styles.css?v=20260927j">
 </head>
 <body>
 <div id="app">
@@ -102,6 +102,7 @@
             Signed in via Battle.net
           </div>
           <button class="dropdown-item" onclick="showMembersModal(); toggleAccountMenu()">My Profile</button>
+          <button class="dropdown-item" id="dropdown-survey-btn" style="display:none;" onclick="openSurveyModal(); toggleAccountMenu()">Next Season Survey</button>
           <button class="dropdown-item" id="dropdown-settings-btn" onclick="showSetup(); toggleAccountMenu()">Guild Settings</button>
           <button class="dropdown-item" id="dropdown-invite-btn" onclick="copyShareUrl(); toggleAccountMenu()">Invite</button>
           <button class="dropdown-item danger" onclick="signOut()">⬡ Sign Out</button>
@@ -438,6 +439,8 @@
   <!-- DASHBOARD -->
   <div id="dashboard">
     <main>
+      <!-- Next Season survey banner (raiders) -- see loadMySurvey() -->
+      <div id="survey-banner" class="survey-banner" style="display:none;"></div>
 
       <!-- ROSTER TAB -->
       <div class="tab-content active" id="tab-roster">
@@ -779,11 +782,17 @@
         <div class="section-header">
           <div class="section-title">Team Management</div>
         </div>
-        <div style="font-size:12px; color:var(--text-dim); margin-top:4px;">Officer-only recruiting tools. Nothing here is visible to members.</div>
+        <div style="font-size:12px; color:var(--text-dim); margin-top:4px;">Officer-only. Members never see this tab -- they answer the Next Season survey from a banner on their dashboard.</div>
 
         <div class="role-filter" id="team-subtab-filter" style="margin-top:18px;">
           <button class="filter-btn active" onclick="setTeamSubTab('recruits', this)">Recruits</button>
           <button class="filter-btn" onclick="setTeamSubTab('applicants', this)">Applicants <span class="subtab-count" id="applicant-pending-count"></span></button>
+          <button class="filter-btn" onclick="setTeamSubTab('season', this)">Next Season</button>
+        </div>
+
+        <!-- NEXT SEASON: the on-site survey raiders answer from their dashboard banner -->
+        <div id="team-subtab-season" style="display:none; margin-top:18px;">
+          <div id="season-panel"></div>
         </div>
 
         <!-- APPLICANTS: triage inbox for the guild's Google Form responses -->
@@ -934,6 +943,28 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- NEXT SEASON SURVEY (what raiders fill out) -->
+      <div class="modal-overlay" id="survey-modal">
+        <div class="modal" style="max-width:680px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;" id="survey-modal-title">Next Season Survey</div>
+            <button class="modal-close" onclick="closeSurveyModal()">&times;</button>
+          </div>
+          <div class="modal-body" id="survey-modal-body"></div>
+        </div>
+      </div>
+
+      <!-- NEXT SEASON SURVEY EDITOR (officers) -->
+      <div class="modal-overlay" id="survey-editor-modal">
+        <div class="modal" style="max-width:760px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;" id="survey-editor-title">New survey</div>
+            <button class="modal-close" onclick="closeSurveyEditor()">&times;</button>
+          </div>
+          <div class="modal-body" id="survey-editor-body"></div>
         </div>
       </div>
 
@@ -1248,6 +1279,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260927h"></script>
+<script src="app.js?v=20260927i"></script>
 </body>
 </html>

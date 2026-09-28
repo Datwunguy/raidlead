@@ -172,6 +172,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Build the mobile hamburger nav from the real .nav-btn tabs
   initMobileNav();
 
+  // Handle a Next Season survey link (?survey=<teamId>) -- before the
+  // invite handler, which resets the URL
+  checkSurveyParam();
+
   // Handle pending invite link
   checkInviteParam();
 
@@ -1178,6 +1182,7 @@ function showDashboard() {
     if (data && data.team) {
       applyGuildData(data);
       updateRosterTitle();
+      loadMySurvey(); // Next Season survey banner, now that role + team are fresh
       if (STATE.config?.wclTeamId) localStorage.setItem('raidlead_wcl_team_id', STATE.config.wclTeamId);
       if (STATE.teamId) {
         loadFlexData();
@@ -3113,9 +3118,11 @@ function renderRoster() {
   }
 }
 
-function renderRaidBuffs(players) {
+// Renders into the roster tab's grid by default; the Next Season survey's
+// projected roster passes its own.
+function renderRaidBuffs(players, grid = document.getElementById('raid-buffs-grid')) {
   const presentClasses = new Set(players.map(p => p.class));
-  const grid = document.getElementById('raid-buffs-grid');
+  if (!grid) return;
   grid.innerHTML = '';
 
   RAID_BUFFS.forEach(b => {
@@ -6755,10 +6762,11 @@ function renderRecruitTab() {
 function setTeamSubTab(name, btn) {
   document.querySelectorAll('#team-subtab-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['applicants', 'recruits'].forEach(n => {
+  ['applicants', 'recruits', 'season'].forEach(n => {
     const el = document.getElementById('team-subtab-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
+  if (name === 'season') loadSeasonTab();
 }
 
 function setRecruitView(view, btn) {
@@ -8078,3 +8086,806 @@ function closeApplicationModal() {
   document.getElementById('application-modal').classList.remove('open');
 }
 
+// ─────────────────────────────────────────────
+//  NEXT SEASON SURVEY
+// ─────────────────────────────────────────────
+// Raiders answer from a banner on their dashboard (any tab, or the account
+// menu); officers build the survey and read the results under Team
+// Management > Next Season. Always asked: returning?, character, 1st-3rd
+// choice class/spec, flex roles, comments. Officer-editable: the intro,
+// acknowledgements, extra-night availability, and extra questions. The
+// server-side rules are in lib/seasonSurvey.js.
+
+// Must match WEEKDAYS in lib/seasonSurvey.js.
+const SURVEY_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const SURVEY_STATUS_LABELS = { returning: 'Returning', unsure: 'Not sure yet', not_returning: 'Not returning' };
+const SURVEY_ROLES = [['tank', 'Tanks'], ['heal', 'Healers'], ['melee', 'Melee DPS'], ['ranged', 'Ranged DPS']];
+const SURVEY_FLEX_LABELS = { tank: 'Tank', heal: 'Healer', melee: 'Melee DPS', ranged: 'Ranged DPS' };
+// A 20-player Mythic group -- what the projected roster is measured against.
+const MYTHIC_COMP_TARGET = { tank: 2, heal: 4, dps: 14 };
+
+const SURVEY = {
+  mine:           null,  // { survey, response } for the signed-in raider, or null
+  submitting:     false,
+  // Officer dashboard
+  surveys:        [],    // every survey this team has run, newest first
+  selectedId:     null,
+  results:        null,  // { survey, responses } for the selected survey
+  responseFilter: 'all', // all | returning | unsure | not_returning
+  includeUnsure:  true,  // count "not sure yet" in the projected roster
+  editor:         null,  // { mode: 'new' | 'edit', surveyId, title, intro, questions, responseCount }
+};
+
+function surveyDate(ts) {
+  return ts ? new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+}
+
+function surveySpecLabel(choice) {
+  return choice ? `${choice.spec} ${titleCaseClass(choice.class)}` : '';
+}
+
+// ── Raider side ──
+
+// ?survey=<teamId> -- the link officers share in Discord -- opens the survey
+// once the dashboard has loaded. Stashed first, since a signed-out visitor
+// goes through the Battle.net login redirect before getting there.
+function checkSurveyParam() {
+  const params = new URLSearchParams(window.location.search);
+  const teamId = params.get('survey');
+  if (!teamId) return;
+  params.delete('survey');
+  const rest = params.toString();
+  window.history.replaceState({}, '', '/' + (rest ? '?' + rest : ''));
+  try { localStorage.setItem('raidlead_open_survey', teamId); } catch (e) {}
+}
+
+// Called every time the dashboard shows (boot, team switch, after claiming).
+async function loadMySurvey() {
+  const teamId = STATE.teamId;
+  SURVEY.mine = null;
+  if (teamId && STATE.myRole && STATE.myRole !== 'viewer') {
+    try {
+      const data = await recruitingApi('getSurvey');
+      if (teamId !== STATE.teamId) return; // switched teams while this was loading
+      SURVEY.mine = data.survey ? data : null;
+    } catch (e) { /* no banner */ }
+  }
+  renderSurveyBanner();
+
+  let wanted = null;
+  try { wanted = localStorage.getItem('raidlead_open_survey'); } catch (e) {}
+  if (!wanted) return;
+  if (wanted !== STATE.teamId && (STATE.teams || []).some(t => t.teamId === wanted)) {
+    return switchActiveTeam(wanted); // shows the dashboard again, which lands back here
+  }
+  try { localStorage.removeItem('raidlead_open_survey'); } catch (e) {}
+  if (wanted !== STATE.teamId) showToast("That survey link is for a team you're not on.", 'error');
+  else if (SURVEY.mine) openSurveyModal();
+  else if (STATE.myRole !== 'viewer') showToast("That survey isn't open anymore.", '');
+}
+
+function surveyBannerHidden(surveyId) {
+  try { return localStorage.getItem('raidlead_survey_banner_hidden') === surveyId; } catch (e) { return false; }
+}
+
+function dismissSurveyBanner() {
+  try { localStorage.setItem('raidlead_survey_banner_hidden', SURVEY.mine?.survey?.id || ''); } catch (e) {}
+  renderSurveyBanner();
+}
+
+function renderSurveyBanner() {
+  const el = document.getElementById('survey-banner');
+  const menuBtn = document.getElementById('dropdown-survey-btn');
+  const mine = SURVEY.mine;
+  if (menuBtn) menuBtn.style.display = mine ? 'block' : 'none';
+  if (!el) return;
+  // Once answered, the reminder can be hidden -- the account menu still opens it.
+  if (!mine || (mine.response && surveyBannerHidden(mine.survey.id))) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const title = escapeHtml(mine.survey.title);
+  el.style.display = '';
+  el.className = 'survey-banner' + (mine.response ? ' answered' : '');
+  el.innerHTML = mine.response
+    ? `<div class="survey-banner-text"><strong>${title}</strong> · Thanks, you've answered. You can change your answers until it closes.</div>
+       <div class="survey-banner-actions">
+         <button class="btn-secondary recruit-small-btn" onclick="openSurveyModal()">Edit my answers</button>
+         <button class="survey-banner-dismiss" title="Hide this reminder" aria-label="Hide this reminder" onclick="dismissSurveyBanner()">&times;</button>
+       </div>`
+    : `<div class="survey-banner-text"><strong>${title}</strong> · Let your officers know if you're coming back next season, and what you'd like to play.</div>
+       <div class="survey-banner-actions"><button class="btn-primary recruit-small-btn" onclick="openSurveyModal()">Answer the survey</button></div>`;
+}
+
+function surveySpecOptions(selected) {
+  return '<option value="">Choose a class and spec</option>' + Object.entries(CLASS_SPECS).map(([cls, specs]) =>
+    `<optgroup label="${escapeHtml(titleCaseClass(cls))}">${specs.map(([spec]) => {
+      const v = `${cls}|${spec}`;
+      return `<option value="${escapeHtml(v)}"${v === selected ? ' selected' : ''}>${escapeHtml(spec)} ${escapeHtml(titleCaseClass(cls))}</option>`;
+    }).join('')}</optgroup>`).join('');
+}
+
+function openSurveyModal() {
+  const mine = SURVEY.mine;
+  if (!mine) return;
+  document.getElementById('survey-modal-title').textContent = mine.survey.title;
+  document.getElementById('survey-modal').classList.add('open');
+  renderSurveyForm();
+}
+
+function closeSurveyModal() {
+  document.getElementById('survey-modal').classList.remove('open');
+}
+
+function renderSurveyForm() {
+  const { survey, response: r } = SURVEY.mine;
+  const q = survey.questions || {};
+  const claimed = (STATE.claimedCharacters || []).filter(c => c.id);
+  const status = r?.status || null;
+  const specs = [0, 1, 2].map(i => r?.spec_choices?.[i] ? `${r.spec_choices[i].class}|${r.spec_choices[i].spec}` : '');
+  const checked = on => (on ? ' checked' : '');
+  const radio = (name, value, label, isOn) =>
+    `<label class="survey-choice"><input type="radio" name="${name}" value="${escapeHtml(value)}"${checked(isOn)}${name === 'sv-status' ? ' onchange="updateSurveyFormVisibility()"' : ''} /> ${escapeHtml(label)}</label>`;
+  const box = (name, value, label, isOn) =>
+    `<label class="survey-choice"><input type="checkbox" name="${name}" value="${escapeHtml(value)}"${checked(isOn)} /> ${escapeHtml(label)}</label>`;
+
+  // Which character: one of theirs from the roster, or typed (officers who
+  // haven't claimed one).
+  const defaultId = r ? r.character_id : (claimed.find(c => (c.rank || 'Main') === 'Main') || claimed[0])?.id;
+  const characterHtml = claimed.length
+    ? `<select id="sv-character">${claimed.map(c => `<option value="${escapeHtml(c.id)}"${c.id === defaultId ? ' selected' : ''}>${escapeHtml(c.name)}${c.rank && c.rank !== 'Main' ? ` (${escapeHtml(c.rank)})` : ''}</option>`).join('')}</select>`
+    : `<input type="text" id="sv-character-name" maxlength="40" autocomplete="off" placeholder="Your main's name" value="${escapeHtml(r?.character_name || STATE.claimedCharacter || '')}" />`;
+
+  const specHints = [
+    '',
+    "Optional. Only pick one you'd be happy to play if we asked. You don't need to list other specs of your class that fill the same role -- you can swap between those freely.",
+    "Optional. Same idea: only if you'd be happy to play it.",
+  ];
+  const ordinal = ['First choice', 'Second choice', 'Third choice'];
+
+  document.getElementById('survey-modal-body').innerHTML = `
+    ${survey.intro ? `<div class="survey-intro">${linkifyText(survey.intro)}</div>` : ''}
+    <div class="survey-q">
+      <div class="survey-q-label">Character</div>
+      <div class="form-group">${characterHtml}</div>
+    </div>
+    <div class="survey-q">
+      <div class="survey-q-label">Are you coming back next season? <span class="survey-req">*</span></div>
+      <div class="survey-choice-row">
+        ${radio('sv-status', 'returning', "Yes, I'm returning", status === 'returning')}
+        ${radio('sv-status', 'unsure', 'Not sure yet', status === 'unsure')}
+        ${radio('sv-status', 'not_returning', "No, I'm not returning", status === 'not_returning')}
+      </div>
+    </div>
+    <div id="sv-returning-fields">
+      ${[0, 1, 2].map(i => `
+        <div class="survey-q">
+          <div class="survey-q-label">${ordinal[i]} class and spec${i === 0 ? ' <span class="survey-req">*</span>' : ''}</div>
+          ${specHints[i] ? `<div class="survey-q-hint">${escapeHtml(specHints[i])}</div>` : ''}
+          <div class="form-group"><select id="sv-spec-${i}">${surveySpecOptions(specs[i])}</select></div>
+        </div>`).join('')}
+      <div class="survey-q">
+        <div class="survey-q-label">Can you flex into another role?</div>
+        <div class="survey-choice-row">
+          ${Object.entries(SURVEY_FLEX_LABELS).map(([v, l]) => box('sv-flex', v, l, r?.flex_roles?.includes(v))).join('')}
+        </div>
+      </div>
+      ${(q.acknowledgements || []).map(a => `
+        <div class="survey-q survey-ack">
+          <div class="survey-ack-prompt">${linkifyText(a.prompt)} <span class="survey-req">*</span></div>
+          <div class="survey-choice-row">
+            ${radio('sv-ack-' + a.id, 'agree', a.agreeLabel, r?.acknowledgements?.[a.id] === 'agree')}
+            ${radio('sv-ack-' + a.id, 'exception', a.exceptionLabel, r?.acknowledgements?.[a.id] === 'exception')}
+          </div>
+        </div>`).join('')}
+      ${q.availability ? `
+        <div class="survey-q">
+          <div class="survey-q-label">${escapeHtml(q.availability.prompt)}</div>
+          <div class="survey-choice-row">
+            ${q.availability.days.map(d => box('sv-day', d, d, r?.availability?.includes(d))).join('')}
+          </div>
+        </div>` : ''}
+      ${(q.extraQuestions || []).map(e => `
+        <div class="survey-q">
+          <div class="survey-q-label">${escapeHtml(e.prompt)}</div>
+          <div class="form-group"><textarea id="sv-answer-${escapeHtml(e.id)}" rows="3" maxlength="2000">${escapeHtml(r?.answers?.[e.id] || '')}</textarea></div>
+        </div>`).join('')}
+    </div>
+    <div class="survey-q">
+      <div class="survey-q-label">Any other feedback or comments?</div>
+      <div class="form-group"><textarea id="sv-comments" rows="3" maxlength="2000">${escapeHtml(r?.comments || '')}</textarea></div>
+    </div>
+    <div id="sv-msg" class="status-msg"></div>
+    <div class="survey-form-actions">
+      <span class="recruit-sub">Only officers can see your answers.</span>
+      <button class="btn-secondary" onclick="closeSurveyModal()">Cancel</button>
+      <button class="btn-primary" id="sv-submit-btn" onclick="submitSurvey()">${r ? 'Save changes' : 'Send answers'}</button>
+    </div>`;
+  updateSurveyFormVisibility();
+}
+
+// "Not returning" only needs the comments box.
+function updateSurveyFormVisibility() {
+  const status = document.querySelector('input[name="sv-status"]:checked')?.value;
+  const fields = document.getElementById('sv-returning-fields');
+  if (fields) fields.style.display = status === 'not_returning' ? 'none' : '';
+}
+
+function collectSurveyForm(survey) {
+  const q = survey.questions || {};
+  const val = id => document.getElementById(id)?.value ?? '';
+  const checkedValues = name => [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
+  const acknowledgements = {};
+  (q.acknowledgements || []).forEach(a => {
+    const v = document.querySelector(`input[name="sv-ack-${a.id}"]:checked`)?.value;
+    if (v) acknowledgements[a.id] = v;
+  });
+  const answers = {};
+  (q.extraQuestions || []).forEach(e => { answers[e.id] = val('sv-answer-' + e.id); });
+  const characterSelect = document.getElementById('sv-character');
+  return {
+    characterId:   characterSelect ? characterSelect.value : null,
+    characterName: characterSelect ? null : val('sv-character-name').trim(),
+    status:        document.querySelector('input[name="sv-status"]:checked')?.value || null,
+    specChoices:   [0, 1, 2].map(i => val('sv-spec-' + i)),
+    flexRoles:     checkedValues('sv-flex'),
+    availability:  checkedValues('sv-day'),
+    acknowledgements,
+    answers,
+    comments:      val('sv-comments'),
+  };
+}
+
+// Same checks the server makes, so people hear about a missed question
+// before anything is sent.
+function surveyFormProblem(body, survey) {
+  if (!body.characterId && !body.characterName) return 'Which character is this for?';
+  if (!body.status) return "Let us know whether you're coming back.";
+  if (body.status === 'not_returning') return null;
+  if (!body.specChoices[0]) return 'Pick your first-choice class and spec.';
+  const missing = (survey.questions?.acknowledgements || []).filter(a => !body.acknowledgements[a.id]);
+  if (missing.length) return 'Answer every question marked *.';
+  return null;
+}
+
+async function submitSurvey() {
+  const mine = SURVEY.mine;
+  if (!mine || SURVEY.submitting) return;
+  const msg = document.getElementById('sv-msg');
+  const btn = document.getElementById('sv-submit-btn');
+  const body = collectSurveyForm(mine.survey);
+  const problem = surveyFormProblem(body, mine.survey);
+  if (problem) { msg.className = 'status-msg error'; msg.textContent = problem; return; }
+
+  SURVEY.submitting = true;
+  btn.disabled = true;
+  msg.className = 'status-msg loading';
+  msg.textContent = 'Sending...';
+  try {
+    const { response } = await recruitingApi('submitSurveyResponse', { surveyId: mine.survey.id, ...body });
+    const first = !mine.response;
+    mine.response = response;
+    closeSurveyModal();
+    renderSurveyBanner();
+    showToast(first ? 'Thanks! Your answers were sent to your officers.' : 'Your answers were updated.', 'success');
+    // An officer answering their own survey sees it land in the results.
+    if (SURVEY.results?.survey?.id === mine.survey.id) loadSeasonTab();
+  } catch (e) {
+    msg.className = 'status-msg error';
+    msg.textContent = e.message;
+    if (e.status === 409) loadMySurvey(); // closed (or replaced) while they were answering
+  } finally {
+    SURVEY.submitting = false;
+    btn.disabled = false;
+  }
+}
+
+// ── Officer side: Team Management > Next Season ──
+
+async function loadSeasonTab() {
+  const panel = document.getElementById('season-panel');
+  if (!panel) return;
+  if (!SURVEY.results && !SURVEY.surveys.length) {
+    panel.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading surveys...</div></div>';
+  }
+  try {
+    const { surveys } = await recruitingApi('listSurveys');
+    SURVEY.surveys = surveys || [];
+    if (!SURVEY.surveys.some(s => s.id === SURVEY.selectedId)) SURVEY.selectedId = SURVEY.surveys[0]?.id || null;
+    SURVEY.results = SURVEY.selectedId ? await recruitingApi('getSurveyResults', { surveyId: SURVEY.selectedId }) : null;
+  } catch (e) {
+    panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load surveys</h3><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderSeasonTab();
+}
+
+function selectSeasonSurvey(surveyId) {
+  SURVEY.selectedId = surveyId;
+  SURVEY.results = null;
+  loadSeasonTab();
+}
+
+function setSurveyResponseFilter(filter) {
+  SURVEY.responseFilter = filter;
+  renderSeasonTab();
+}
+
+function setSurveyIncludeUnsure(on) {
+  SURVEY.includeUnsure = on;
+  renderSeasonTab();
+}
+
+// Who's expected to answer: the roster's Mains (alts belong to someone
+// who answers once). Matched by the character they answered for, or by
+// the account that claimed the character.
+function surveyTracker(responses) {
+  const mains = (STATE.players || []).filter(p => (p.rank || 'Main') === 'Main');
+  const answeredChars    = new Set(responses.map(r => r.character_id).filter(Boolean));
+  const answeredAccounts = new Set(responses.map(r => r.account_id).filter(Boolean));
+  const waiting = mains.filter(p => !answeredChars.has(p.id) && !(p.account_id && answeredAccounts.has(p.account_id)));
+  return {
+    mains,
+    answeredMains: mains.length - waiting.length,
+    waitingClaimed:   waiting.filter(p => p.account_id),
+    waitingUnclaimed: waiting.filter(p => !p.account_id),
+  };
+}
+
+// First choices fill the roster; second/third choices and flex roles show
+// who could cover a role if needed.
+function surveyProjection(responses, includeUnsure) {
+  const counted = responses.filter(r => r.status === 'returning' || (includeUnsure && r.status === 'unsure'));
+  const byRole = { tank: [], heal: [], melee: [], ranged: [] };
+  const flex   = { tank: [], heal: [], melee: [], ranged: [] };
+  counted.forEach(r => {
+    const main = r.spec_choices?.[0];
+    if (!main || !byRole[main.role]) return;
+    byRole[main.role].push(r);
+    const others = new Set([...(r.spec_choices || []).slice(1).map(c => c.role), ...(r.flex_roles || [])]);
+    others.delete(main.role);
+    others.forEach(role => flex[role]?.push(r));
+  });
+  return { counted, byRole, flex };
+}
+
+function surveyGaps(projection) {
+  const { byRole, counted } = projection;
+  const gaps = [];
+  const dps = byRole.melee.length + byRole.ranged.length;
+  if (byRole.tank.length < MYTHIC_COMP_TARGET.tank) gaps.push(`Tanks: ${byRole.tank.length} of ${MYTHIC_COMP_TARGET.tank}`);
+  if (byRole.heal.length < MYTHIC_COMP_TARGET.heal) gaps.push(`Healers: ${byRole.heal.length} of ${MYTHIC_COMP_TARGET.heal}`);
+  if (dps < MYTHIC_COMP_TARGET.dps) gaps.push(`DPS: ${dps} of ${MYTHIC_COMP_TARGET.dps}`);
+  const classes = new Set(counted.map(r => r.spec_choices?.[0]?.class).filter(Boolean));
+  const missingBuffs = RAID_BUFFS.filter(b => !classes.has(b.class));
+  if (missingBuffs.length) gaps.push('No ' + missingBuffs.map(b => `${titleCaseClass(b.class)} (${b.buff})`).join(', '));
+  return gaps;
+}
+
+function surveyResponderName(r) {
+  const player = (STATE.players || []).find(p => p.id === r.character_id);
+  const cls = r.spec_choices?.[0]?.class || player?.class;
+  return `<span class="recruit-name" style="color:${CLASS_COLORS[cls] || 'var(--text)'};">${escapeHtml(r.character_name)}</span>`;
+}
+
+function surveyChip(p) {
+  return `<span class="season-chip" style="color:${CLASS_COLORS[p.class] || 'var(--text)'};">${escapeHtml(p.name)}</span>`;
+}
+
+function renderSeasonTab() {
+  const panel = document.getElementById('season-panel');
+  if (!panel) return;
+  const openOne = SURVEY.surveys.find(s => !s.closed_at);
+
+  if (!SURVEY.results) {
+    panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📋</div><h3>Ask your raiders about next season</h3>
+      <p>Raiders answer on RaidLead: whether they're coming back, what they want to play, and what they can flex to.
+      You'll see who hasn't answered yet, the roster it adds up to, and any raid buffs or roles you're missing.</p>
+      <button class="btn-primary" style="margin-top:14px;" onclick="openSurveyEditor('new')">Create survey</button></div>`;
+    return;
+  }
+
+  const { survey, responses } = SURVEY.results;
+  const isOpen = !survey.closed_at;
+  const tracker = surveyTracker(responses);
+  const counts = { returning: 0, unsure: 0, not_returning: 0 };
+  responses.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const projection = surveyProjection(responses, SURVEY.includeUnsure);
+  const gaps = surveyGaps(projection);
+  const q = survey.questions || {};
+
+  const picker = SURVEY.surveys.length > 1
+    ? `<select class="season-survey-select" onchange="selectSeasonSurvey(this.value)" aria-label="Survey">${SURVEY.surveys.map(s =>
+        `<option value="${escapeHtml(s.id)}"${s.id === survey.id ? ' selected' : ''}>${escapeHtml(s.title)} (${s.closed_at ? 'closed ' + surveyDate(s.closed_at) : 'open'})</option>`).join('')}</select>`
+    : '';
+  const actions = isOpen
+    ? `<button class="btn-primary recruit-small-btn" onclick="copySurveyLink()">Copy survey link</button>
+       <button class="btn-secondary recruit-small-btn" onclick="openSurveyEditor('edit')">Edit questions</button>
+       <button class="btn-secondary recruit-small-btn" onclick="closeSeasonSurvey()">Close survey</button>`
+    : `${openOne ? '' : `<button class="btn-primary recruit-small-btn" onclick="openSurveyEditor('new')">New survey</button>
+       <button class="btn-secondary recruit-small-btn" onclick="reopenSeasonSurvey()">Reopen</button>`}
+       <button class="btn-secondary recruit-small-btn applicant-reject" onclick="deleteSeasonSurvey()">Delete</button>`;
+
+  // Who hasn't answered
+  const waitingHtml = (tracker.waitingClaimed.length || tracker.waitingUnclaimed.length) ? `
+    <div class="season-section">
+      <div class="season-section-head">
+        <div class="season-section-title">Still waiting on (${tracker.waitingClaimed.length + tracker.waitingUnclaimed.length})</div>
+        ${tracker.waitingClaimed.length ? `<button class="btn-secondary recruit-small-btn" onclick="copySurveyWaitingNames()">Copy names</button>` : ''}
+      </div>
+      <div class="season-chips">${tracker.waitingClaimed.map(surveyChip).join('')}</div>
+      ${tracker.waitingUnclaimed.length ? `
+        <div class="recruit-sub" style="margin-top:10px;">Can't answer yet -- nobody has claimed these characters in RaidLead:</div>
+        <div class="season-chips muted">${tracker.waitingUnclaimed.map(surveyChip).join('')}</div>` : ''}
+    </div>` : (tracker.mains.length ? `<div class="season-section"><div class="season-all-in">Everyone on the roster has answered.</div></div>` : '');
+
+  // Projected roster by role
+  const roleCards = SURVEY_ROLES.map(([role, label]) => {
+    const people = projection.byRole[role];
+    const target = role === 'tank' ? MYTHIC_COMP_TARGET.tank : role === 'heal' ? MYTHIC_COMP_TARGET.heal : null;
+    const short = target != null && people.length < target;
+    return `<div class="season-role-card${short ? ' short' : ''}">
+      <div class="stat-label">${label}</div>
+      <div class="season-role-count">${people.length}${target != null ? `<span class="recruit-sub"> / ${target}</span>` : ''}</div>
+      <div class="season-role-list">${people.map(r => `<div>${surveyResponderName(r)} <span class="recruit-sub">${escapeHtml(r.spec_choices[0].spec)}</span></div>`).join('') || '<span class="recruit-sub">Nobody yet</span>'}</div>
+      ${projection.flex[role].length ? `<div class="season-role-flex"><span class="recruit-sub">Could flex:</span> ${projection.flex[role].map(surveyResponderName).join(', ')}</div>` : ''}
+    </div>`;
+  }).join('');
+  const dpsCount = projection.byRole.melee.length + projection.byRole.ranged.length;
+
+  // Extra-night availability
+  const dayCounts = (q.availability?.days || []).map(d => ({
+    day: d, people: projection.counted.filter(r => (r.availability || []).includes(d)),
+  }));
+  const maxDay = Math.max(1, ...dayCounts.map(d => d.people.length));
+  const daysHtml = q.availability ? `
+    <div class="season-section">
+      <div class="season-section-title">${escapeHtml(q.availability.prompt)}</div>
+      <div class="season-days">${dayCounts.map(d => `
+        <div class="season-day" title="${escapeHtml(d.people.map(r => r.character_name).join(', ') || 'Nobody')}">
+          <div class="season-day-name">${d.day.slice(0, 3)}</div>
+          <div class="season-day-bar"><div style="width:${(d.people.length / maxDay) * 100}%;"></div></div>
+          <div class="season-day-count">${d.people.length}</div>
+        </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  // Anyone who picked an acknowledgement's "exception" answer
+  const ackById = Object.fromEntries((q.acknowledgements || []).map(a => [a.id, a]));
+  const flags = [];
+  responses.forEach(r => Object.entries(r.acknowledgements || {}).forEach(([id, v]) => {
+    if (v === 'exception' && ackById[id]) flags.push({ r, ack: ackById[id] });
+  }));
+  const flagsHtml = flags.length ? `
+    <div class="season-section">
+      <div class="season-section-title">Flags (${flags.length})</div>
+      ${flags.map(f => `<div class="season-flag">${surveyResponderName(f.r)} answered <strong>"${escapeHtml(f.ack.exceptionLabel)}"</strong>
+        <span class="recruit-sub">to: ${escapeHtml(f.ack.prompt.split('\n')[0].slice(0, 90))}${f.ack.prompt.length > 90 ? '…' : ''}</span></div>`).join('')}
+    </div>` : '';
+
+  // Every response
+  const visible = responses.filter(r => SURVEY.responseFilter === 'all' || r.status === SURVEY.responseFilter);
+  const filterBtn = (value, label) =>
+    `<button class="filter-btn${SURVEY.responseFilter === value ? ' active' : ''}" onclick="setSurveyResponseFilter('${value}')">${label}</button>`;
+  const responsesHtml = `
+    <div class="season-section">
+      <div class="season-section-head">
+        <div class="season-section-title">Responses (${responses.length})</div>
+        <div class="role-filter">${filterBtn('all', 'All')}${filterBtn('returning', 'Returning')}${filterBtn('unsure', 'Not sure')}${filterBtn('not_returning', 'Not returning')}</div>
+      </div>
+      ${visible.length ? visible.map(r => renderSurveyResponseCard(r, q)).join('') : '<div class="recruit-empty-filter">No responses here yet.</div>'}
+    </div>`;
+
+  panel.innerHTML = `
+    <div class="season-header">
+      <div>
+        ${picker}
+        <div class="season-title">${escapeHtml(survey.title)}</div>
+        <div class="recruit-sub">${isOpen ? `Open since ${surveyDate(survey.opened_at)}. Raiders see a banner asking them to answer.` : `Closed ${surveyDate(survey.closed_at)}.`}</div>
+      </div>
+      <div class="season-header-actions">${actions}</div>
+    </div>
+
+    <div class="stat-grid season-stats">
+      <div class="stat-card"><div class="stat-label">Answered</div><div class="stat-value">${tracker.answeredMains}<span class="season-stat-of"> / ${tracker.mains.length}</span></div><div class="stat-sub">roster mains${responses.length > tracker.answeredMains ? ` · ${responses.length} responses` : ''}</div></div>
+      <div class="stat-card"><div class="stat-label">Returning</div><div class="stat-value" style="color:#1EFF00;">${counts.returning}</div><div class="stat-sub">coming back</div></div>
+      <div class="stat-card"><div class="stat-label">Not sure yet</div><div class="stat-value" style="color:var(--gold);">${counts.unsure}</div><div class="stat-sub">undecided</div></div>
+      <div class="stat-card"><div class="stat-label">Not returning</div><div class="stat-value" style="color:#ff6b6b;">${counts.not_returning}</div><div class="stat-sub">leaving</div></div>
+    </div>
+
+    ${waitingHtml}
+
+    <div class="season-section">
+      <div class="season-section-head">
+        <div class="season-section-title">Projected roster <span class="recruit-sub">· first choices · ${projection.counted.length} raiders, ${dpsCount} DPS (a Mythic group needs ${MYTHIC_COMP_TARGET.tank} tanks, ${MYTHIC_COMP_TARGET.heal} healers, ${MYTHIC_COMP_TARGET.dps} DPS)</span></div>
+        <label class="season-toggle"><input type="checkbox" ${SURVEY.includeUnsure ? 'checked' : ''} onchange="setSurveyIncludeUnsure(this.checked)" /> Count "not sure yet"</label>
+      </div>
+      ${gaps.length
+        ? `<div class="season-gaps"><strong>Gaps to recruit for:</strong> ${gaps.map(escapeHtml).join(' · ')}</div>`
+        : (projection.counted.length ? '<div class="season-gaps ok">No gaps: every role is covered and every raid buff is in.</div>' : '')}
+      <div class="season-role-grid">${roleCards}</div>
+      <div class="season-section-title" style="margin-top:18px; font-size:13px;">Raid buffs</div>
+      <div class="raid-buffs-grid" id="season-buffs-grid" style="margin-bottom:0;"></div>
+    </div>
+
+    ${daysHtml}
+    ${flagsHtml}
+    ${responsesHtml}`;
+
+  renderRaidBuffs(projection.counted.map(r => ({ class: r.spec_choices?.[0]?.class })), document.getElementById('season-buffs-grid'));
+}
+
+function renderSurveyResponseCard(r, q) {
+  const flexLabels = (r.flex_roles || []).map(f => SURVEY_FLEX_LABELS[f]).filter(Boolean);
+  const ackById = Object.fromEntries((q.acknowledgements || []).map(a => [a.id, a]));
+  const exceptions = Object.entries(r.acknowledgements || {})
+    .filter(([id, v]) => v === 'exception' && ackById[id]).map(([id]) => ackById[id].exceptionLabel);
+  const extra = (q.extraQuestions || []).filter(e => r.answers?.[e.id]);
+  const who = r.account?.display_name || r.account?.battletag || '';
+  const edited = r.updated_at && r.submitted_at && (new Date(r.updated_at) - new Date(r.submitted_at) > 60000)
+    ? ` · edited ${surveyDate(r.updated_at)}` : '';
+  const detail = (label, value) => `<div><div class="season-k">${label}</div><div>${value}</div></div>`;
+  return `<div class="season-response">
+    <div class="season-response-head">
+      ${surveyResponderName(r)}
+      <span class="season-status status-${r.status}">${SURVEY_STATUS_LABELS[r.status] || r.status}</span>
+      <span class="recruit-sub">${escapeHtml(who)}${who ? ' · ' : ''}answered ${surveyDate(r.submitted_at)}${edited}</span>
+    </div>
+    ${r.status !== 'not_returning' ? `<div class="season-response-grid">
+      ${detail('Specs', (r.spec_choices || []).map((c, i) => `${i + 1}. ${escapeHtml(surveySpecLabel(c))}`).join('<br>') || '—')}
+      ${detail('Can flex to', escapeHtml(flexLabels.join(', ') || '—'))}
+      ${q.availability ? detail('Extra night', escapeHtml((r.availability || []).map(d => d.slice(0, 3)).join(', ') || '—')) : ''}
+    </div>` : ''}
+    ${exceptions.map(x => `<div class="season-flag">Answered <strong>"${escapeHtml(x)}"</strong></div>`).join('')}
+    ${extra.map(e => `<div class="season-answer"><div class="season-k">${escapeHtml(e.prompt)}</div><div>${linkifyText(r.answers[e.id])}</div></div>`).join('')}
+    ${r.comments ? `<div class="season-answer"><div class="season-k">Comments</div><div>${linkifyText(r.comments)}</div></div>` : ''}
+  </div>`;
+}
+
+function copySurveyLink() {
+  const url = `${location.origin}/?survey=${encodeURIComponent(STATE.teamId)}`;
+  navigator.clipboard.writeText(url)
+    .then(() => showToast('Survey link copied. Paste it in Discord -- it opens the survey for anyone on the team.', 'success'))
+    .catch(() => prompt('Copy this link:', url));
+}
+
+function copySurveyWaitingNames() {
+  const names = surveyTracker(SURVEY.results?.responses || []).waitingClaimed.map(p => p.name).join(', ');
+  navigator.clipboard.writeText(names)
+    .then(() => showToast('Names copied', 'success'))
+    .catch(() => prompt('Copy these names:', names));
+}
+
+async function closeSeasonSurvey() {
+  const survey = SURVEY.results?.survey;
+  if (!survey || !confirm(`Close "${survey.title}"? Raiders won't be able to answer or change their answers. You can reopen it later.`)) return;
+  await surveyLifecycle('closeSurvey', 'Survey closed');
+}
+
+async function reopenSeasonSurvey() {
+  await surveyLifecycle('reopenSurvey', 'Survey reopened');
+}
+
+async function deleteSeasonSurvey() {
+  const r = SURVEY.results;
+  if (!r) return;
+  const n = r.responses.length;
+  if (!confirm(`Delete "${r.survey.title}"${n ? ` and all ${n} response${n === 1 ? '' : 's'}` : ''}? This can't be undone.`)) return;
+  try {
+    await recruitingApi('deleteSurvey', { surveyId: r.survey.id });
+    SURVEY.selectedId = null;
+    SURVEY.results = null;
+    showToast('Survey deleted', 'success');
+    loadSeasonTab();
+    loadMySurvey();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function surveyLifecycle(action, doneMessage) {
+  const survey = SURVEY.results?.survey;
+  if (!survey) return;
+  try {
+    await recruitingApi(action, { surveyId: survey.id });
+    showToast(doneMessage, 'success');
+    loadSeasonTab();
+    loadMySurvey(); // the officer's own banner follows the survey
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Officer side: the survey editor ──
+
+// Weekdays that aren't already raid nights -- the likely extra-night picks.
+function defaultSurveyDefinition() {
+  const raidDays = STATE.config?.raidDays || [];
+  const offDays = SURVEY_WEEKDAYS.filter((d, i) => !raidDays.includes((i + 1) % 7)); // Monday = JS day 1
+  return {
+    title: 'Next Season Survey',
+    intro: "Let us know if you're coming back next season and what you'd like to play. Only officers can see your answers.",
+    questions: {
+      acknowledgements: [
+        { prompt: "We keep a roster bigger than we can bring, so some nights you'll sit out. It's nothing personal. Do you understand?", agreeLabel: 'Yes', exceptionLabel: 'I need to play every raid night' },
+        { prompt: "Loot: follow the team's loot rules, and don't roll on items that aren't a real upgrade for you. Do you understand?", agreeLabel: 'Yes', exceptionLabel: 'I have concerns about the loot rules' },
+        { prompt: 'Gear: keep your item level close to the group average, and enchant and gem your gear for raid. Can you commit to that?', agreeLabel: 'Yes', exceptionLabel: "I can't" },
+      ],
+      availability: { prompt: 'We may add an extra raid night during progression. Which days would work for you?', days: offDays },
+      extraQuestions: [],
+    },
+  };
+}
+
+function openSurveyEditor(mode) {
+  let base;
+  if (mode === 'edit') {
+    base = SURVEY.results.survey;
+  } else {
+    // A new survey starts from the last one's questions, so next season's
+    // wording carries over; the very first starts from the defaults.
+    const last = SURVEY.surveys[0];
+    base = last ? { title: 'Next Season Survey', intro: last.intro, questions: last.questions } : defaultSurveyDefinition();
+  }
+  const clone = JSON.parse(JSON.stringify(base));
+  const q = clone.questions || {};
+  SURVEY.editor = {
+    mode,
+    surveyId: mode === 'edit' ? base.id : null,
+    responseCount: mode === 'edit' ? SURVEY.results.responses.length : 0,
+    title: clone.title || '',
+    intro: clone.intro || '',
+    questions: {
+      acknowledgements: (q.acknowledgements || []).map(a => ({ ...a })),
+      availability: q.availability ? { prompt: q.availability.prompt, days: [...q.availability.days] } : null,
+      extraQuestions: (q.extraQuestions || []).map(e => ({ ...e })),
+    },
+  };
+  document.getElementById('survey-editor-title').textContent = mode === 'edit' ? 'Edit survey' : 'New survey';
+  document.getElementById('survey-editor-modal').classList.add('open');
+  renderSurveyEditor();
+}
+
+function closeSurveyEditor() {
+  document.getElementById('survey-editor-modal').classList.remove('open');
+  SURVEY.editor = null;
+}
+
+function renderSurveyEditor() {
+  const ed = SURVEY.editor;
+  if (!ed) return;
+  const q = ed.questions;
+  const availability = q.availability || { prompt: 'We may add an extra raid night during progression. Which days would work for you?', days: [] };
+  document.getElementById('survey-editor-body').innerHTML = `
+    ${ed.mode === 'edit' && ed.responseCount ? `<div class="recruit-lookup warn" style="margin-bottom:14px;">${ed.responseCount} raider${ed.responseCount === 1 ? ' has' : 's have'} already answered. Rewording keeps their answers; removing a question hides its answers.</div>` : ''}
+    <div class="form-group full"><label>Title</label><input type="text" id="se-title" maxlength="120" value="${escapeHtml(ed.title)}" /></div>
+    <div class="form-group full" style="margin-top:12px;"><label>Intro</label><textarea id="se-intro" rows="3" maxlength="4000">${escapeHtml(ed.intro)}</textarea></div>
+
+    <div class="survey-editor-fixed">
+      <strong>Always asked:</strong> are they coming back, which character, their 1st to 3rd choice class and spec, which roles they can flex to, and any other comments.
+    </div>
+
+    <div class="survey-editor-section">
+      <div class="season-section-head">
+        <div class="season-section-title">Acknowledgements</div>
+        <button class="btn-secondary recruit-small-btn" onclick="surveyEditorAdd('ack')">+ Add</button>
+      </div>
+      <div class="recruit-sub" style="margin-bottom:8px;">Policies raiders confirm. Anyone who picks the second answer is flagged in the results.</div>
+      ${q.acknowledgements.map((a, i) => `
+        <div class="survey-editor-item">
+          <div class="form-group full"><label>Question</label><textarea id="se-ack-prompt-${i}" rows="3" maxlength="4000">${escapeHtml(a.prompt)}</textarea></div>
+          <div class="survey-editor-row">
+            <div class="form-group"><label>Agree answer</label><input type="text" id="se-ack-agree-${i}" maxlength="120" value="${escapeHtml(a.agreeLabel || 'Yes')}" /></div>
+            <div class="form-group"><label>Can't-agree answer (flagged)</label><input type="text" id="se-ack-exception-${i}" maxlength="120" value="${escapeHtml(a.exceptionLabel || '')}" /></div>
+          </div>
+          <button class="survey-editor-remove" onclick="surveyEditorRemove('ack', ${i})">Remove</button>
+        </div>`).join('') || '<div class="recruit-sub">None.</div>'}
+    </div>
+
+    <div class="survey-editor-section">
+      <label class="season-toggle"><input type="checkbox" id="se-avail-on" ${q.availability ? 'checked' : ''} onchange="surveyEditorToggleAvailability(this.checked)" /> Ask which days they could raid an extra night</label>
+      ${q.availability ? `
+        <div class="form-group full" style="margin-top:10px;"><label>Question</label><input type="text" id="se-avail-prompt" maxlength="1000" value="${escapeHtml(availability.prompt)}" /></div>
+        <div class="survey-choice-row" style="margin-top:8px;">
+          ${SURVEY_WEEKDAYS.map(d => `<label class="survey-choice"><input type="checkbox" name="se-day" value="${d}" ${availability.days.includes(d) ? 'checked' : ''} /> ${d}</label>`).join('')}
+        </div>` : ''}
+    </div>
+
+    <div class="survey-editor-section">
+      <div class="season-section-head">
+        <div class="season-section-title">Extra questions</div>
+        <button class="btn-secondary recruit-small-btn" onclick="surveyEditorAdd('extra')">+ Add</button>
+      </div>
+      ${q.extraQuestions.map((e, i) => `
+        <div class="survey-editor-item">
+          <div class="form-group full"><label>Question (free-text answer)</label><input type="text" id="se-extra-${i}" maxlength="1000" value="${escapeHtml(e.prompt)}" /></div>
+          <button class="survey-editor-remove" onclick="surveyEditorRemove('extra', ${i})">Remove</button>
+        </div>`).join('') || '<div class="recruit-sub">None.</div>'}
+    </div>
+
+    <div id="se-msg" class="status-msg"></div>
+    <div class="survey-form-actions">
+      <button class="btn-secondary" onclick="closeSurveyEditor()">Cancel</button>
+      <button class="btn-primary" id="se-save-btn" onclick="saveSurveyEditor()">${ed.mode === 'edit' ? 'Save changes' : 'Open survey'}</button>
+    </div>`;
+}
+
+// Pulls whatever's typed into the editor back into SURVEY.editor, so adding
+// or removing an item (which re-renders) doesn't lose edits.
+function syncSurveyEditor() {
+  const ed = SURVEY.editor;
+  const val = id => document.getElementById(id)?.value ?? '';
+  ed.title = val('se-title');
+  ed.intro = val('se-intro');
+  ed.questions.acknowledgements.forEach((a, i) => {
+    a.prompt = val(`se-ack-prompt-${i}`);
+    a.agreeLabel = val(`se-ack-agree-${i}`);
+    a.exceptionLabel = val(`se-ack-exception-${i}`);
+  });
+  if (ed.questions.availability) {
+    ed.questions.availability.prompt = val('se-avail-prompt');
+    ed.questions.availability.days = [...document.querySelectorAll('input[name="se-day"]:checked')].map(i => i.value);
+  }
+  ed.questions.extraQuestions.forEach((e, i) => { e.prompt = val(`se-extra-${i}`); });
+}
+
+function surveyEditorAdd(kind) {
+  syncSurveyEditor();
+  const q = SURVEY.editor.questions;
+  if (kind === 'ack') q.acknowledgements.push({ prompt: '', agreeLabel: 'Yes', exceptionLabel: '' });
+  else q.extraQuestions.push({ prompt: '' });
+  renderSurveyEditor();
+}
+
+function surveyEditorRemove(kind, index) {
+  syncSurveyEditor();
+  const q = SURVEY.editor.questions;
+  (kind === 'ack' ? q.acknowledgements : q.extraQuestions).splice(index, 1);
+  renderSurveyEditor();
+}
+
+function surveyEditorToggleAvailability(on) {
+  syncSurveyEditor();
+  SURVEY.editor.questions.availability = on
+    ? { prompt: 'We may add an extra raid night during progression. Which days would work for you?', days: defaultSurveyDefinition().questions.availability.days }
+    : null;
+  renderSurveyEditor();
+}
+
+async function saveSurveyEditor() {
+  syncSurveyEditor();
+  const ed = SURVEY.editor;
+  const msg = document.getElementById('se-msg');
+  const btn = document.getElementById('se-save-btn');
+  // Blank prompts are dropped; a half-filled acknowledgement is a mistake.
+  const acks = ed.questions.acknowledgements.filter(a => a.prompt.trim());
+  if (!ed.title.trim()) { msg.className = 'status-msg error'; msg.textContent = 'Give the survey a title.'; return; }
+  if (acks.some(a => !a.exceptionLabel.trim())) { msg.className = 'status-msg error'; msg.textContent = "Every acknowledgement needs a can't-agree answer."; return; }
+  if (ed.questions.availability && !ed.questions.availability.days.length) { msg.className = 'status-msg error'; msg.textContent = 'Pick at least one day, or turn off the extra-night question.'; return; }
+
+  const body = {
+    surveyId: ed.surveyId,
+    title: ed.title,
+    intro: ed.intro,
+    questions: {
+      acknowledgements: acks,
+      availability: ed.questions.availability,
+      extraQuestions: ed.questions.extraQuestions.filter(e => e.prompt.trim()),
+    },
+  };
+  btn.disabled = true;
+  try {
+    const { survey } = await recruitingApi(ed.mode === 'edit' ? 'updateSurvey' : 'openSurvey', body);
+    closeSurveyEditor();
+    SURVEY.selectedId = survey.id;
+    showToast(ed.mode === 'edit' ? 'Survey updated' : 'Survey opened. Raiders will see a banner asking them to answer.', 'success');
+    loadSeasonTab();
+    loadMySurvey();
+  } catch (e) {
+    msg.className = 'status-msg error';
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}

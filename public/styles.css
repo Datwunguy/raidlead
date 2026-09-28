@@ -1832,3 +1832,123 @@
     .applicant-row > .recruit-contact, .applicant-row > .applicant-actions { grid-column: 2 / -1; }
     .recruit-template-select { flex: 1; width: auto; }
   }
+
+  /* ── NEXT SEASON SURVEY ── */
+  /* Raider banner (top of every dashboard tab) */
+  .survey-banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+    background: rgba(200,168,75,0.08); border: 1px solid var(--gold-dim); border-radius: 6px;
+    padding: 12px 16px; margin-bottom: 18px;
+  }
+  .survey-banner.answered { background: var(--bg2); border-color: var(--border); }
+  .survey-banner-text { font-size: 14px; color: var(--text); line-height: 1.4; }
+  .survey-banner-text strong { color: var(--gold); }
+  .survey-banner-actions { display: flex; align-items: center; gap: 8px; }
+  .survey-banner-dismiss {
+    background: none; border: none; color: var(--text-dim); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px;
+  }
+  .survey-banner-dismiss:hover { color: var(--text); }
+
+  /* The survey form */
+  .survey-intro { font-size: 15px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin-bottom: 18px; }
+  .survey-intro a, .survey-ack-prompt a { color: var(--gold); }
+  .survey-q { margin-bottom: 18px; }
+  .survey-q-label { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  .survey-q-hint { font-size: 12px; color: var(--text-dim); margin: -2px 0 6px; line-height: 1.4; }
+  .survey-req { color: #ff6b6b; }
+  .survey-choice-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .survey-choice {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 10px; font-size: 14px; color: var(--text);
+  }
+  .survey-choice:hover { border-color: var(--gold-dim); }
+  .survey-choice:has(input:checked) { border-color: var(--gold); color: var(--gold); }
+  .survey-choice input { accent-color: var(--gold); margin: 0; }
+  .survey-ack { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  .survey-ack .survey-choice { background: var(--bg2); }
+  .survey-ack-prompt { font-size: 14px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin-bottom: 10px; }
+  .survey-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .survey-form-actions .recruit-sub { margin: 0 auto 0 0; }
+
+  /* Officer dashboard (Team Management > Next Season) */
+  .season-header {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 16px 18px; margin-bottom: 16px;
+  }
+  .season-title { font-family: 'Cinzel', serif; font-size: 20px; color: var(--gold); margin: 2px 0 4px; }
+  .season-header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .season-survey-select {
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text-dim);
+    font-family: 'Rajdhani', sans-serif; font-size: 13px; padding: 3px 6px; margin-bottom: 6px;
+  }
+  .season-stats { margin-bottom: 16px; }
+  .season-stat-of { font-size: 18px; color: var(--text-dim); }
+  .season-section { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 18px; margin-bottom: 16px; }
+  .season-section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .season-section-title { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: 0.5px; }
+  .season-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .season-chip {
+    font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 14px;
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 2px 10px;
+  }
+  .season-chips.muted .season-chip { opacity: 0.6; }
+  .season-all-in { color: #1EFF00; font-size: 14px; }
+  .season-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
+  .season-toggle input { accent-color: var(--gold); }
+  .season-gaps {
+    font-size: 13px; color: var(--text); background: rgba(255,107,107,0.08); border: 1px solid rgba(255,107,107,0.35);
+    border-radius: 4px; padding: 8px 12px; margin-bottom: 12px; line-height: 1.5;
+  }
+  .season-gaps strong { color: #ff6b6b; }
+  .season-gaps.ok { background: rgba(30,255,0,0.06); border-color: rgba(30,255,0,0.3); color: #1EFF00; }
+  .season-role-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .season-role-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  .season-role-card.short { border-color: rgba(255,107,107,0.5); }
+  .season-role-count { font-family: 'Rajdhani', sans-serif; font-size: 26px; font-weight: 700; color: var(--text); margin: 2px 0 6px; }
+  .season-role-list { font-size: 13px; line-height: 1.6; }
+  .season-role-list .recruit-name { font-size: 14px; }
+  .season-role-flex { font-size: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); line-height: 1.6; }
+  .season-role-flex .recruit-name { font-size: 13px; }
+  .season-days { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+  .season-day { display: grid; grid-template-columns: 44px 1fr 28px; align-items: center; gap: 10px; font-size: 13px; }
+  .season-day-name { color: var(--text-dim); font-weight: 700; }
+  .season-day-bar { background: var(--bg3); border-radius: 3px; height: 12px; overflow: hidden; }
+  .season-day-bar > div { background: linear-gradient(90deg, var(--gold-dim), var(--gold)); height: 100%; min-width: 2px; }
+  .season-day-count { text-align: right; color: var(--text); font-weight: 700; }
+  .season-flag { font-size: 13px; color: var(--text); padding: 4px 0; line-height: 1.5; }
+  .season-flag strong { color: #ff9f43; }
+  .season-response { border-top: 1px solid var(--border); padding: 12px 0; }
+  .season-response:first-of-type { border-top: none; padding-top: 2px; }
+  .season-response-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .season-status {
+    font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    border-radius: 3px; padding: 1px 6px; border: 1px solid;
+  }
+  .season-status.status-returning     { color: #1EFF00; border-color: rgba(30,255,0,0.4); }
+  .season-status.status-unsure        { color: var(--gold); border-color: var(--gold-dim); }
+  .season-status.status-not_returning { color: #ff6b6b; border-color: rgba(255,107,107,0.4); }
+  .season-response-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; font-size: 13px; color: var(--text); line-height: 1.5; }
+  .season-k { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 2px; }
+  .season-answer { font-size: 13px; color: var(--text); margin-top: 8px; white-space: pre-wrap; line-height: 1.5; }
+  .season-answer a { color: var(--gold); }
+
+  /* Survey editor */
+  .survey-editor-fixed {
+    font-size: 13px; color: var(--text-dim); background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 10px 12px; margin: 16px 0; line-height: 1.5;
+  }
+  .survey-editor-fixed strong { color: var(--text); }
+  .survey-editor-section { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
+  .survey-editor-item { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+  .survey-editor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .survey-editor-remove { background: none; border: none; color: #ff6b6b; font-size: 12px; cursor: pointer; padding: 6px 0 0; }
+  .survey-editor-remove:hover { text-decoration: underline; }
+
+  @media (max-width: 900px) {
+    .season-role-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .season-response-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 600px) {
+    .season-role-grid, .season-response-grid, .survey-editor-row { grid-template-columns: 1fr; }
+  }
