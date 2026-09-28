@@ -1755,7 +1755,13 @@
   }
   .subtab-count:empty { display: none; }
   .applicant-toolbar-actions { display: flex; gap: 8px; }
-  .applicant-row { grid-template-columns: auto minmax(0, 2.4fr) minmax(0, 1.2fr) auto; }
+  /* Every row shares the list's columns (subgrid), so dates, decisions, and
+     buttons line up even though pending rows carry more buttons than decided
+     ones -- a row sized on its own would shift. The first
+     grid-template-columns on .applicant-row is the fallback without subgrid. */
+  #applicant-list { display: grid; grid-template-columns: auto minmax(0, 1.8fr) minmax(0, 1.2fr) auto; column-gap: 14px; }
+  #applicant-list > * { grid-column: 1 / -1; }
+  .applicant-row { grid-template-columns: auto minmax(0, 1.8fr) minmax(0, 1.2fr) auto; grid-template-columns: subgrid; }
   .applicant-row.selected { border-color: var(--gold-dim); background: rgba(200,168,75,0.05); }
   .applicant-check { width: 16px; height: 16px; accent-color: var(--gold); cursor: pointer; margin: 0; }
   .recruit-badge.on-roster { color: #1EFF00; border-color: rgba(30,255,0,0.45); }
@@ -1810,13 +1816,15 @@
     .recruit-notes, .recruit-actions { grid-column: span 1; }
   }
   @media (max-width: 900px) {
-    .applicant-row { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); }
+    #applicant-list { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); }
+    .applicant-row { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); grid-template-columns: subgrid; }
     .applicant-actions { grid-column: 2 / -1; justify-content: flex-start; }
   }
   @media (max-width: 600px) {
     .recruit-add-grid { grid-template-columns: 1fr; }
     .recruit-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-    .applicant-row { grid-template-columns: auto minmax(0, 1fr); gap: 10px; }
+    #applicant-list { grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; }
+    .applicant-row { grid-template-columns: auto minmax(0, 1fr); grid-template-columns: subgrid; gap: 10px; }
     .applicant-row > .recruit-contact, .applicant-row > .applicant-actions { grid-column: 2 / -1; }
     .recruit-template-select { flex: 1; width: auto; }
   }
