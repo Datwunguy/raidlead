@@ -6626,6 +6626,10 @@ const TEAM_MGMT = {
   applicantLookups:      {},        // response key -> { summary, existing } from Raider.io, per session
   selectedApplicants:    new Set(), // response keys ticked for a bulk action
   bulkInFlight:          false,
+  // Recruits "Change Recruit Specs" mode
+  specEditing:           false,
+  specDrafts:            {},        // recruit id -> spec picked but not saved yet
+  specSaving:            false,
 };
 
 // Must match STATUSES in api/recruiting.js.
@@ -6742,6 +6746,7 @@ async function refreshStaleRecruitLookups() {
 }
 
 function renderRecruitTab() {
+  renderRecruitSpecToolbar();
   renderRecruits();
   renderRecruitTemplates();
   if (TEAM_MGMT.view === 'scores') renderRecruitScores();
@@ -6848,65 +6853,143 @@ function alreadyTrackedMessage(existing) {
   return `Already tracked: ${existing.name} was added by ${who}, contacted ${formatRecruitDate(existing.contacted_at)} (${status}).`;
 }
 
-// "[Elemental v] Shaman · 316 ilvl · 3,140 M+ · 6/8 M" -- the spec is a
-// picker, since Raider.io only knows the spec they last logged out in.
+// "Elemental Shaman · 316 ilvl · 3,140 M+ · 6/8 M". While "Change Recruit
+// Specs" is on, the spec becomes a picker -- Raider.io only knows the spec
+// they last logged out in, so officers correct it here.
 function recruitSpecLineHtml(r) {
   const specs = CLASS_SPECS[r.class];
-  if (!specs) {
+  if (!TEAM_MGMT.specEditing || !specs) {
     const stat = recruitStatLine(r.spec, r.class, r.lookup);
     return stat ? escapeHtml(stat) : 'No Raider.io data';
   }
-  const current = canonicalSpecFor(r.class, r.spec);
-  const options = (current ? '' : `<option value="" selected>${escapeHtml(r.spec || 'Spec?')}</option>`)
-    + specs.map(([name]) => `<option value="${escapeHtml(name)}"${name === current ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('');
+  const saved   = canonicalSpecFor(r.class, r.spec);
+  const shown   = TEAM_MGMT.specDrafts[r.id] || saved;
+  const options = (shown ? '' : `<option value="" selected>${escapeHtml(r.spec || 'Spec?')}</option>`)
+    + specs.map(([name]) => `<option value="${escapeHtml(name)}"${name === shown ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('');
   const rest = recruitStatLine(null, r.class, r.lookup);
-  return `<select class="recruit-spec-select" aria-label="Spec"
+  return `<select class="recruit-spec-select${TEAM_MGMT.specDrafts[r.id] ? ' changed' : ''}" aria-label="Spec"
       title="Their main spec. Sets their role, and whether WCL scores use DPS or HPS."
-      onchange="setRecruitSpec(${jsAttr(r.id)}, this.value)">${options}</select> ${escapeHtml(rest)}`;
+      onchange="setRecruitSpecDraft(${jsAttr(r.id)}, this.value)">${options}</select> ${escapeHtml(rest)}`;
 }
 
 // The spec their WCL logs are on, from the last score fetch (the selected
-// difficulty first) -- or null if it matches what's listed, or is unknown.
+// difficulty first) -- or null if it matches their spec (or the unsaved
+// pick while editing), or is unknown.
 function recruitLoggedSpec(r) {
+  const current = (TEAM_MGMT.specEditing && TEAM_MGMT.specDrafts[r.id]) || r.spec;
   const order = [TEAM_MGMT.scoreDifficulty, 'mythic', 'heroic', 'normal', 'lfr'];
   for (const diff of order) {
     const logged = canonicalSpecFor(r.class, r.wcl_scores?.[diff]?.result?.loggedSpec);
-    if (logged) return specKey(logged) === specKey(r.spec) ? null : logged;
+    if (logged) return specKey(logged) === specKey(current) ? null : logged;
   }
   return null;
 }
 
+// One click saves it -- or, while editing specs, just picks it in the dropdown.
 function recruitSpecHintHtml(r) {
   const logged = recruitLoggedSpec(r);
   if (!logged) return '';
+  const action = TEAM_MGMT.specEditing ? 'setRecruitSpecDraft' : 'setRecruitSpec';
   return `<button class="recruit-spec-hint" title="Their ranked Warcraft Logs parses are on ${escapeHtml(logged)}. Switch their spec to match."
-    onclick="setRecruitSpec(${jsAttr(r.id)}, ${jsAttr(logged)})">Logs as ${escapeHtml(logged)} on WCL · Use ${escapeHtml(logged)}</button>`;
+    onclick="${action}(${jsAttr(r.id)}, ${jsAttr(logged)})">Logs as ${escapeHtml(logged)} on WCL · Use ${escapeHtml(logged)}</button>`;
 }
 
-async function setRecruitSpec(recruitId, spec) {
-  const before = TEAM_MGMT.recruits.find(r => r.id === recruitId);
-  if (!before || !spec) return;
-  try {
-    const { recruit } = await recruitingApi('updateRecruit', { recruitId, spec });
-    const i = TEAM_MGMT.recruits.findIndex(r => r.id === recruitId);
-    if (i >= 0) TEAM_MGMT.recruits[i] = recruit;
-    renderRecruitTab();
-    // Healer <-> non-healer switches the WCL metric (HPS vs DPS); the server
-    // already dropped the old-metric scores, so fetch the right ones.
-    if ((recruit.role === 'heal') === (before.role === 'heal')) return;
-    const metric = recruit.role === 'heal' ? 'HPS' : 'DPS';
-    if (!STATE.config?.hasWclCredentials || !STATE.zoneId) return;
-    if (TEAM_MGMT.scoresInFlight) {
-      showToast(`${recruit.name} is now ${recruit.spec}. Refresh scores once the current refresh finishes to get their ${metric} parses.`, '');
-      return;
-    }
-    showToast(`${recruit.name} is now ${recruit.spec} -- fetching their ${metric} parses`, 'success');
-    await fetchRecruitScores([recruit], { silent: true });
-    renderRecruitsUnlessEditing();
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-    renderRecruits(); // put the picker back
+// "Change Recruit Specs", or Cancel / Save Changes while editing.
+function renderRecruitSpecToolbar() {
+  const el = document.getElementById('recruit-spec-toolbar');
+  if (!el) return;
+  if (TEAM_MGMT.recruits.length === 0) { el.innerHTML = ''; return; }
+  if (!TEAM_MGMT.specEditing) {
+    el.innerHTML = `<button class="btn-secondary recruit-small-btn" onclick="startRecruitSpecEdit()"
+      title="Raider.io only shows the spec they last logged out in. Set each recruit's real main spec here.">Change Recruit Specs</button>`;
+    return;
   }
+  const n = Object.keys(TEAM_MGMT.specDrafts).length;
+  const busy = TEAM_MGMT.specSaving ? ' disabled' : '';
+  // Left-aligned, over the spec column; Save takes Change Recruit Specs' spot.
+  el.innerHTML = `<button class="btn-primary recruit-small-btn" onclick="saveRecruitSpecEdits()"${busy || (n ? '' : ' disabled')}>${
+      TEAM_MGMT.specSaving ? 'Saving...' : `Save Changes${n ? ` (${n})` : ''}`}</button>
+    <button class="btn-secondary recruit-small-btn" onclick="cancelRecruitSpecEdit()"${busy}>Cancel</button>
+    <span class="recruit-spec-toolbar-note">Pick each recruit's main spec, then save.</span>`;
+}
+
+function startRecruitSpecEdit() {
+  TEAM_MGMT.specEditing = true;
+  TEAM_MGMT.specDrafts  = {};
+  renderRecruitTab();
+}
+
+function cancelRecruitSpecEdit() {
+  TEAM_MGMT.specEditing = false;
+  TEAM_MGMT.specDrafts  = {};
+  renderRecruitTab();
+}
+
+// Held until Save Changes -- picking their saved spec again drops the draft.
+function setRecruitSpecDraft(recruitId, spec) {
+  const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
+  if (!r || !spec) return;
+  if (specKey(spec) === specKey(r.spec)) delete TEAM_MGMT.specDrafts[recruitId];
+  else TEAM_MGMT.specDrafts[recruitId] = spec;
+  renderRecruitTab();
+}
+
+async function saveRecruitSpecEdits() {
+  const changes = Object.entries(TEAM_MGMT.specDrafts).map(([id, spec]) => ({ id, spec }));
+  if (changes.length === 0) return cancelRecruitSpecEdit();
+  TEAM_MGMT.specSaving = true;
+  renderRecruitSpecToolbar();
+  const failed = await saveRecruitSpecs(changes);
+  TEAM_MGMT.specSaving = false;
+  // Anything that didn't save stays in edit mode as a draft, to retry.
+  TEAM_MGMT.specDrafts = Object.fromEntries(failed.map(c => [c.id, c.spec]));
+  TEAM_MGMT.specEditing = failed.length > 0;
+  renderRecruitTab();
+}
+
+// The single-click path (the WCL hint outside edit mode).
+async function setRecruitSpec(recruitId, spec) {
+  if (!spec) return;
+  await saveRecruitSpecs([{ id: recruitId, spec }]);
+  renderRecruitTab();
+}
+
+// Saves spec changes, then starts re-fetching WCL scores (in the
+// background) for anyone who crossed healer <-> non-healer: that switches
+// the metric (HPS vs DPS), and the server already dropped their old-metric
+// scores. Returns the changes that failed to save; the caller re-renders.
+async function saveRecruitSpecs(changes) {
+  const failed = [], crossed = [];
+  await runWithConcurrency(changes, 4, async c => {
+    const before = TEAM_MGMT.recruits.find(r => r.id === c.id);
+    if (!before) return;
+    try {
+      const { recruit } = await recruitingApi('updateRecruit', { recruitId: c.id, spec: c.spec });
+      const i = TEAM_MGMT.recruits.findIndex(r => r.id === c.id);
+      if (i >= 0) TEAM_MGMT.recruits[i] = recruit;
+      if ((recruit.role === 'heal') !== (before.role === 'heal')) crossed.push(recruit);
+    } catch (e) {
+      failed.push({ ...c, error: e.message });
+    }
+  });
+
+  const saved = changes.length - failed.length;
+  if (failed.length) {
+    showToast(`Couldn't save ${failed.length} spec change${failed.length === 1 ? '' : 's'}: ${failed[0].error}`, 'error');
+  } else if (changes.length > 1) {
+    showToast(`Saved ${saved} spec changes`, 'success');
+  }
+
+  if (crossed.length && STATE.config?.hasWclCredentials && STATE.zoneId) {
+    const who = crossed.length === 1 ? crossed[0].name : `${crossed.length} recruits`;
+    if (TEAM_MGMT.scoresInFlight) {
+      showToast(`Refresh scores once the current refresh finishes to get ${who}'s parses for their new role.`, '');
+    } else {
+      showToast(`Fetching ${who}'s parses for their new role (${crossed.length === 1 ? (crossed[0].role === 'heal' ? 'HPS' : 'DPS') : 'HPS / DPS'})`, 'success');
+      fetchRecruitScores(crossed, { silent: true }).then(renderRecruitsUnlessEditing);
+    }
+  }
+  return failed;
 }
 
 // Background updates re-render the list, but not out from under an officer

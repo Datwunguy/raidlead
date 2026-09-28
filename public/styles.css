@@ -1708,6 +1708,10 @@
     font-family: inherit; font-size: 12px; padding: 1px 4px; outline: none; cursor: pointer;
   }
   .recruit-spec-select:hover, .recruit-spec-select:focus { border-color: var(--gold-dim); }
+  .recruit-spec-select.changed { border-color: var(--gold); color: var(--gold); } /* unsaved pick */
+  .recruit-spec-toolbar { display: flex; justify-content: flex-start; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .recruit-spec-toolbar:empty { display: none; }
+  .recruit-spec-toolbar-note { font-size: 12px; color: var(--text-dim); margin-left: 4px; }
   .recruit-spec-hint {
     display: inline-block; margin-top: 4px; background: none; cursor: pointer;
     border: 1px dashed var(--gold-dim); border-radius: 3px; padding: 2px 8px;
