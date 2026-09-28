@@ -71,7 +71,19 @@ const STORAGE_KEY  = 'raidlead_config';
 const SESSION_KEY  = 'raidlead_session_data';
 const SCORES_KEY   = 'raidlead_scores';
 // Returns a localStorage key scoped to the current difficulty
-function scoresKey() { return SCORES_KEY + '_' + (STATE.scoreDifficulty || 'mythic'); }
+// Per team: an account on two teams must never see one team's cached
+// scores on the other (same zone, same difficulty).
+function scoresKey() { return SCORES_KEY + '_' + (STATE.teamId || 'none') + '_' + (STATE.scoreDifficulty || 'mythic'); }
+
+// Score caches from before they were per team -- dropped once, since they
+// can't say which team they belong to.
+(function dropSharedScoreCaches() {
+  try {
+    Object.keys(localStorage)
+      .filter(k => /^raidlead_(scores_(lfr|normal|heroic|mythic)|mitigation_\d+_\w+|survival_\d+_\w+)$/.test(k))
+      .forEach(k => localStorage.removeItem(k));
+  } catch (e) {}
+})();
 const ZONE_BAN_KEY = 'raidlead_zone_dismissed'; // tracks which zones user already dismissed
 
 function saveScores(scores, bossNames, zoneId) {
@@ -269,7 +281,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       // Gate: new members must claim a character before accessing the
       // dashboard -- except officers/owners, who bypass regardless.
-      if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) {
+      if (needsClaimGate()) {
         showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
         await showClaimGateScreen();
       } else {
@@ -298,7 +310,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Gate: block access until this account has claimed a character --
     // except officers/owners, whose permission level has nothing to do
     // with whether they personally play a character on this team.
-    if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) {
+    if (needsClaimGate()) {
       showClaimGateScreen();
       return;
     }
@@ -1027,6 +1039,13 @@ function updateRosterTitle() {
 }
 
 let CLAIM_GATE_UNCLAIMED = [];
+
+// The claim-a-character screen is for members who haven't picked their
+// character yet. Officers/owners never need it, and Viewers already chose
+// "Continue as a Viewer" -- that's saved as their role, so it sticks.
+function needsClaimGate() {
+  return !STATE.claimedCharacter && !['owner', 'officer', 'viewer'].includes(STATE.myRole);
+}
 
 async function showClaimGateScreen() {
   hideBootLoader();
@@ -3863,7 +3882,7 @@ async function fetchMitigationData(reset) {
     STATE.mitigationMap           = mitigationMap || {};
     STATE.mitigationFetched       = true;
     STATE.mitigationMapDifficulty = STATE.scoreDifficulty;
-    const mitKey = 'raidlead_mitigation_' + zoneId + '_' + (STATE.scoreDifficulty || 'mythic');
+    const mitKey = 'raidlead_mitigation_' + STATE.teamId + '_' + zoneId + '_' + (STATE.scoreDifficulty || 'mythic');
     try { localStorage.setItem(mitKey, JSON.stringify({ mitigationMap, bossNames, savedAt: Date.now() })); } catch(e) {}
     renderScoresTable('all');
     showToast('Mitigation data loaded', 'success');
@@ -3880,7 +3899,7 @@ function loadCachedMitigation() {
   const zoneId = STATE.zoneId;
   const diff   = STATE.scoreDifficulty || 'mythic';
   const diffId = {'lfr':1,'normal':3,'heroic':4,'mythic':5}[diff] || 5;
-  const key    = 'raidlead_mitigation_' + zoneId + '_' + diff;
+  const key    = 'raidlead_mitigation_' + STATE.teamId + '_' + zoneId + '_' + diff;
   if (STATE.teamId) {
     fetch('/api/roster?action=getMitigationCache&teamId=' + STATE.teamId + '&zoneId=' + (STATE.zoneId||'') + '&diffId=' + diffId)
       .then(r => r.json()).then(data => {
@@ -3998,7 +4017,7 @@ async function fetchSurvivalData(reset) {
     STATE.survivorMapDifficulty = STATE.scoreDifficulty;
 
     // Cache to localStorage
-    const survivalCacheKey = 'raidlead_survival_' + zoneId + '_' + STATE.scoreDifficulty;
+    const survivalCacheKey = 'raidlead_survival_' + STATE.teamId + '_' + zoneId + '_' + STATE.scoreDifficulty;
     try {
       localStorage.setItem(survivalCacheKey,
         JSON.stringify({ survivorMap, bossNames, fetchedAt: Date.now() }));
@@ -4034,7 +4053,7 @@ function loadCachedSurvival() {
   const zoneId = STATE.zoneId;
   const diff   = STATE.scoreDifficulty || 'mythic';
   const diffId = {'lfr':1,'normal':3,'heroic':4,'mythic':5}[diff] || 5;
-  const key    = 'raidlead_survival_' + zoneId + '_' + diff;
+  const key    = 'raidlead_survival_' + STATE.teamId + '_' + zoneId + '_' + diff;
 
   // Always check Supabase for latest (cross-device sync)
   if (STATE.teamId) {
@@ -5364,6 +5383,10 @@ document.addEventListener('click', (e) => {
     const dd = document.getElementById('account-dropdown');
     if (dd) dd.classList.remove('open');
   }
+  const teamMenuWrap = document.getElementById('guild-badge-wrap');
+  if (teamMenuWrap && !teamMenuWrap.contains(e.target)) {
+    document.getElementById('team-menu')?.classList.remove('open');
+  }
   const mobileNav = document.getElementById('mobile-nav-menu');
   if (mobileNav && !mobileNav.contains(e.target)) {
     document.getElementById('mobile-nav-dropdown')?.classList.remove('open');
@@ -5468,7 +5491,7 @@ async function completeGuildJoin(joinCode) {
   applyGuildData(freshData);
   await loadRosterFromDB();
 
-  if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) {
+  if (needsClaimGate()) {
     showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
     await showClaimGateScreen();
   } else {
@@ -5587,7 +5610,7 @@ async function createGuild(confirmNewTeam) {
     // The creator is always this team's owner anyway, so the officer bypass
     // below would apply regardless -- kept for consistency with every other
     // gate check site.
-    if (!STATE.claimedCharacter && STATE.players.length > 0 && !['owner', 'officer'].includes(STATE.myRole)) {
+    if (STATE.players.length > 0 && needsClaimGate()) {
       await showClaimGateScreen();
     } else {
       showDashboard();
@@ -5808,13 +5831,19 @@ function showMembersModal() {
 // any Alt(s)) with a release button each, plus a persistent "claim another"
 // button -- claiming is additive (see api/members.js's claimCharacter),
 // not a single replaceable slot.
+// A person's characters: Main first, then Alt(s) by name.
+function mainsFirst(chars) {
+  const isMain = c => (c.rank || 'Main') === 'Main';
+  return [...(chars || [])].sort((a, b) => (isMain(b) - isMain(a)) || String(a.name).localeCompare(String(b.name)));
+}
+
 function renderMemberClaimSection(members) {
   const claimedEl = document.getElementById('member-claimed-char');
   const pickerEl  = document.getElementById('member-claim-picker');
   if (!claimedEl || !pickerEl) return;
 
   const me = (members || []).find(m => m.account_id === AUTH.session?.id);
-  const chars = Array.isArray(me?.characters) ? me.characters : (me?.characters ? [me.characters] : []);
+  const chars = mainsFirst(Array.isArray(me?.characters) ? me.characters : (me?.characters ? [me.characters] : []));
 
   if (chars.length === 0) {
     claimedEl.textContent = 'No character claimed yet — claim one below:';
@@ -5858,8 +5887,8 @@ async function releaseCharacterClaim(characterName) {
     // the claim gate reflect it without needing a full page reload.
     const guildData = await fetchGuildFromDB(STATE.teamId);
     if (guildData) {
-      STATE.claimedCharacter  = guildData.claimedCharacter || null;
-      STATE.claimedCharacters = guildData.claimedCharacters || [];
+      STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
+      STATE.claimedCharacter  = STATE.claimedCharacters[0]?.name || guildData.claimedCharacter || null;
       renderAttendanceCharacterPicker();
     }
   } catch (e) {
@@ -5925,7 +5954,7 @@ function renderMembersListFromDB(members) {
     const bt          = acct?.battletag || 'Unknown';
     const displayName = acct?.display_name || null;
     // characters may also be array -- a member can claim more than one (Main + Alt(s))
-    const chars = Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []);
+    const chars = mainsFirst(Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []));
     const charNames = chars.map(c => c.name).filter(Boolean);
     const accountId = m.account_id;
     const isSelf = AUTH.session?.id === accountId;
@@ -6104,8 +6133,8 @@ async function claimCharacter(characterName) {
     if (!claimingAccountId || claimingAccountId === AUTH.session?.id) {
       const guildData = await fetchGuildFromDB(STATE.teamId);
       if (guildData) {
-        STATE.claimedCharacter  = guildData.claimedCharacter || null;
-        STATE.claimedCharacters = guildData.claimedCharacters || [];
+        STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
+        STATE.claimedCharacter  = STATE.claimedCharacters[0]?.name || guildData.claimedCharacter || null;
         renderAttendanceCharacterPicker();
       }
     }
@@ -6365,8 +6394,8 @@ function applyGuildData(guildData) {
   STATE.progressCache    = {}; // may be a different team/region/raid than what was cached
   STATE.progressRaidsList = null;
   STATE.progressRaidSlug  = null;
-  STATE.claimedCharacter  = guildData.claimedCharacter || null;
-  STATE.claimedCharacters = guildData.claimedCharacters || [];
+  STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
+  STATE.claimedCharacter  = STATE.claimedCharacters[0]?.name || guildData.claimedCharacter || null;
   STATE.joinCode         = t.join_code || null;
   STATE.discordGuildId   = t.discord_guild_id || null;
   STATE.myRole           = guildData.role || 'member';
@@ -6404,28 +6433,55 @@ async function switchActiveTeam(teamId) {
   if (!guildData || !guildData.team) { showToast('Could not switch teams', 'error'); return; }
   applyGuildData(guildData);
   await loadRosterFromDB();
-  if (!STATE.claimedCharacter && !['owner', 'officer'].includes(STATE.myRole)) { showClaimGateScreen(); return; }
-  showDashboard();
-  updateRosterTitle();
+  if (needsClaimGate()) { showClaimGateScreen(); return; }
+  // Nothing from the previous team carries over: its scores, and its raid
+  // night -- showDashboard picks this team's next raid night once its
+  // attendance (extra raid nights) has loaded.
   STATE.scores = []; STATE.bossNames = []; STATE.scoresDifficulty = null;
   STATE.survivorMap = {}; STATE.survivorFetched = false; STATE.survivorMapDifficulty = null;
   STATE.mitigationMap = {}; STATE.mitigationFetched = false; STATE.mitigationMapDifficulty = null;
+  STATE.plannerDate = null;
+  STATE.attendanceLoaded = false; STATE.attendanceExtraDays = []; STATE.attendanceMarks = [];
+  showDashboard();
+  updateRosterTitle();
+  renderScoresTable('all');
   loadCachedScores();
-  loadAttendanceData();
-  if (typeof loadPlanForDate === 'function' && STATE.plannerDate) loadPlanForDate(STATE.plannerDate);
   checkAndAdvanceSeason();
 }
 
-// Renders the team switcher in the header -- only shown when the account
-// belongs to more than one team, invisible otherwise.
+// The guild badge in the header doubles as the team switcher when the
+// account is on more than one team: click it for a menu with each team
+// on its own line (a team in another guild shows that guild under it).
 function renderTeamSwitcher() {
-  const wrap = document.getElementById('team-switcher-wrap');
-  if (!wrap) return;
-  if (!STATE.teams || STATE.teams.length < 2) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
-  wrap.style.display = 'inline-block';
-  wrap.innerHTML = `<select onchange="switchActiveTeam(this.value)" style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; color:var(--gold); font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600; padding:6px 10px; cursor:pointer;">
-    ${STATE.teams.map(t => `<option value="${t.teamId}" ${t.teamId === STATE.teamId ? 'selected' : ''}>${escapeHtml(t.guildName || '')} — ${escapeHtml(t.teamName || '')}</option>`).join('')}
-  </select>`;
+  const badge = document.getElementById('guild-badge');
+  const caret = document.getElementById('guild-badge-caret');
+  const menu  = document.getElementById('team-menu');
+  const teams = STATE.teams || [];
+  const multi = teams.length > 1;
+  if (badge) { badge.classList.toggle('switchable', multi); badge.title = multi ? 'Switch team' : ''; }
+  if (caret) caret.style.display = multi ? '' : 'none';
+  if (!menu) return;
+  if (!multi) { menu.innerHTML = ''; menu.classList.remove('open'); return; }
+  const current = teams.find(t => t.teamId === STATE.teamId);
+  menu.innerHTML = teams.map(t => {
+    const otherGuild = current && t.guildId !== current.guildId;
+    const isCurrent = t.teamId === STATE.teamId;
+    return `<button class="dropdown-item team-menu-item${isCurrent ? ' active' : ''}" onclick="chooseTeam(${jsAttr(t.teamId)})">
+      <span class="team-menu-check">${isCurrent ? '✓' : ''}</span>
+      <span class="team-menu-name">${escapeHtml(t.teamName || 'Team')}${otherGuild
+        ? `<span class="team-menu-guild">${escapeHtml(t.guildName || '')}${t.guildServer ? ' – ' + escapeHtml(titleCaseServer(t.guildServer)) : ''}</span>` : ''}</span>
+    </button>`;
+  }).join('');
+}
+
+function toggleTeamMenu() {
+  if ((STATE.teams || []).length < 2) return;
+  document.getElementById('team-menu')?.classList.toggle('open');
+}
+
+function chooseTeam(teamId) {
+  document.getElementById('team-menu')?.classList.remove('open');
+  switchActiveTeam(teamId);
 }
 
 async function fetchMembersFromDB(teamId) {

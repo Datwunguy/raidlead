@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260928b">
+<link rel="stylesheet" href="styles.css?v=20260928d">
 </head>
 <body>
 <div id="app">
@@ -84,11 +84,14 @@
       </div>
     </nav>
     <div class="header-right">
-      <div class="guild-badge" id="guild-badge" style="display:none;">
-        <span>⚔</span>
-        <span><strong id="badge-guild">—</strong> — <span id="badge-server">—</span></span>
+      <div class="guild-badge-wrap" id="guild-badge-wrap">
+        <div class="guild-badge" id="guild-badge" style="display:none;" onclick="toggleTeamMenu()">
+          <span>⚔</span>
+          <span class="guild-badge-name"><strong id="badge-guild">—</strong> — <span id="badge-server">—</span></span>
+          <i class="guild-badge-caret" id="guild-badge-caret" style="display:none;">▼</i>
+        </div>
+        <div class="account-dropdown team-menu" id="team-menu"></div>
       </div>
-      <span id="team-switcher-wrap" style="display:none; margin-right:8px;"></span>
       <button id="share-btn" class="header-pill-btn" style="display:none;" onclick="showInviteModal()"><span class="pill-full-text">Invite</span><span class="pill-short-text">Inv</span></button>
       <div class="account-menu" id="account-menu" style="display:none;">
         <button class="account-btn" onclick="toggleAccountMenu()">
@@ -1290,6 +1293,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260928b"></script>
+<script src="app.js?v=20260928c"></script>
 </body>
 </html>

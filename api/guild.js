@@ -134,7 +134,9 @@ module.exports = async (req, res) => {
           .from('characters').select('id, name, class, primary_role, rank')
           .eq('account_id', session.id).eq('team_id', activeTeamId)
           .eq('active', true);
-        claimedCharacters = charRows || [];
+        // Main first, then Alts -- claimedCharacter is the Main.
+        claimedCharacters = (charRows || []).sort((a, b) =>
+          ((a.rank || 'Main') === 'Main' ? 0 : 1) - ((b.rank || 'Main') === 'Main' ? 0 : 1) || a.name.localeCompare(b.name));
         claimedCharacter = claimedCharacters[0]?.name || null;
       }
 

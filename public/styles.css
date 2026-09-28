@@ -131,7 +131,7 @@
     .account-battletag-text { display: none; }
     .account-icon { display: inline-block; }
     .logo span { display: none; }
-    .guild-badge span:last-child { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+    .guild-badge .guild-badge-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
   }
 
   .nav-btn:hover { color: var(--text); border-color: var(--border2); }
@@ -194,6 +194,17 @@
   }
 
   .guild-badge strong { color: var(--gold); font-weight: 600; }
+  /* On more than one team, the badge opens the team menu. */
+  .guild-badge-wrap { position: relative; }
+  .guild-badge.switchable { cursor: pointer; }
+  .guild-badge.switchable:hover { border-color: var(--gold-dim); }
+  .guild-badge-caret { font-style: normal; font-size: 9px; color: var(--text-mute); }
+  .team-menu { left: 0; right: auto; min-width: 100%; }
+  .team-menu .team-menu-item { display: flex; align-items: flex-start; gap: 8px; } /* beats .dropdown-item's display: block */
+  .team-menu .team-menu-item.active { color: var(--gold); background: rgba(200,168,75,0.06); }
+  .team-menu-check { width: 12px; flex-shrink: 0; color: var(--gold); }
+  .team-menu-name { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+  .team-menu-guild { font-size: 11px; font-weight: 500; color: var(--text-mute); }
 
   .header-pill-btn {
     display: flex; align-items: center; gap: 6px;
@@ -1467,7 +1478,7 @@
      compact header above, the 8-tab row needs ~1433px; this was 1300px
      back when the row was shorter. */
   @media (max-width: 1440px) {
-    .guild-badge span:last-child { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+    .guild-badge .guild-badge-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
     .nav-btn { display: none; }
     .mobile-nav-menu { display: block; }
     #main-nav { overflow: visible; } /* see the mobile breakpoint below for why */
