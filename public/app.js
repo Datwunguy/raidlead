@@ -6766,7 +6766,7 @@ function setTeamSubTab(name, btn) {
     const el = document.getElementById('team-subtab-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
-  if (name === 'season') loadSeasonTab();
+  if (name === 'season') return loadSeasonTab();
 }
 
 function setRecruitView(view, btn) {
@@ -8114,6 +8114,7 @@ const SURVEY = {
   responseFilter: 'all', // all | returning | unsure | not_returning
   includeUnsure:  true,  // count "not sure yet" in the projected roster
   editor:         null,  // { mode: 'new' | 'edit', surveyId, title, intro, questions, responseCount }
+  prompt:         null,  // officers: { kind: 'ending' | 'started', zoneName, nextName, date } from getSurveyPrompt
 };
 
 function surveyDate(ts) {
@@ -8151,6 +8152,7 @@ async function loadMySurvey() {
     } catch (e) { /* no banner */ }
   }
   renderSurveyBanner();
+  loadSeasonPrompt(); // officers: "season's ending -- survey your raiders?"
 
   let wanted = null;
   try { wanted = localStorage.getItem('raidlead_open_survey'); } catch (e) {}
@@ -8162,6 +8164,65 @@ async function loadMySurvey() {
   if (wanted !== STATE.teamId) showToast("That survey link is for a team you're not on.", 'error');
   else if (SURVEY.mine) openSurveyModal();
   else if (STATE.myRole !== 'viewer') showToast("That survey isn't open anymore.", '');
+}
+
+// ── Officer nudge: the season is ending (or just ended) and nobody's
+// asked the raiders about next season yet. The server decides when
+// (see surveyPromptFor in lib/seasonSurvey.js); "Not now" hides it until
+// the next season change. ──
+async function loadSeasonPrompt() {
+  const teamId = STATE.teamId;
+  SURVEY.prompt = null;
+  if (teamId && ['owner', 'officer'].includes(STATE.myRole)) {
+    try {
+      const { prompt } = await recruitingApi('getSurveyPrompt');
+      if (teamId !== STATE.teamId) return;
+      SURVEY.prompt = prompt || null;
+    } catch (e) { /* no nudge */ }
+  }
+  renderSeasonPrompt();
+}
+
+const seasonPromptKey = p => `${STATE.teamId}|${p.date}`;
+
+function renderSeasonPrompt() {
+  const el = document.getElementById('season-prompt-banner');
+  if (!el) return;
+  const p = SURVEY.prompt;
+  let hidden = false;
+  try { hidden = !!p && localStorage.getItem('raidlead_season_prompt_hidden') === seasonPromptKey(p); } catch (e) {}
+  if (!p || hidden) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const when = new Date(p.date);
+  const days = Math.round((when - Date.now()) / 86400000);
+  const dateText = surveyDate(p.date);
+  const text = p.kind === 'ending'
+    ? `${p.zoneName ? `<strong>${escapeHtml(p.zoneName)}</strong> ends` : 'This raid tier ends'} ${dateText}`
+      + `${days > 1 ? ` (in ${days} days)` : days === 1 ? ' (tomorrow)' : ' (today)'}`
+      + `${p.nextName ? `, and ${escapeHtml(p.nextName)} is next` : ''}. Want to ask your raiders if they're coming back, and what they'll play?`
+    : `A new raid tier${p.zoneName ? `, <strong>${escapeHtml(p.zoneName)}</strong>,` : ''} started ${dateText}, and your raiders haven't been surveyed yet. Want to ask them about the season?`;
+  el.style.display = '';
+  el.className = 'survey-banner';
+  el.innerHTML = `<div class="survey-banner-text">${text}</div>
+    <div class="survey-banner-actions">
+      <button class="btn-primary recruit-small-btn" onclick="startSurveyFromPrompt()">Create survey</button>
+      <button class="btn-secondary recruit-small-btn" onclick="dismissSeasonPrompt()">Not now</button>
+    </div>`;
+}
+
+function dismissSeasonPrompt() {
+  if (SURVEY.prompt) {
+    try { localStorage.setItem('raidlead_season_prompt_hidden', seasonPromptKey(SURVEY.prompt)); } catch (e) {}
+  }
+  renderSeasonPrompt();
+}
+
+// Team Management > Next Season, with the survey editor open.
+async function startSurveyFromPrompt() {
+  showTab('team');
+  const btn = [...document.querySelectorAll('#team-subtab-filter .filter-btn')].find(b => (b.getAttribute('onclick') || '').includes("'season'"));
+  if (btn) await setTeamSubTab('season', btn);
+  if (SURVEY.surveys.some(x => !x.closed_at)) return; // one's already open -- the tab shows it
+  openSurveyEditor('new');
 }
 
 function surveyBannerHidden(surveyId) {

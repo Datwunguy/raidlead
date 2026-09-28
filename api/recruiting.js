@@ -7,7 +7,7 @@
 //           saveApplicationColumnMap, promoteApplication,
 //           rejectApplication, resolveApplications, undoApplicationDecision,
 //           listSurveys, getSurveyResults, openSurvey, updateSurvey,
-//           closeSurvey, reopenSurvey, deleteSurvey
+//           closeSurvey, reopenSurvey, deleteSurvey, getSurveyPrompt
 //  Raider actions (any team member but viewers): getSurvey,
 //           submitSurveyResponse -- the Next Season survey itself.
 //
@@ -19,11 +19,11 @@ const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer } = require('../lib/serverSlug');
-const { resolveCurrentRaidByDate } = require('../lib/raiderioRaids');
+const { resolveCurrentRaidByDate, fetchRaidCalendar, seasonTransitionFrom } = require('../lib/raiderioRaids');
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
 const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
 const { canonicalSpec, roleForSpec, parseSpec } = require('../lib/wowSpecs');
-const { normalizeSurveyDefinition, normalizeSurveyResponse } = require('../lib/seasonSurvey');
+const { normalizeSurveyDefinition, normalizeSurveyResponse, surveyPromptFor } = require('../lib/seasonSurvey');
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
@@ -726,6 +726,25 @@ module.exports = async (req, res) => {
       }
       if (error) throw error;
       return res.status(200).json({ response: data });
+    }
+
+    // ── SURVEY PROMPT (officers): "the season is ending -- survey your
+    // raiders?" From 6 weeks before the current raid tier's announced end
+    // until 2 weeks after the next starts (Raider.io's per-region dates),
+    // unless this team has already opened a survey in that stretch. ──
+    if (action === 'getSurveyPrompt') {
+      const now = Date.now();
+      const prompt = surveyPromptFor(seasonTransitionFrom(await fetchRaidCalendar(await teamRegion()), now), now);
+      if (!prompt) return res.status(200).json({ prompt: null });
+      const { data: latest, error } = await supabase
+        .from('season_surveys').select('opened_at, closed_at')
+        .eq('team_id', teamId).order('opened_at', { ascending: false }).limit(1).maybeSingle();
+      if (error) throw error;
+      if (latest && (!latest.closed_at || Date.parse(latest.opened_at) >= prompt.windowStart)) {
+        return res.status(200).json({ prompt: null });
+      }
+      const { windowStart, ...rest } = prompt;
+      return res.status(200).json({ prompt: rest });
     }
 
     // ── LIST SURVEYS (officers): every survey this team has run, newest first. ──
