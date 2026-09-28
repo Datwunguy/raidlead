@@ -2025,6 +2025,9 @@
   .join-order-badge.over-cap { background: rgba(0,0,0,0.25); color: #ffd98a; }
   .join-order-badge + span { margin-left: 6px !important; } /* an "Out" tag after it */
   #planner-join-order-btn.active { border-color: var(--gold); color: var(--gold); }
+  /* Raid Night header: the main buttons, with Show Order Joined on a row below */
+  .planner-header-controls { display: flex; flex-direction: column; align-items: flex-end; }
+  #planner-join-order-btn { margin-top: 8px; }
   @media (max-width: 600px) {
     .join-row { flex-wrap: wrap; }
     .join-tools { width: 100%; justify-content: flex-end; }

@@ -9448,7 +9448,7 @@ async function toggleShowOrderJoined(force, { quiet = false } = {}) {
   const btn = document.getElementById('planner-join-order-btn');
   if (btn) {
     btn.classList.toggle('active', JOIN.showOnPlanner);
-    btn.textContent = JOIN.showOnPlanner ? '# Hide Order Joined' : '# Show Order Joined';
+    btn.textContent = JOIN.showOnPlanner ? 'Hide Order Joined' : 'Show Order Joined';
   }
   renderPlannerChecklist();
   renderPlannerRoster();
