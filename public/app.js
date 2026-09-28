@@ -8101,6 +8101,28 @@ const SURVEY_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
 const SURVEY_STATUS_LABELS = { returning: 'Returning', unsure: 'Not sure yet', not_returning: 'Not returning' };
 const SURVEY_ROLES = [['tank', 'Tanks'], ['heal', 'Healers'], ['melee', 'Melee DPS'], ['ranged', 'Ranged DPS']];
 const SURVEY_FLEX_LABELS = { tank: 'Tank', heal: 'Healer', melee: 'Melee DPS', ranged: 'Ranged DPS' };
+const SURVEY_TYPE_LABELS = { single: 'Multiple choice', checkboxes: 'Checkboxes', short: 'Short answer', paragraph: 'Paragraph', scale: 'Scale' };
+const SURVEY_AUDIENCE_LABELS = { returning: 'People returning or not sure', everyone: 'Everyone', not_returning: 'People not returning' };
+// The always-asked questions' default wording -- must match FIXED_DEFAULTS in
+// lib/seasonSurvey.js.
+const SURVEY_FIXED_DEFAULTS = {
+  character: { prompt: 'Character' },
+  returning: {
+    prompt: 'Are you coming back next season?',
+    labels: { returning: "Yes, I'm returning", unsure: 'Not sure yet', not_returning: "No, I'm not returning" },
+  },
+  specs: {
+    count: 3,
+    prompts: ['First choice class and spec', 'Second choice class and spec', 'Third choice class and spec'],
+    hints: [
+      '',
+      "Optional. Only pick one you'd be happy to play if we asked. You don't need to list other specs of your class that fill the same role -- you can swap between those freely.",
+      "Optional. Same idea: only if you'd be happy to play it.",
+    ],
+  },
+  flex:     { enabled: true, prompt: 'Can you flex into another role?' },
+  comments: { enabled: true, prompt: 'Any other feedback or comments?' },
+};
 // A 20-player Mythic group -- what the projected roster is measured against.
 const MYTHIC_COMP_TARGET = { tank: 2, heal: 4, dps: 14 };
 
@@ -8281,15 +8303,11 @@ function closeSurveyModal() {
 
 function renderSurveyForm() {
   const { survey, response: r } = SURVEY.mine;
-  const q = survey.questions || {};
+  const { fixed, items } = survey.questions;
   const claimed = (STATE.claimedCharacters || []).filter(c => c.id);
   const status = r?.status || null;
-  const specs = [0, 1, 2].map(i => r?.spec_choices?.[i] ? `${r.spec_choices[i].class}|${r.spec_choices[i].spec}` : '');
-  const checked = on => (on ? ' checked' : '');
-  const radio = (name, value, label, isOn) =>
-    `<label class="survey-choice"><input type="radio" name="${name}" value="${escapeHtml(value)}"${checked(isOn)}${name === 'sv-status' ? ' onchange="updateSurveyFormVisibility()"' : ''} /> ${escapeHtml(label)}</label>`;
-  const box = (name, value, label, isOn) =>
-    `<label class="survey-choice"><input type="checkbox" name="${name}" value="${escapeHtml(value)}"${checked(isOn)} /> ${escapeHtml(label)}</label>`;
+  const answers = r?.answers || {};
+  const req = ' <span class="survey-req">*</span>';
 
   // Which character: one of theirs from the roster, or typed (officers who
   // haven't claimed one).
@@ -8298,65 +8316,39 @@ function renderSurveyForm() {
     ? `<select id="sv-character">${claimed.map(c => `<option value="${escapeHtml(c.id)}"${c.id === defaultId ? ' selected' : ''}>${escapeHtml(c.name)}${c.rank && c.rank !== 'Main' ? ` (${escapeHtml(c.rank)})` : ''}</option>`).join('')}</select>`
     : `<input type="text" id="sv-character-name" maxlength="40" autocomplete="off" placeholder="Your main's name" value="${escapeHtml(r?.character_name || STATE.claimedCharacter || '')}" />`;
 
-  const specHints = [
-    '',
-    "Optional. Only pick one you'd be happy to play if we asked. You don't need to list other specs of your class that fill the same role -- you can swap between those freely.",
-    "Optional. Same idea: only if you'd be happy to play it.",
-  ];
-  const ordinal = ['First choice', 'Second choice', 'Third choice'];
+  const specsHtml = Array.from({ length: fixed.specs.count }, (_, i) => {
+    const current = r?.spec_choices?.[i] ? `${r.spec_choices[i].class}|${r.spec_choices[i].spec}` : '';
+    return `<div class="survey-q">
+      <div class="survey-q-label">${escapeHtml(fixed.specs.prompts[i])}${i === 0 ? req : ''}</div>
+      ${fixed.specs.hints[i] ? `<div class="survey-q-hint">${escapeHtml(fixed.specs.hints[i])}</div>` : ''}
+      <div class="form-group"><select id="sv-spec-${i}">${surveySpecOptions(current)}</select></div>
+    </div>`;
+  }).join('');
+  const flexHtml = fixed.flex.enabled ? `
+    <div class="survey-q">
+      <div class="survey-q-label">${escapeHtml(fixed.flex.prompt)}</div>
+      <div class="survey-choice-row">${Object.entries(SURVEY_FLEX_LABELS).map(([v, l]) => surveyChoice('checkbox', 'sv-flex', v, l, r?.flex_roles?.includes(v))).join('')}</div>
+    </div>` : '';
 
   document.getElementById('survey-modal-body').innerHTML = `
     ${survey.intro ? `<div class="survey-intro">${linkifyText(survey.intro)}</div>` : ''}
     <div class="survey-q">
-      <div class="survey-q-label">Character</div>
+      <div class="survey-q-label">${escapeHtml(fixed.character.prompt)}</div>
       <div class="form-group">${characterHtml}</div>
     </div>
     <div class="survey-q">
-      <div class="survey-q-label">Are you coming back next season? <span class="survey-req">*</span></div>
+      <div class="survey-q-label">${escapeHtml(fixed.returning.prompt)}${req}</div>
       <div class="survey-choice-row">
-        ${radio('sv-status', 'returning', "Yes, I'm returning", status === 'returning')}
-        ${radio('sv-status', 'unsure', 'Not sure yet', status === 'unsure')}
-        ${radio('sv-status', 'not_returning', "No, I'm not returning", status === 'not_returning')}
+        ${['returning', 'unsure', 'not_returning'].map(s => surveyChoice('radio', 'sv-status', s, fixed.returning.labels[s], status === s, ' onchange="updateSurveyFormVisibility()"')).join('')}
       </div>
     </div>
-    <div id="sv-returning-fields">
-      ${[0, 1, 2].map(i => `
-        <div class="survey-q">
-          <div class="survey-q-label">${ordinal[i]} class and spec${i === 0 ? ' <span class="survey-req">*</span>' : ''}</div>
-          ${specHints[i] ? `<div class="survey-q-hint">${escapeHtml(specHints[i])}</div>` : ''}
-          <div class="form-group"><select id="sv-spec-${i}">${surveySpecOptions(specs[i])}</select></div>
-        </div>`).join('')}
+    <div id="sv-staying-fields">${specsHtml}${flexHtml}</div>
+    ${items.map(item => renderSurveyItem(item, answers[item.id])).join('')}
+    ${fixed.comments.enabled ? `
       <div class="survey-q">
-        <div class="survey-q-label">Can you flex into another role?</div>
-        <div class="survey-choice-row">
-          ${Object.entries(SURVEY_FLEX_LABELS).map(([v, l]) => box('sv-flex', v, l, r?.flex_roles?.includes(v))).join('')}
-        </div>
-      </div>
-      ${(q.acknowledgements || []).map(a => `
-        <div class="survey-q survey-ack">
-          <div class="survey-ack-prompt">${linkifyText(a.prompt)} <span class="survey-req">*</span></div>
-          <div class="survey-choice-row">
-            ${radio('sv-ack-' + a.id, 'agree', a.agreeLabel, r?.acknowledgements?.[a.id] === 'agree')}
-            ${radio('sv-ack-' + a.id, 'exception', a.exceptionLabel, r?.acknowledgements?.[a.id] === 'exception')}
-          </div>
-        </div>`).join('')}
-      ${q.availability ? `
-        <div class="survey-q">
-          <div class="survey-q-label">${escapeHtml(q.availability.prompt)}</div>
-          <div class="survey-choice-row">
-            ${q.availability.days.map(d => box('sv-day', d, d, r?.availability?.includes(d))).join('')}
-          </div>
-        </div>` : ''}
-      ${(q.extraQuestions || []).map(e => `
-        <div class="survey-q">
-          <div class="survey-q-label">${escapeHtml(e.prompt)}</div>
-          <div class="form-group"><textarea id="sv-answer-${escapeHtml(e.id)}" rows="3" maxlength="2000">${escapeHtml(r?.answers?.[e.id] || '')}</textarea></div>
-        </div>`).join('')}
-    </div>
-    <div class="survey-q">
-      <div class="survey-q-label">Any other feedback or comments?</div>
-      <div class="form-group"><textarea id="sv-comments" rows="3" maxlength="2000">${escapeHtml(r?.comments || '')}</textarea></div>
-    </div>
+        <div class="survey-q-label">${escapeHtml(fixed.comments.prompt)}</div>
+        <div class="form-group"><textarea id="sv-comments" rows="3" maxlength="2000">${escapeHtml(r?.comments || '')}</textarea></div>
+      </div>` : ''}
     <div id="sv-msg" class="status-msg"></div>
     <div class="survey-form-actions">
       <span class="recruit-sub">Only officers can see your answers.</span>
@@ -8366,35 +8358,38 @@ function renderSurveyForm() {
   updateSurveyFormVisibility();
 }
 
-// "Not returning" only needs the comments box.
+// Spec choices and flex only matter to people coming back; each officer
+// question shows for the audience it was written for.
 function updateSurveyFormVisibility() {
-  const status = document.querySelector('input[name="sv-status"]:checked')?.value;
-  const fields = document.getElementById('sv-returning-fields');
-  if (fields) fields.style.display = status === 'not_returning' ? 'none' : '';
+  const status = document.querySelector('input[name="sv-status"]:checked')?.value || null;
+  const staying = document.getElementById('sv-staying-fields');
+  if (staying) staying.style.display = status === 'not_returning' ? 'none' : '';
+  document.querySelectorAll('#survey-modal-body [data-audience]').forEach(el => {
+    el.style.display = surveyItemAsked({ audience: el.dataset.audience }, status) ? '' : 'none';
+  });
 }
 
 function collectSurveyForm(survey) {
-  const q = survey.questions || {};
+  const { fixed, items } = survey.questions;
   const val = id => document.getElementById(id)?.value ?? '';
   const checkedValues = name => [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
-  const acknowledgements = {};
-  (q.acknowledgements || []).forEach(a => {
-    const v = document.querySelector(`input[name="sv-ack-${a.id}"]:checked`)?.value;
-    if (v) acknowledgements[a.id] = v;
-  });
   const answers = {};
-  (q.extraQuestions || []).forEach(e => { answers[e.id] = val('sv-answer-' + e.id); });
+  items.forEach(item => {
+    const name = 'sv-item-' + item.id;
+    if (item.type === 'single') answers[item.id] = checkedValues(name)[0] || null;
+    else if (item.type === 'checkboxes') answers[item.id] = checkedValues(name);
+    else if (item.type === 'scale') { const v = checkedValues(name)[0]; answers[item.id] = v ? Number(v) : null; }
+    else answers[item.id] = val(name);
+  });
   const characterSelect = document.getElementById('sv-character');
   return {
     characterId:   characterSelect ? characterSelect.value : null,
     characterName: characterSelect ? null : val('sv-character-name').trim(),
     status:        document.querySelector('input[name="sv-status"]:checked')?.value || null,
-    specChoices:   [0, 1, 2].map(i => val('sv-spec-' + i)),
-    flexRoles:     checkedValues('sv-flex'),
-    availability:  checkedValues('sv-day'),
-    acknowledgements,
+    specChoices:   Array.from({ length: fixed.specs.count }, (_, i) => val('sv-spec-' + i)),
+    flexRoles:     fixed.flex.enabled ? checkedValues('sv-flex') : [],
     answers,
-    comments:      val('sv-comments'),
+    comments:      fixed.comments.enabled ? val('sv-comments') : '',
   };
 }
 
@@ -8403,11 +8398,9 @@ function collectSurveyForm(survey) {
 function surveyFormProblem(body, survey) {
   if (!body.characterId && !body.characterName) return 'Which character is this for?';
   if (!body.status) return "Let us know whether you're coming back.";
-  if (body.status === 'not_returning') return null;
-  if (!body.specChoices[0]) return 'Pick your first-choice class and spec.';
-  const missing = (survey.questions?.acknowledgements || []).filter(a => !body.acknowledgements[a.id]);
-  if (missing.length) return 'Answer every question marked *.';
-  return null;
+  if (body.status !== 'not_returning' && !body.specChoices[0]) return 'Pick your first-choice class and spec.';
+  const missing = survey.questions.items.filter(i => i.required && surveyItemAsked(i, body.status) && surveyAnswerBlank(body.answers[i.id]));
+  return missing.length ? 'Answer every question marked *.' : null;
 }
 
 async function submitSurvey() {
@@ -8548,13 +8541,13 @@ function renderSeasonTab() {
   }
 
   const { survey, responses } = SURVEY.results;
+  const { items } = survey.questions;
   const isOpen = !survey.closed_at;
   const tracker = surveyTracker(responses);
   const counts = { returning: 0, unsure: 0, not_returning: 0 };
   responses.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
   const projection = surveyProjection(responses, SURVEY.includeUnsure);
   const gaps = surveyGaps(projection);
-  const q = survey.questions || {};
 
   const picker = SURVEY.surveys.length > 1
     ? `<select class="season-survey-select" onchange="selectSeasonSurvey(this.value)" aria-label="Survey">${SURVEY.surveys.map(s =>
@@ -8595,34 +8588,25 @@ function renderSeasonTab() {
   }).join('');
   const dpsCount = projection.byRole.melee.length + projection.byRole.ranged.length;
 
-  // Extra-night availability
-  const dayCounts = (q.availability?.days || []).map(d => ({
-    day: d, people: projection.counted.filter(r => (r.availability || []).includes(d)),
-  }));
-  const maxDay = Math.max(1, ...dayCounts.map(d => d.people.length));
-  const daysHtml = q.availability ? `
+  // A bar chart per multiple-choice, checkbox, and scale question
+  const chartItems = items.filter(i => ['single', 'checkboxes', 'scale'].includes(i.type));
+  const questionsHtml = chartItems.length ? `
     <div class="season-section">
-      <div class="season-section-title">${escapeHtml(q.availability.prompt)}</div>
-      <div class="season-days">${dayCounts.map(d => `
-        <div class="season-day" title="${escapeHtml(d.people.map(r => r.character_name).join(', ') || 'Nobody')}">
-          <div class="season-day-name">${d.day.slice(0, 3)}</div>
-          <div class="season-day-bar"><div style="width:${(d.people.length / maxDay) * 100}%;"></div></div>
-          <div class="season-day-count">${d.people.length}</div>
-        </div>`).join('')}
-      </div>
+      <div class="season-section-title" style="margin-bottom:12px;">Question results</div>
+      ${chartItems.map(i => surveyItemChart(i, responses)).join('')}
     </div>` : '';
 
-  // Anyone who picked an acknowledgement's "exception" answer
-  const ackById = Object.fromEntries((q.acknowledgements || []).map(a => [a.id, a]));
+  // Anyone who picked an answer marked "flag"
   const flags = [];
-  responses.forEach(r => Object.entries(r.acknowledgements || {}).forEach(([id, v]) => {
-    if (v === 'exception' && ackById[id]) flags.push({ r, ack: ackById[id] });
+  responses.forEach(r => items.forEach(item => {
+    const option = surveyFlaggedOption(item, r.answers?.[item.id]);
+    if (option) flags.push({ r, item, option });
   }));
   const flagsHtml = flags.length ? `
     <div class="season-section">
       <div class="season-section-title">Flags (${flags.length})</div>
-      ${flags.map(f => `<div class="season-flag">${surveyResponderName(f.r)} answered <strong>"${escapeHtml(f.ack.exceptionLabel)}"</strong>
-        <span class="recruit-sub">to: ${escapeHtml(f.ack.prompt.split('\n')[0].slice(0, 90))}${f.ack.prompt.length > 90 ? '…' : ''}</span></div>`).join('')}
+      ${flags.map(f => `<div class="season-flag">${surveyResponderName(f.r)} answered <strong>"${escapeHtml(f.option.label)}"</strong>
+        <span class="recruit-sub">to: ${escapeHtml(surveyPromptSnippet(f.item.prompt))}</span></div>`).join('')}
     </div>` : '';
 
   // Every response
@@ -8635,7 +8619,7 @@ function renderSeasonTab() {
         <div class="season-section-title">Responses (${responses.length})</div>
         <div class="role-filter">${filterBtn('all', 'All')}${filterBtn('returning', 'Returning')}${filterBtn('unsure', 'Not sure')}${filterBtn('not_returning', 'Not returning')}</div>
       </div>
-      ${visible.length ? visible.map(r => renderSurveyResponseCard(r, q)).join('') : '<div class="recruit-empty-filter">No responses here yet.</div>'}
+      ${visible.length ? visible.map(r => renderSurveyResponseCard(r, survey.questions)).join('') : '<div class="recruit-empty-filter">No responses here yet.</div>'}
     </div>`;
 
   panel.innerHTML = `
@@ -8670,23 +8654,21 @@ function renderSeasonTab() {
       <div class="raid-buffs-grid" id="season-buffs-grid" style="margin-bottom:0;"></div>
     </div>
 
-    ${daysHtml}
+    ${questionsHtml}
     ${flagsHtml}
     ${responsesHtml}`;
 
   renderRaidBuffs(projection.counted.map(r => ({ class: r.spec_choices?.[0]?.class })), document.getElementById('season-buffs-grid'));
 }
 
-function renderSurveyResponseCard(r, q) {
+function renderSurveyResponseCard(r, questions) {
+  const { fixed, items } = questions;
   const flexLabels = (r.flex_roles || []).map(f => SURVEY_FLEX_LABELS[f]).filter(Boolean);
-  const ackById = Object.fromEntries((q.acknowledgements || []).map(a => [a.id, a]));
-  const exceptions = Object.entries(r.acknowledgements || {})
-    .filter(([id, v]) => v === 'exception' && ackById[id]).map(([id]) => ackById[id].exceptionLabel);
-  const extra = (q.extraQuestions || []).filter(e => r.answers?.[e.id]);
   const who = r.account?.display_name || r.account?.battletag || '';
   const edited = r.updated_at && r.submitted_at && (new Date(r.updated_at) - new Date(r.submitted_at) > 60000)
     ? ` · edited ${surveyDate(r.updated_at)}` : '';
   const detail = (label, value) => `<div><div class="season-k">${label}</div><div>${value}</div></div>`;
+  const answered = items.filter(i => !surveyAnswerBlank(r.answers?.[i.id]));
   return `<div class="season-response">
     <div class="season-response-head">
       ${surveyResponderName(r)}
@@ -8695,12 +8677,15 @@ function renderSurveyResponseCard(r, q) {
     </div>
     ${r.status !== 'not_returning' ? `<div class="season-response-grid">
       ${detail('Specs', (r.spec_choices || []).map((c, i) => `${i + 1}. ${escapeHtml(surveySpecLabel(c))}`).join('<br>') || '—')}
-      ${detail('Can flex to', escapeHtml(flexLabels.join(', ') || '—'))}
-      ${q.availability ? detail('Extra night', escapeHtml((r.availability || []).map(d => d.slice(0, 3)).join(', ') || '—')) : ''}
+      ${fixed.flex.enabled ? detail('Can flex to', escapeHtml(flexLabels.join(', ') || '—')) : ''}
     </div>` : ''}
-    ${exceptions.map(x => `<div class="season-flag">Answered <strong>"${escapeHtml(x)}"</strong></div>`).join('')}
-    ${extra.map(e => `<div class="season-answer"><div class="season-k">${escapeHtml(e.prompt)}</div><div>${linkifyText(r.answers[e.id])}</div></div>`).join('')}
-    ${r.comments ? `<div class="season-answer"><div class="season-k">Comments</div><div>${linkifyText(r.comments)}</div></div>` : ''}
+    ${answered.map(i => {
+      const v = r.answers[i.id];
+      const shown = ['short', 'paragraph'].includes(i.type) ? linkifyText(v) : escapeHtml(surveyAnswerText(i, v));
+      return `<div class="season-answer"><div class="season-answer-q">${escapeHtml(surveyPromptSnippet(i.prompt))}</div>
+        <div${surveyFlaggedOption(i, v) ? ' class="season-answer-flag"' : ''}>${shown}</div></div>`;
+    }).join('')}
+    ${r.comments ? `<div class="season-answer"><div class="season-answer-q">${escapeHtml(fixed.comments.prompt)}</div><div>${linkifyText(r.comments)}</div></div>` : ''}
   </div>`;
 }
 
@@ -8760,21 +8745,24 @@ async function surveyLifecycle(action, doneMessage) {
 
 // ── Officer side: the survey editor ──
 
-// Weekdays that aren't already raid nights -- the likely extra-night picks.
+// Weekdays that aren't already raid nights are the likely extra-night picks.
 function defaultSurveyDefinition() {
   const raidDays = STATE.config?.raidDays || [];
   const offDays = SURVEY_WEEKDAYS.filter((d, i) => !raidDays.includes((i + 1) % 7)); // Monday = JS day 1
+  const policy = (prompt, exceptionLabel) => ({ type: 'single', prompt, required: true, audience: 'returning',
+    options: [{ label: 'Yes' }, { label: exceptionLabel, flag: true }] });
   return {
     title: 'Next Season Survey',
     intro: "Let us know if you're coming back next season and what you'd like to play. Only officers can see your answers.",
     questions: {
-      acknowledgements: [
-        { prompt: "We keep a roster bigger than we can bring, so some nights you'll sit out. It's nothing personal. Do you understand?", agreeLabel: 'Yes', exceptionLabel: 'I need to play every raid night' },
-        { prompt: "Loot: follow the team's loot rules, and don't roll on items that aren't a real upgrade for you. Do you understand?", agreeLabel: 'Yes', exceptionLabel: 'I have concerns about the loot rules' },
-        { prompt: 'Gear: keep your item level close to the group average, and enchant and gem your gear for raid. Can you commit to that?', agreeLabel: 'Yes', exceptionLabel: "I can't" },
+      fixed: JSON.parse(JSON.stringify(SURVEY_FIXED_DEFAULTS)),
+      items: [
+        policy("We keep a roster bigger than we can bring, so some nights you'll sit out. It's nothing personal. Do you understand?", 'I need to play every raid night'),
+        policy("Loot: follow the team's loot rules, and don't roll on items that aren't a real upgrade for you. Do you understand?", 'I have concerns about the loot rules'),
+        policy('Gear: keep your item level close to the group average, and enchant and gem your gear for raid. Can you commit to that?', "I can't"),
+        { type: 'checkboxes', prompt: 'We may add an extra raid night during progression. Which days would work for you?', required: false, audience: 'returning',
+          options: offDays.map(d => ({ label: d })) },
       ],
-      availability: { prompt: 'We may add an extra raid night during progression. Which days would work for you?', days: offDays },
-      extraQuestions: [],
     },
   };
 }
@@ -8793,15 +8781,12 @@ function openSurveyEditor(mode) {
   const q = clone.questions || {};
   SURVEY.editor = {
     mode,
-    surveyId: mode === 'edit' ? base.id : null,
+    surveyId:      mode === 'edit' ? base.id : null,
     responseCount: mode === 'edit' ? SURVEY.results.responses.length : 0,
-    title: clone.title || '',
-    intro: clone.intro || '',
-    questions: {
-      acknowledgements: (q.acknowledgements || []).map(a => ({ ...a })),
-      availability: q.availability ? { prompt: q.availability.prompt, days: [...q.availability.days] } : null,
-      extraQuestions: (q.extraQuestions || []).map(e => ({ ...e })),
-    },
+    title:         clone.title || '',
+    intro:         clone.intro || '',
+    fixed:         q.fixed || JSON.parse(JSON.stringify(SURVEY_FIXED_DEFAULTS)),
+    items:         q.items || [],
   };
   document.getElementById('survey-editor-title').textContent = mode === 'edit' ? 'Edit survey' : 'New survey';
   document.getElementById('survey-editor-modal').classList.add('open');
@@ -8816,53 +8801,106 @@ function closeSurveyEditor() {
 function renderSurveyEditor() {
   const ed = SURVEY.editor;
   if (!ed) return;
-  const q = ed.questions;
-  const availability = q.availability || { prompt: 'We may add an extra raid night during progression. Which days would work for you?', days: [] };
+  const f = ed.fixed;
+  const input = (id, value, max, placeholder = '') =>
+    `<input type="text" id="${id}" maxlength="${max}" value="${escapeHtml(value || '')}"${placeholder ? ` placeholder="${escapeHtml(placeholder)}"` : ''} />`;
+  const field = (label, html, extraClass = '') => `<div class="form-group${extraClass}"><label>${label}</label>${html}</div>`;
+  const card = (title, tag, body) =>
+    `<div class="survey-editor-item"><div class="survey-editor-item-head"><div class="survey-editor-item-title">${title}</div>${tag}</div>${body}</div>`;
+  const lockedTag = '<span class="survey-editor-tag">Always asked</span>';
+  const askToggle = (id, on) =>
+    `<label class="season-toggle"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} onchange="surveyEditorRefresh()" /> Ask this</label>`;
+  const opts = (map, selected) => Object.entries(map).map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
+
+  const fixedHtml = [
+    card('Character', lockedTag, field('Question', input('se-fx-character', f.character.prompt, 300), ' full')
+      + `<div class="survey-editor-note">Raiders pick one of the characters they've claimed.</div>`),
+    card('Coming back?', lockedTag, field('Question', input('se-fx-returning', f.returning.prompt, 300), ' full') + `
+      <div class="survey-editor-row three">
+        ${[['returning', 'Returning answer'], ['unsure', 'Not-sure answer'], ['not_returning', 'Not-returning answer']]
+          .map(([k, l]) => field(l, input('se-fx-status-' + k, f.returning.labels[k], 80))).join('')}
+      </div>`),
+    card('Class and spec choices', '<span class="survey-editor-tag">First choice always asked</span>', `
+      <div class="survey-editor-row">
+        ${field('Ask for', `<select id="se-fx-spec-count" onchange="surveyEditorRefresh()">${opts({ 1: 'First choice only', 2: 'First and second choice', 3: 'First, second, and third choice' }, String(f.specs.count))}</select>`)}
+      </div>
+      ${Array.from({ length: f.specs.count }, (_, i) => `
+        <div class="survey-editor-row">
+          ${field(`${['First', 'Second', 'Third'][i]} choice question`, input('se-fx-spec-prompt-' + i, f.specs.prompts[i], 300))}
+          ${field('Help text', input('se-fx-spec-hint-' + i, f.specs.hints[i], 500, 'Optional'))}
+        </div>`).join('')}`),
+    card('Flex roles', askToggle('se-fx-flex-on', f.flex.enabled), f.flex.enabled
+      ? field('Question', input('se-fx-flex', f.flex.prompt, 300), ' full') + '<div class="survey-editor-note">Answers: Tank, Healer, Melee DPS, Ranged DPS.</div>'
+      : '<div class="survey-editor-note">Not asked.</div>'),
+    card('Comments', askToggle('se-fx-comments-on', f.comments.enabled), f.comments.enabled
+      ? field('Question', input('se-fx-comments', f.comments.prompt, 300), ' full') + '<div class="survey-editor-note">Asked last, of everyone.</div>'
+      : '<div class="survey-editor-note">Not asked.</div>'),
+  ].join('');
+
+  const itemsHtml = ed.items.map((it, i) => {
+    let body = '';
+    if (it.type === 'single' || it.type === 'checkboxes') {
+      body = `<div class="survey-editor-options">
+        <div class="survey-editor-sub">Answers${it.type === 'single' ? ' <span class="recruit-sub">· tick Flag to flag anyone who picks that answer</span>' : ''}</div>
+        ${(it.options || []).map((o, j) => `<div class="survey-editor-option">
+            <input type="text" id="se-item-${i}-opt-${j}" maxlength="200" value="${escapeHtml(o.label || '')}" placeholder="Answer ${j + 1}" />
+            ${it.type === 'single' ? `<label class="season-toggle"><input type="checkbox" id="se-item-${i}-flag-${j}" ${o.flag ? 'checked' : ''} /> Flag</label>` : ''}
+            <button class="survey-editor-icon" title="Remove this answer" onclick="surveyEditorRemoveOption(${i}, ${j})">✕</button>
+          </div>`).join('')}
+        <button class="btn-secondary recruit-small-btn" onclick="surveyEditorAddOption(${i})">+ Add answer</button>
+      </div>`;
+    } else if (it.type === 'scale') {
+      body = `<div class="survey-editor-row three">
+        ${field('Scale', `<select id="se-item-${i}-max">${opts({ 5: '1 to 5', 10: '1 to 10' }, String(it.max || 5))}</select>`)}
+        ${field('Label for 1', input(`se-item-${i}-low`, it.lowLabel, 60, 'e.g. Not at all'))}
+        ${field('Label for the top', input(`se-item-${i}-high`, it.highLabel, 60, 'e.g. Very'))}
+      </div>`;
+    }
+    return `<div class="survey-editor-item">
+      <div class="survey-editor-item-head">
+        <div class="survey-editor-item-title">Question ${i + 1}</div>
+        <div class="survey-editor-item-tools">
+          <button class="survey-editor-icon" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="surveyEditorMove(${i}, -1)">↑</button>
+          <button class="survey-editor-icon" title="Move down" ${i === ed.items.length - 1 ? 'disabled' : ''} onclick="surveyEditorMove(${i}, 1)">↓</button>
+          <button class="survey-editor-remove" onclick="surveyEditorRemove(${i})">Remove</button>
+        </div>
+      </div>
+      <div class="survey-editor-row three">
+        ${field('Type', `<select id="se-item-${i}-type" onchange="surveyEditorRefresh()">${opts(SURVEY_TYPE_LABELS, it.type)}</select>`)}
+        ${field('Ask', `<select id="se-item-${i}-audience">${opts(SURVEY_AUDIENCE_LABELS, it.audience || 'returning')}</select>`)}
+        <div class="survey-editor-required"><label class="season-toggle"><input type="checkbox" id="se-item-${i}-required" ${it.required ? 'checked' : ''} /> Required</label></div>
+      </div>
+      ${field('Question', `<textarea id="se-item-${i}-prompt" rows="2" maxlength="4000">${escapeHtml(it.prompt || '')}</textarea>`, ' full survey-editor-prompt')}
+      ${body}
+    </div>`;
+  }).join('');
+
   document.getElementById('survey-editor-body').innerHTML = `
     ${ed.mode === 'edit' && ed.responseCount ? `<div class="recruit-lookup warn" style="margin-bottom:14px;">${ed.responseCount} raider${ed.responseCount === 1 ? ' has' : 's have'} already answered. Rewording keeps their answers; removing a question hides its answers.</div>` : ''}
-    <div class="form-group full"><label>Title</label><input type="text" id="se-title" maxlength="120" value="${escapeHtml(ed.title)}" /></div>
-    <div class="form-group full" style="margin-top:12px;"><label>Intro</label><textarea id="se-intro" rows="3" maxlength="4000">${escapeHtml(ed.intro)}</textarea></div>
+    ${field('Title', input('se-title', ed.title, 120), ' full')}
+    ${field('Intro', `<textarea id="se-intro" rows="3" maxlength="4000">${escapeHtml(ed.intro)}</textarea>`, ' full survey-editor-prompt')}
 
-    <div class="survey-editor-fixed">
-      <strong>Always asked:</strong> are they coming back, which character, their 1st to 3rd choice class and spec, which roles they can flex to, and any other comments.
+    <div class="survey-editor-section">
+      <div class="season-section-title">Always asked</div>
+      <div class="survey-editor-note" style="margin-bottom:10px;">The results page is built on these. Reword any of them; flex roles and comments can be turned off.</div>
+      ${fixedHtml}
     </div>
 
     <div class="survey-editor-section">
-      <div class="season-section-head">
-        <div class="season-section-title">Acknowledgements</div>
-        <button class="btn-secondary recruit-small-btn" onclick="surveyEditorAdd('ack')">+ Add</button>
+      <div class="season-section-title">Your questions</div>
+      <div class="survey-editor-note" style="margin-bottom:10px;">Asked after the questions above, in this order.</div>
+      ${itemsHtml || '<div class="survey-editor-note">None yet.</div>'}
+      <div class="form-group survey-editor-add">
+        <select id="se-add" onchange="surveyEditorAdd(this.value)" aria-label="Add a question">
+          <option value="">+ Add a question...</option>
+          <option value="policy">Policy acknowledgement (Yes, or a flagged answer)</option>
+          <option value="single">Multiple choice (pick one)</option>
+          <option value="checkboxes">Checkboxes (pick any)</option>
+          <option value="short">Short answer</option>
+          <option value="paragraph">Paragraph</option>
+          <option value="scale">Scale (1 to 5)</option>
+        </select>
       </div>
-      <div class="recruit-sub" style="margin-bottom:8px;">Policies raiders confirm. Anyone who picks the second answer is flagged in the results.</div>
-      ${q.acknowledgements.map((a, i) => `
-        <div class="survey-editor-item">
-          <div class="form-group full"><label>Question</label><textarea id="se-ack-prompt-${i}" rows="3" maxlength="4000">${escapeHtml(a.prompt)}</textarea></div>
-          <div class="survey-editor-row">
-            <div class="form-group"><label>Agree answer</label><input type="text" id="se-ack-agree-${i}" maxlength="120" value="${escapeHtml(a.agreeLabel || 'Yes')}" /></div>
-            <div class="form-group"><label>Can't-agree answer (flagged)</label><input type="text" id="se-ack-exception-${i}" maxlength="120" value="${escapeHtml(a.exceptionLabel || '')}" /></div>
-          </div>
-          <button class="survey-editor-remove" onclick="surveyEditorRemove('ack', ${i})">Remove</button>
-        </div>`).join('') || '<div class="recruit-sub">None.</div>'}
-    </div>
-
-    <div class="survey-editor-section">
-      <label class="season-toggle"><input type="checkbox" id="se-avail-on" ${q.availability ? 'checked' : ''} onchange="surveyEditorToggleAvailability(this.checked)" /> Ask which days they could raid an extra night</label>
-      ${q.availability ? `
-        <div class="form-group full" style="margin-top:10px;"><label>Question</label><input type="text" id="se-avail-prompt" maxlength="1000" value="${escapeHtml(availability.prompt)}" /></div>
-        <div class="survey-choice-row" style="margin-top:8px;">
-          ${SURVEY_WEEKDAYS.map(d => `<label class="survey-choice"><input type="checkbox" name="se-day" value="${d}" ${availability.days.includes(d) ? 'checked' : ''} /> ${d}</label>`).join('')}
-        </div>` : ''}
-    </div>
-
-    <div class="survey-editor-section">
-      <div class="season-section-head">
-        <div class="season-section-title">Extra questions</div>
-        <button class="btn-secondary recruit-small-btn" onclick="surveyEditorAdd('extra')">+ Add</button>
-      </div>
-      ${q.extraQuestions.map((e, i) => `
-        <div class="survey-editor-item">
-          <div class="form-group full"><label>Question (free-text answer)</label><input type="text" id="se-extra-${i}" maxlength="1000" value="${escapeHtml(e.prompt)}" /></div>
-          <button class="survey-editor-remove" onclick="surveyEditorRemove('extra', ${i})">Remove</button>
-        </div>`).join('') || '<div class="recruit-sub">None.</div>'}
     </div>
 
     <div id="se-msg" class="status-msg"></div>
@@ -8872,45 +8910,71 @@ function renderSurveyEditor() {
     </div>`;
 }
 
-// Pulls whatever's typed into the editor back into SURVEY.editor, so adding
-// or removing an item (which re-renders) doesn't lose edits.
+// Pulls whatever's typed into the editor back into SURVEY.editor, so any
+// change that re-renders it (adding, removing, moving, switching a type)
+// keeps edits. Fields that aren't on screen keep their saved value.
 function syncSurveyEditor() {
   const ed = SURVEY.editor;
-  const val = id => document.getElementById(id)?.value ?? '';
-  ed.title = val('se-title');
-  ed.intro = val('se-intro');
-  ed.questions.acknowledgements.forEach((a, i) => {
-    a.prompt = val(`se-ack-prompt-${i}`);
-    a.agreeLabel = val(`se-ack-agree-${i}`);
-    a.exceptionLabel = val(`se-ack-exception-${i}`);
+  const el  = id => document.getElementById(id);
+  const val = (id, fallback) => (el(id) ? el(id).value : fallback);
+  const on  = (id, fallback) => (el(id) ? el(id).checked : fallback);
+  ed.title = val('se-title', ed.title);
+  ed.intro = val('se-intro', ed.intro);
+
+  const f = ed.fixed;
+  f.character.prompt = val('se-fx-character', f.character.prompt);
+  f.returning.prompt = val('se-fx-returning', f.returning.prompt);
+  ['returning', 'unsure', 'not_returning'].forEach(k => { f.returning.labels[k] = val('se-fx-status-' + k, f.returning.labels[k]); });
+  [0, 1, 2].forEach(i => {
+    f.specs.prompts[i] = val('se-fx-spec-prompt-' + i, f.specs.prompts[i]);
+    f.specs.hints[i]   = val('se-fx-spec-hint-' + i, f.specs.hints[i]);
   });
-  if (ed.questions.availability) {
-    ed.questions.availability.prompt = val('se-avail-prompt');
-    ed.questions.availability.days = [...document.querySelectorAll('input[name="se-day"]:checked')].map(i => i.value);
-  }
-  ed.questions.extraQuestions.forEach((e, i) => { e.prompt = val(`se-extra-${i}`); });
+  f.specs.count      = Number(val('se-fx-spec-count', f.specs.count)) || f.specs.count;
+  f.flex.enabled     = on('se-fx-flex-on', f.flex.enabled);
+  f.flex.prompt      = val('se-fx-flex', f.flex.prompt);
+  f.comments.enabled = on('se-fx-comments-on', f.comments.enabled);
+  f.comments.prompt  = val('se-fx-comments', f.comments.prompt);
+
+  ed.items.forEach((it, i) => {
+    it.prompt   = val(`se-item-${i}-prompt`, it.prompt);
+    it.audience = val(`se-item-${i}-audience`, it.audience);
+    it.required = on(`se-item-${i}-required`, it.required);
+    (it.options || []).forEach((o, j) => {
+      o.label = val(`se-item-${i}-opt-${j}`, o.label);
+      o.flag  = on(`se-item-${i}-flag-${j}`, !!o.flag);
+    });
+    if (it.type === 'scale') {
+      it.max       = Number(val(`se-item-${i}-max`, it.max || 5));
+      it.lowLabel  = val(`se-item-${i}-low`, it.lowLabel);
+      it.highLabel = val(`se-item-${i}-high`, it.highLabel);
+    }
+    // Switched type in the dropdown: keep the question and any answers.
+    const type = val(`se-item-${i}-type`, it.type);
+    if (type !== it.type) {
+      it.type = type;
+      if ((type === 'single' || type === 'checkboxes') && !(it.options || []).length) it.options = [{ label: '' }, { label: '' }];
+      if (type === 'scale' && !it.max) Object.assign(it, { max: 5, lowLabel: '', highLabel: '' });
+    }
+  });
 }
 
 function surveyEditorAdd(kind) {
+  if (!kind) return;
   syncSurveyEditor();
-  const q = SURVEY.editor.questions;
-  if (kind === 'ack') q.acknowledgements.push({ prompt: '', agreeLabel: 'Yes', exceptionLabel: '' });
-  else q.extraQuestions.push({ prompt: '' });
+  const choice = kind === 'single' || kind === 'checkboxes';
+  SURVEY.editor.items.push(kind === 'policy'
+    ? { type: 'single', prompt: '', required: true, audience: 'returning',
+        options: [{ label: 'Yes' }, { label: "I can't agree to this", flag: true }] }
+    : { type: kind, prompt: '', required: false, audience: 'returning',
+        ...(choice ? { options: [{ label: '' }, { label: '' }] } : {}),
+        ...(kind === 'scale' ? { max: 5, lowLabel: '', highLabel: '' } : {}) });
   renderSurveyEditor();
+  document.getElementById(`se-item-${SURVEY.editor.items.length - 1}-prompt`)?.focus();
 }
 
-function surveyEditorRemove(kind, index) {
+function surveyEditorRemove(index) {
   syncSurveyEditor();
-  const q = SURVEY.editor.questions;
-  (kind === 'ack' ? q.acknowledgements : q.extraQuestions).splice(index, 1);
-  renderSurveyEditor();
-}
-
-function surveyEditorToggleAvailability(on) {
-  syncSurveyEditor();
-  SURVEY.editor.questions.availability = on
-    ? { prompt: 'We may add an extra raid night during progression. Which days would work for you?', days: defaultSurveyDefinition().questions.availability.days }
-    : null;
+  SURVEY.editor.items.splice(index, 1);
   renderSurveyEditor();
 }
 
@@ -8919,22 +8983,21 @@ async function saveSurveyEditor() {
   const ed = SURVEY.editor;
   const msg = document.getElementById('se-msg');
   const btn = document.getElementById('se-save-btn');
-  // Blank prompts are dropped; a half-filled acknowledgement is a mistake.
-  const acks = ed.questions.acknowledgements.filter(a => a.prompt.trim());
-  if (!ed.title.trim()) { msg.className = 'status-msg error'; msg.textContent = 'Give the survey a title.'; return; }
-  if (acks.some(a => !a.exceptionLabel.trim())) { msg.className = 'status-msg error'; msg.textContent = "Every acknowledgement needs a can't-agree answer."; return; }
-  if (ed.questions.availability && !ed.questions.availability.days.length) { msg.className = 'status-msg error'; msg.textContent = 'Pick at least one day, or turn off the extra-night question.'; return; }
+  const fail = text => { msg.className = 'status-msg error'; msg.textContent = text; };
+  if (!ed.title.trim()) return fail('Give the survey a title.');
 
-  const body = {
-    surveyId: ed.surveyId,
-    title: ed.title,
-    intro: ed.intro,
-    questions: {
-      acknowledgements: acks,
-      availability: ed.questions.availability,
-      extraQuestions: ed.questions.extraQuestions.filter(e => e.prompt.trim()),
-    },
-  };
+  // Blank questions and blank answers are dropped; a choice question needs
+  // something to choose from.
+  const items = ed.items.filter(it => (it.prompt || '').trim()).map(it => ({
+    ...it, options: it.options ? it.options.filter(o => (o.label || '').trim()) : undefined,
+  }));
+  for (const it of items) {
+    if (it.type !== 'single' && it.type !== 'checkboxes') continue;
+    const min = it.type === 'single' ? 2 : 1;
+    if (it.options.length < min) return fail(`"${surveyPromptSnippet(it.prompt, 50)}" needs at least ${min === 2 ? 'two answers' : 'one answer'} to pick from.`);
+  }
+
+  const body = { surveyId: ed.surveyId, title: ed.title, intro: ed.intro, questions: { fixed: ed.fixed, items } };
   btn.disabled = true;
   try {
     const { survey } = await recruitingApi(ed.mode === 'edit' ? 'updateSurvey' : 'openSurvey', body);
@@ -8944,9 +9007,122 @@ async function saveSurveyEditor() {
     loadSeasonTab();
     loadMySurvey();
   } catch (e) {
-    msg.className = 'status-msg error';
-    msg.textContent = e.message;
+    fail(e.message);
   } finally {
     btn.disabled = false;
   }
+}
+
+// Same rule as itemAskedFor in lib/seasonSurvey.js: 'returning' questions go
+// to people returning or not sure yet.
+function surveyItemAsked(item, status) {
+  if (item.audience === 'everyone') return true;
+  return (item.audience === 'not_returning') === (status === 'not_returning');
+}
+
+function surveyAnswerBlank(v) {
+  return v == null || v === '' || (Array.isArray(v) && v.length === 0);
+}
+
+// First line of a (possibly long, policy-style) question, for labels.
+function surveyPromptSnippet(prompt, max = 90) {
+  const line = String(prompt || '').split('\n')[0];
+  return line.length > max ? line.slice(0, max - 1) + '…' : line;
+}
+
+// An answer as text: option labels for choices, "4 / 5" for scales.
+function surveyAnswerText(item, v) {
+  if (item.type === 'single') return item.options.find(o => o.id === v)?.label || '';
+  if (item.type === 'checkboxes') return item.options.filter(o => (v || []).includes(o.id)).map(o => o.label).join(', ');
+  if (item.type === 'scale') return `${v} / ${item.max}`;
+  return String(v ?? '');
+}
+
+// The picked answer if it's one marked "flag", else null.
+function surveyFlaggedOption(item, v) {
+  return item.type === 'single' ? item.options.find(o => o.id === v && o.flag) || null : null;
+}
+
+function surveyChoice(type, name, value, label, isOn, extra = '') {
+  return `<label class="survey-choice"><input type="${type}" name="${name}" value="${escapeHtml(String(value))}"${isOn ? ' checked' : ''}${extra} /> ${escapeHtml(label)}</label>`;
+}
+
+// One of the officer's own questions, as raiders see it.
+function renderSurveyItem(item, value) {
+  const name = 'sv-item-' + item.id;
+  let input;
+  if (item.type === 'single' || item.type === 'checkboxes') {
+    const kind = item.type === 'single' ? 'radio' : 'checkbox';
+    const isOn = o => (item.type === 'single' ? value === o.id : (value || []).includes(o.id));
+    input = `<div class="survey-choice-row">${item.options.map(o => surveyChoice(kind, name, o.id, o.label, isOn(o))).join('')}</div>`;
+  } else if (item.type === 'scale') {
+    input = `<div class="survey-scale">
+      ${item.lowLabel ? `<span class="survey-scale-label">${escapeHtml(item.lowLabel)}</span>` : ''}
+      ${Array.from({ length: item.max }, (_, i) => surveyChoice('radio', name, i + 1, String(i + 1), value === i + 1)).join('')}
+      ${item.highLabel ? `<span class="survey-scale-label">${escapeHtml(item.highLabel)}</span>` : ''}
+    </div>`;
+  } else if (item.type === 'short') {
+    input = `<div class="form-group"><input type="text" id="${name}" maxlength="300" autocomplete="off" value="${escapeHtml(value || '')}" /></div>`;
+  } else {
+    input = `<div class="form-group"><textarea id="${name}" rows="3" maxlength="2000">${escapeHtml(value || '')}</textarea></div>`;
+  }
+  // Policy-style questions (a flagged answer) sit in a box -- they tend to be long.
+  const boxed = item.type === 'single' && item.options.some(o => o.flag);
+  return `<div class="survey-q${boxed ? ' survey-ack' : ''}" data-audience="${escapeHtml(item.audience || 'returning')}">
+    <div class="${boxed ? 'survey-ack-prompt' : 'survey-q-label survey-item-prompt'}">${linkifyText(item.prompt)}${item.required ? ' <span class="survey-req">*</span>' : ''}</div>
+    ${input}
+  </div>`;
+}
+
+// Results for one choice or scale question: a bar per answer, names on hover.
+function surveyItemChart(item, responses) {
+  const answered = responses.filter(r => !surveyAnswerBlank(r.answers?.[item.id]));
+  const picked = (r, id) => (item.type === 'checkboxes' ? (r.answers[item.id] || []).includes(id) : r.answers[item.id] === id);
+  const rows = item.type === 'scale'
+    ? Array.from({ length: item.max }, (_, i) => ({ label: String(i + 1), people: answered.filter(r => r.answers[item.id] === i + 1) }))
+    : item.options.map(o => ({ label: o.label, flag: !!o.flag, people: answered.filter(r => picked(r, o.id)) }));
+  const max = Math.max(1, ...rows.map(x => x.people.length));
+  const avg = item.type === 'scale' && answered.length
+    ? (answered.reduce((sum, r) => sum + r.answers[item.id], 0) / answered.length).toFixed(1) : null;
+  const scaleNote = item.type === 'scale' && (item.lowLabel || item.highLabel)
+    ? ` · 1 = ${item.lowLabel || '…'}, ${item.max} = ${item.highLabel || '…'}` : '';
+  return `<div class="season-question">
+    <div class="season-question-prompt">${escapeHtml(surveyPromptSnippet(item.prompt, 140))}
+      <span class="recruit-sub">· ${answered.length} answered${avg ? ` · average ${avg} of ${item.max}` : ''}${escapeHtml(scaleNote)}</span></div>
+    <div class="season-bars">${rows.map(x => `
+      <div class="season-bar${x.flag ? ' flagged' : ''}" title="${escapeHtml(x.people.map(r => r.character_name).join(', ') || 'Nobody')}">
+        <div class="season-bar-label">${escapeHtml(x.label)}</div>
+        <div class="season-bar-track"><div style="width:${(x.people.length / max) * 100}%;"></div></div>
+        <div class="season-bar-count">${x.people.length}</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function surveyEditorRefresh() {
+  syncSurveyEditor();
+  renderSurveyEditor();
+}
+
+function surveyEditorMove(index, dir) {
+  syncSurveyEditor();
+  const items = SURVEY.editor.items;
+  const to = index + dir;
+  if (to < 0 || to >= items.length) return;
+  [items[index], items[to]] = [items[to], items[index]];
+  renderSurveyEditor();
+}
+
+function surveyEditorAddOption(index) {
+  syncSurveyEditor();
+  const it = SURVEY.editor.items[index];
+  (it.options ||= []).push({ label: '' });
+  renderSurveyEditor();
+  document.getElementById(`se-item-${index}-opt-${it.options.length - 1}`)?.focus();
+}
+
+function surveyEditorRemoveOption(index, optionIndex) {
+  syncSurveyEditor();
+  SURVEY.editor.items[index].options.splice(optionIndex, 1);
+  renderSurveyEditor();
 }

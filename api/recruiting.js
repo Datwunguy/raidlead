@@ -23,7 +23,7 @@ const { resolveCurrentRaidByDate, fetchRaidCalendar, seasonTransitionFrom } = re
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
 const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
 const { canonicalSpec, roleForSpec, parseSpec } = require('../lib/wowSpecs');
-const { normalizeSurveyDefinition, normalizeSurveyResponse, surveyPromptFor } = require('../lib/seasonSurvey');
+const { normalizeSurveyDefinition, normalizeSurveyResponse, upgradeQuestions, upgradeResponse, surveyPromptFor } = require('../lib/seasonSurvey');
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
@@ -109,8 +109,12 @@ module.exports = async (req, res) => {
       .from('season_surveys').select(SURVEY_FIELDS)
       .eq('team_id', teamId).is('closed_at', null).maybeSingle();
     if (error) throw error;
-    return data || null;
+    return upgradedSurvey(data);
   }
+
+  // Surveys and responses always go out in the current question format
+  // (see upgradeQuestions / upgradeResponse in lib/seasonSurvey.js).
+  const upgradedSurvey = s => (s ? { ...s, questions: upgradeQuestions(s.questions) } : null);
 
   // What a raider sees of a survey (no bookkeeping fields).
   const publicSurvey = s => ({ id: s.id, title: s.title, intro: s.intro, questions: s.questions, openedAt: s.opened_at });
@@ -685,7 +689,7 @@ module.exports = async (req, res) => {
         .from('season_survey_responses').select(SURVEY_RESPONSE_FIELDS)
         .eq('survey_id', survey.id).eq('account_id', session.id).maybeSingle();
       if (error) throw error;
-      return res.status(200).json({ survey: publicSurvey(survey), response: response || null });
+      return res.status(200).json({ survey: publicSurvey(survey), response: upgradeResponse(response) || null });
     }
 
     // ── SUBMIT SURVEY RESPONSE (any raider): one per account, editable
@@ -725,7 +729,7 @@ module.exports = async (req, res) => {
           .eq('survey_id', survey.id).eq('account_id', session.id).select(SURVEY_RESPONSE_FIELDS).single());
       }
       if (error) throw error;
-      return res.status(200).json({ response: data });
+      return res.status(200).json({ response: upgradeResponse(data) });
     }
 
     // ── SURVEY PROMPT (officers): "the season is ending -- survey your
@@ -753,7 +757,7 @@ module.exports = async (req, res) => {
         .from('season_surveys').select(SURVEY_FIELDS)
         .eq('team_id', teamId).order('opened_at', { ascending: false });
       if (error) throw error;
-      return res.status(200).json({ surveys: data || [] });
+      return res.status(200).json({ surveys: (data || []).map(upgradedSurvey) });
     }
 
     // ── SURVEY RESULTS (officers): one survey and every response to it. ──
@@ -769,7 +773,7 @@ module.exports = async (req, res) => {
         .select(`${SURVEY_RESPONSE_FIELDS}, account_id, account:accounts ( battletag, display_name )`)
         .eq('survey_id', surveyId).order('submitted_at', { ascending: true });
       if (error) throw error;
-      return res.status(200).json({ survey, responses: responses || [] });
+      return res.status(200).json({ survey: upgradedSurvey(survey), responses: (responses || []).map(upgradeResponse) });
     }
 
     // ── OPEN SURVEY (officers): creates a new survey, open right away. ──
@@ -784,7 +788,7 @@ module.exports = async (req, res) => {
         if (error.code === '23505') return res.status(409).json({ error: 'This team already has an open survey. Close it first.' });
         throw error;
       }
-      return res.status(200).json({ survey: data });
+      return res.status(200).json({ survey: upgradedSurvey(data) });
     }
 
     // ── UPDATE SURVEY (officers): title, intro, and questions. Answers are
@@ -800,7 +804,7 @@ module.exports = async (req, res) => {
         .eq('id', surveyId).eq('team_id', teamId)
         .select(SURVEY_FIELDS).single();
       if (error) throw error;
-      return res.status(200).json({ survey: data });
+      return res.status(200).json({ survey: upgradedSurvey(data) });
     }
 
     // ── CLOSE / REOPEN SURVEY (officers). Reopening fails if another
@@ -818,7 +822,7 @@ module.exports = async (req, res) => {
         if (error.code === '23505') return res.status(409).json({ error: 'Another survey is open. Close it before reopening this one.' });
         throw error;
       }
-      return res.status(200).json({ survey: data });
+      return res.status(200).json({ survey: upgradedSurvey(data) });
     }
 
     // ── DELETE SURVEY (officers): the survey and all its responses. ──

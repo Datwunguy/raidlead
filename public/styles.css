@@ -1850,24 +1850,31 @@
   .survey-banner-dismiss:hover { color: var(--text); }
 
   /* The survey form */
-  .survey-intro { font-size: 15px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin-bottom: 18px; }
+  .survey-intro { font-size: 17px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin-bottom: 20px; }
   .survey-intro a, .survey-ack-prompt a { color: var(--gold); }
-  .survey-q { margin-bottom: 18px; }
-  .survey-q-label { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
-  .survey-q-hint { font-size: 12px; color: var(--text-dim); margin: -2px 0 6px; line-height: 1.4; }
+  .survey-q { margin-bottom: 20px; }
+  .survey-q-label { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+  .survey-item-prompt { white-space: pre-wrap; line-height: 1.45; }
+  .survey-item-prompt a { color: var(--gold); }
+  .survey-q-hint { font-size: 14px; color: var(--text-dim); margin: -2px 0 8px; line-height: 1.4; }
   .survey-req { color: #ff6b6b; }
   .survey-choice-row { display: flex; flex-wrap: wrap; gap: 8px; }
   .survey-choice {
-    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
     background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
-    padding: 6px 10px; font-size: 14px; color: var(--text);
+    padding: 8px 12px; font-size: 16px; color: var(--text);
   }
   .survey-choice:hover { border-color: var(--gold-dim); }
   .survey-choice:has(input:checked) { border-color: var(--gold); color: var(--gold); }
   .survey-choice input { accent-color: var(--gold); margin: 0; }
   .survey-ack { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
   .survey-ack .survey-choice { background: var(--bg2); }
-  .survey-ack-prompt { font-size: 14px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin-bottom: 10px; }
+  .survey-ack-prompt { font-size: 16px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin-bottom: 12px; }
+  .survey-scale { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .survey-scale-label { font-size: 14px; color: var(--text-dim); }
+  .survey-dialog .modal-body { font-size: 15px; }
+  .survey-dialog .form-group label { font-size: 13px; }
+  .survey-dialog .season-toggle { font-size: 14px; }
   .survey-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
   .survey-form-actions .recruit-sub { margin: 0 auto 0 0; }
 
@@ -1910,12 +1917,17 @@
   .season-role-list .recruit-name { font-size: 14px; }
   .season-role-flex { font-size: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); line-height: 1.6; }
   .season-role-flex .recruit-name { font-size: 13px; }
-  .season-days { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
-  .season-day { display: grid; grid-template-columns: 44px 1fr 28px; align-items: center; gap: 10px; font-size: 13px; }
-  .season-day-name { color: var(--text-dim); font-weight: 700; }
-  .season-day-bar { background: var(--bg3); border-radius: 3px; height: 12px; overflow: hidden; }
-  .season-day-bar > div { background: linear-gradient(90deg, var(--gold-dim), var(--gold)); height: 100%; min-width: 2px; }
-  .season-day-count { text-align: right; color: var(--text); font-weight: 700; }
+  .season-question { margin-bottom: 18px; }
+  .season-question:last-child { margin-bottom: 0; }
+  .season-question-prompt { font-size: 14px; color: var(--text); line-height: 1.4; margin-bottom: 8px; }
+  .season-bars { display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
+  .season-bar { display: grid; grid-template-columns: minmax(90px, 260px) 1fr 32px; align-items: center; gap: 10px; font-size: 13px; }
+  .season-bar-label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .season-bar.flagged .season-bar-label { color: #ff9f43; }
+  .season-bar-track { background: var(--bg3); border-radius: 3px; height: 12px; overflow: hidden; }
+  .season-bar-track > div { background: linear-gradient(90deg, var(--gold-dim), var(--gold)); height: 100%; min-width: 2px; }
+  .season-bar.flagged .season-bar-track > div { background: linear-gradient(90deg, #8a5a22, #ff9f43); }
+  .season-bar-count { text-align: right; color: var(--text); font-weight: 700; }
   .season-flag { font-size: 13px; color: var(--text); padding: 4px 0; line-height: 1.5; }
   .season-flag strong { color: #ff9f43; }
   .season-response { border-top: 1px solid var(--border); padding: 12px 0; }
@@ -1930,25 +1942,53 @@
   .season-status.status-not_returning { color: #ff6b6b; border-color: rgba(255,107,107,0.4); }
   .season-response-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; font-size: 13px; color: var(--text); line-height: 1.5; }
   .season-k { font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 2px; }
-  .season-answer { font-size: 13px; color: var(--text); margin-top: 8px; white-space: pre-wrap; line-height: 1.5; }
+  .season-answer { font-size: 13px; color: var(--text); margin-top: 8px; line-height: 1.5; }
+  .season-answer > div:last-child { white-space: pre-wrap; } /* keep line breaks in typed answers */
   .season-answer a { color: var(--gold); }
+  .season-answer-q { font-size: 12px; color: var(--text-dim); margin-bottom: 2px; white-space: normal; }
+  .season-answer-flag { color: #ff9f43; font-weight: 700; }
 
   /* Survey editor */
-  .survey-editor-fixed {
-    font-size: 13px; color: var(--text-dim); background: var(--bg3); border: 1px solid var(--border);
-    border-radius: 4px; padding: 10px 12px; margin: 16px 0; line-height: 1.5;
+  .survey-editor-section { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 18px; }
+  .survey-editor-section .season-section-title { font-size: 18px; margin-bottom: 4px; }
+  .survey-editor-note { font-size: 14px; color: var(--text-dim); margin-top: 6px; line-height: 1.4; }
+  .survey-editor-item { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 12px; }
+  .survey-editor-item .form-group input, .survey-editor-item .form-group select, .survey-editor-item .form-group textarea { background: var(--bg2); }
+  .survey-editor-item-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .survey-editor-item-title { font-size: 16px; font-weight: 700; color: var(--text); }
+  .survey-editor-item-tools { display: flex; align-items: center; gap: 6px; }
+  .survey-editor-tag {
+    font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--gold); border: 1px solid var(--gold-dim); border-radius: 3px; padding: 2px 8px;
   }
-  .survey-editor-fixed strong { color: var(--text); }
-  .survey-editor-section { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
-  .survey-editor-item { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
-  .survey-editor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
-  .survey-editor-remove { background: none; border: none; color: #ff6b6b; font-size: 12px; cursor: pointer; padding: 6px 0 0; }
+  .survey-editor-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  .survey-editor-row.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .survey-editor-required { display: flex; align-items: flex-end; padding-bottom: 12px; }
+  .survey-editor-prompt { margin-top: 10px; }
+  .survey-editor-options { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; align-items: flex-start; }
+  .survey-editor-sub { font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--text-dim); }
+  .survey-editor-sub .recruit-sub { letter-spacing: 0; text-transform: none; font-weight: 500; }
+  .survey-editor-option { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .survey-editor-option input[type="text"] {
+    flex: 1; min-width: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-family: 'Rajdhani', sans-serif; font-size: 16px; font-weight: 500; padding: 8px 12px; outline: none;
+  }
+  .survey-editor-option input[type="text"]:focus { border-color: var(--gold-dim); }
+  .survey-editor-icon {
+    background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-dim);
+    cursor: pointer; font-size: 14px; line-height: 1; padding: 5px 9px;
+  }
+  .survey-editor-icon:hover:not(:disabled) { color: var(--text); border-color: var(--gold-dim); }
+  .survey-editor-icon:disabled { opacity: 0.3; cursor: default; }
+  .survey-editor-remove { background: none; border: none; color: #ff6b6b; font-size: 13px; cursor: pointer; padding: 4px 6px; }
   .survey-editor-remove:hover { text-decoration: underline; }
+  .survey-editor-add { margin-top: 4px; max-width: 420px; }
+  .survey-editor-add select { color: var(--gold); cursor: pointer; }
 
   @media (max-width: 900px) {
     .season-role-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .season-response-grid { grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 600px) {
-    .season-role-grid, .season-response-grid, .survey-editor-row { grid-template-columns: 1fr; }
+    .season-role-grid, .season-response-grid, .survey-editor-row, .survey-editor-row.three { grid-template-columns: 1fr; }
   }
