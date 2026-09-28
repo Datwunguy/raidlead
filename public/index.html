@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260927l">
+<link rel="stylesheet" href="styles.css?v=20260928">
 </head>
 <body>
 <div id="app">
@@ -604,6 +604,7 @@
               <button class="btn-secondary" id="planner-date-edit-btn" style="display:none; padding:3px 8px; font-size:11px;" onclick="openPlannerDatePicker()">✎</button>
             </div>
             <span id="plan-status-badge" style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; padding:4px 10px; border-radius:3px; background:rgba(255,107,107,0.1); color:#ff6b6b; border:1px solid rgba(255,107,107,0.3);">DRAFT</span>
+            <button class="btn-secondary" id="planner-join-order-btn" style="display:none;" onclick="toggleShowOrderJoined()" title="Number each raider by when they joined this season (Team Management > Join Order)"># Show Order Joined</button>
             <button class="btn-secondary" id="planner-edit-btn" style="display:none;" onclick="enterEditMode()">✎ Edit</button>
             <button class="btn-primary" id="planner-publish-btn" style="display:none;" onclick="publishRaidPlan()">⬆ Publish</button>
             <button class="btn-secondary" id="planner-import-btn" style="display:none;" onclick="importLastRaidRoster()">⤓ Use Last Roster</button>
@@ -790,11 +791,17 @@
           <button class="filter-btn active" onclick="setTeamSubTab('recruits', this)">Recruits</button>
           <button class="filter-btn" onclick="setTeamSubTab('applicants', this)">Applicants <span class="subtab-count" id="applicant-pending-count"></span></button>
           <button class="filter-btn" onclick="setTeamSubTab('season', this)">Next Season</button>
+          <button class="filter-btn" onclick="setTeamSubTab('join', this)">Join Order</button>
         </div>
 
         <!-- NEXT SEASON: the on-site survey raiders answer from their dashboard banner -->
         <div id="team-subtab-season" style="display:none; margin-top:18px;">
           <div id="season-panel"></div>
+        </div>
+
+        <!-- JOIN ORDER: who joined first this season (#31+ are next in line past Heroic's 30) -->
+        <div id="team-subtab-join" style="display:none; margin-top:18px;">
+          <div id="join-panel"></div>
         </div>
 
         <!-- APPLICANTS: triage inbox for the guild's Google Form responses -->
@@ -1281,6 +1288,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260927k"></script>
+<script src="app.js?v=20260928"></script>
 </body>
 </html>

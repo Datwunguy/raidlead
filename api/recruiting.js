@@ -7,7 +7,9 @@
 //           saveApplicationColumnMap, promoteApplication,
 //           rejectApplication, resolveApplications, undoApplicationDecision,
 //           listSurveys, getSurveyResults, openSurvey, updateSurvey,
-//           closeSurvey, reopenSurvey, deleteSurvey, getSurveyPrompt
+//           closeSurvey, reopenSurvey, deleteSurvey, getSurveyPrompt,
+//           getJoinOrder, startJoinOrder, saveJoinOrder, addJoinOrderEntries,
+//           removeJoinOrderEntry, restoreJoinOrderEntry
 //  Raider actions (any team member but viewers): getSurvey,
 //           submitSurveyResponse -- the Next Season survey itself.
 //
@@ -24,6 +26,7 @@ const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
 const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
 const { canonicalSpec, roleForSpec, parseSpec } = require('../lib/wowSpecs');
 const { normalizeSurveyDefinition, normalizeSurveyResponse, upgradeQuestions, upgradeResponse, surveyPromptFor } = require('../lib/seasonSurvey');
+const { LIST_FIELDS: JOIN_LIST_FIELDS, listEntries: listJoinEntries, currentJoinOrder, createSurveyList, placeSurveyResponse, appendToJoinOrder } = require('../lib/joinOrder');
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
@@ -729,6 +732,7 @@ module.exports = async (req, res) => {
           .eq('survey_id', survey.id).eq('account_id', session.id).select(SURVEY_RESPONSE_FIELDS).single());
       }
       if (error) throw error;
+      await placeSurveyResponse(supabase, teamId, survey, { ...data, account_id: session.id });
       return res.status(200).json({ response: upgradeResponse(data) });
     }
 
@@ -788,6 +792,8 @@ module.exports = async (req, res) => {
         if (error.code === '23505') return res.status(409).json({ error: 'This team already has an open survey. Close it first.' });
         throw error;
       }
+      // A new survey starts this season's Join Order, filled as raiders answer.
+      try { await createSurveyList(supabase, teamId, data); } catch (e) { /* built on first use instead */ }
       return res.status(200).json({ survey: upgradedSurvey(data) });
     }
 
@@ -833,6 +839,110 @@ module.exports = async (req, res) => {
       const { error } = await supabase.from('season_surveys').delete().eq('id', surveyId).eq('team_id', teamId);
       if (error) throw error;
       return res.status(200).json({ success: true });
+    }
+
+    // ══ JOIN ORDER (officers) ══
+    // The order raiders joined this season -- #31 is next in when someone in
+    // the first 30 (Heroic's cap) is missing. See lib/joinOrder.js.
+
+    // ── GET JOIN ORDER: an order (the current one unless listId is given)
+    // with all its entries, plus every order for the history dropdown. ──
+    if (action === 'getJoinOrder') {
+      const { listId } = req.body || {};
+      const current = await currentJoinOrder(supabase, teamId);
+      const { data: lists, error } = await supabase
+        .from('join_orders').select(JOIN_LIST_FIELDS).eq('team_id', teamId).order('created_at', { ascending: false });
+      if (error) throw error;
+      const list = listId ? (lists || []).find(l => l.id === listId) : current;
+      if (listId && !list) return res.status(404).json({ error: 'That order no longer exists.' });
+      return res.status(200).json({
+        lists: lists || [], currentId: current?.id || null, list: list || null,
+        entries: list ? await listJoinEntries(supabase, list.id) : [],
+      });
+    }
+
+    // ── START JOIN ORDER: for teams with no order yet (no survey run):
+    // every roster Main, in the order they were added to RaidLead, for the
+    // officer to rearrange. ──
+    if (action === 'startJoinOrder') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      if (await currentJoinOrder(supabase, teamId)) return res.status(409).json({ error: 'This team already has a Join Order.' });
+      const { data: chars, error: charsErr } = await supabase
+        .from('characters').select('id, name, account_id, rank, created_at').eq('team_id', teamId).eq('active', true);
+      if (charsErr) throw charsErr;
+      const mains = (chars || []).filter(c => (c.rank || 'Main') === 'Main')
+        .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || a.name.localeCompare(b.name));
+      const { data: list, error } = await supabase
+        .from('join_orders').insert({ team_id: teamId, title: 'Starting order' }).select(JOIN_LIST_FIELDS).single();
+      if (error) throw error;
+      await appendToJoinOrder(supabase, teamId, mains, 'manual', { throwErrors: true, listId: list.id });
+      return res.status(200).json({ list, entries: await listJoinEntries(supabase, list.id) });
+    }
+
+    // Only the current order can be changed; past seasons are history.
+    async function editableJoinOrder(listId) {
+      const current = await currentJoinOrder(supabase, teamId);
+      if (!current || current.id !== listId) {
+        throw Object.assign(new Error("Only this season's order can be changed. Refresh to see it."), { status: 409 });
+      }
+      return current;
+    }
+
+    // ── SAVE JOIN ORDER: the officer's rearranged order, as the ids of
+    // every entry still in it, top to bottom. ──
+    if (action === 'saveJoinOrder') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { listId, order } = req.body || {};
+      if (!listId || !Array.isArray(order)) return res.status(400).json({ error: 'listId and order required' });
+      await editableJoinOrder(listId);
+      const entries = await listJoinEntries(supabase, listId);
+      const active = entries.filter(e => !e.left_at);
+      const activeIds = new Set(active.map(e => e.id));
+      const ids = [...new Set(order)].filter(id => activeIds.has(id));
+      if (ids.length !== active.length) {
+        return res.status(409).json({ error: 'The order changed while you were editing it (someone answered the survey or joined the roster). Refresh and try again.' });
+      }
+      const byId = new Map(active.map(e => [e.id, e]));
+      await Promise.all(ids.map((id, i) => (byId.get(id).position === i + 1 ? null
+        : supabase.from('join_order_entries').update({ position: i + 1 }).eq('id', id).eq('join_order_id', listId))));
+      return res.status(200).json({ entries: await listJoinEntries(supabase, listId) });
+    }
+
+    // ── ADD TO JOIN ORDER: roster characters, to the end, in the order given. ──
+    if (action === 'addJoinOrderEntries') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { listId, characterIds } = req.body || {};
+      if (!listId || !Array.isArray(characterIds) || !characterIds.length) return res.status(400).json({ error: 'listId and characterIds required' });
+      await editableJoinOrder(listId);
+      const { data: chars, error } = await supabase
+        .from('characters').select('id, name, account_id').eq('team_id', teamId).eq('active', true).in('id', characterIds.slice(0, 200));
+      if (error) throw error;
+      const ordered = characterIds.map(id => (chars || []).find(c => c.id === id)).filter(Boolean);
+      const added = await appendToJoinOrder(supabase, teamId, ordered, 'manual', { throwErrors: true, listId });
+      return res.status(200).json({ added, entries: await listJoinEntries(supabase, listId) });
+    }
+
+    // ── REMOVE FROM / RESTORE TO JOIN ORDER: taking someone out keeps their
+    // row (history); restoring puts them back at the end. ──
+    if (action === 'removeJoinOrderEntry' || action === 'restoreJoinOrderEntry') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { entryId } = req.body || {};
+      if (!entryId) return res.status(400).json({ error: 'entryId required' });
+      const { data: entry, error } = await supabase
+        .from('join_order_entries').select('id, join_order_id').eq('id', entryId).eq('team_id', teamId).maybeSingle();
+      if (error) throw error;
+      if (!entry) return res.status(404).json({ error: 'Not found' });
+      await editableJoinOrder(entry.join_order_id);
+      let updates;
+      if (action === 'removeJoinOrderEntry') {
+        updates = { left_at: new Date().toISOString(), left_reason: 'Taken out by an officer' };
+      } else {
+        const active = (await listJoinEntries(supabase, entry.join_order_id)).filter(e => !e.left_at);
+        updates = { left_at: null, left_reason: null, position: (active.length ? active[active.length - 1].position : 0) + 1 };
+      }
+      const { error: updErr } = await supabase.from('join_order_entries').update(updates).eq('id', entryId);
+      if (updErr) throw updErr;
+      return res.status(200).json({ entries: await listJoinEntries(supabase, entry.join_order_id) });
     }
 
     return res.status(400).json({ error: 'Invalid action' });

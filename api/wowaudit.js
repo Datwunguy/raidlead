@@ -26,6 +26,7 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer } = require('../lib/serverSlug');
+const { appendToJoinOrder } = require('../lib/joinOrder');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -88,7 +89,7 @@ module.exports = async (req, res) => {
       // preserve-on-conflict logic the old spreadsheet sync used.
       const { data: existing } = await supabase
         .from('characters')
-        .select('name, account_id, flex_tank, flex_heal, flex_melee, flex_ranged, can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged')
+        .select('name, active, account_id, flex_tank, flex_heal, flex_melee, flex_ranged, can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged')
         .eq('team_id', teamId);
       const existingMap = {};
       (existing || []).forEach(c => { existingMap[c.name.toLowerCase()] = c; });
@@ -121,6 +122,16 @@ module.exports = async (req, res) => {
           .from('characters')
           .upsert(upsertData, { onConflict: 'team_id,name', ignoreDuplicates: false });
         if (error) throw error;
+      }
+
+      // Mains this import added (or brought back) join the end of this
+      // season's Join Order, in WowAudit's order.
+      const joining = players.filter(p => (p.rank || 'Main') === 'Main' && !existingMap[p.name.toLowerCase()]?.active).map(p => p.name);
+      if (joining.length) {
+        const { data: joined } = await supabase
+          .from('characters').select('id, name, account_id').eq('team_id', teamId).in('name', joining);
+        const ordered = joining.map(n => (joined || []).find(c => c.name === n)).filter(Boolean);
+        await appendToJoinOrder(supabase, teamId, ordered, 'roster');
       }
 
       return res.status(200).json({ success: true, imported: upsertData.length });

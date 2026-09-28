@@ -1992,3 +1992,40 @@
   @media (max-width: 600px) {
     .season-role-grid, .season-response-grid, .survey-editor-row, .survey-editor-row.three { grid-template-columns: 1fr; }
   }
+
+  /* ── JOIN ORDER ── */
+  .join-row {
+    display: flex; align-items: center; gap: 14px; padding: 8px 4px;
+    border-top: 1px solid var(--border);
+  }
+  .join-row:first-child { border-top: none; }
+  .join-row.over-cap .join-num { color: var(--text-dim); }
+  .join-row.left { opacity: 0.6; }
+  .join-num { font-family: 'Rajdhani', sans-serif; font-size: 20px; font-weight: 700; color: var(--gold); min-width: 34px; text-align: right; }
+  .join-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .join-tools { display: flex; align-items: center; gap: 6px; }
+  .join-moveto {
+    width: 56px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    font-family: 'Rajdhani', sans-serif; font-size: 14px; padding: 4px 6px; outline: none; text-align: center;
+  }
+  .join-moveto:focus { border-color: var(--gold-dim); }
+  .join-cap {
+    margin: 6px 0; padding: 6px 10px; border-radius: 4px; font-size: 12px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--gold); background: rgba(200,168,75,0.08); border: 1px dashed var(--gold-dim);
+  }
+  .join-count { text-align: right; }
+  .join-count .stat-value { font-size: 28px; }
+  .join-add-chip { cursor: pointer; }
+  .join-add-chip:hover { border-color: var(--gold-dim); }
+  /* "#12" on Raid Night pills and checklist rows */
+  .join-order-badge {
+    margin-left: auto; flex-shrink: 0; font-family: 'Rajdhani', sans-serif; font-size: 11px; font-weight: 700;
+    color: #fff; background: rgba(0,0,0,0.45); border-radius: 8px; padding: 1px 6px; line-height: 1.4;
+  }
+  .join-order-badge.over-cap { background: rgba(0,0,0,0.25); color: #ffd98a; }
+  .join-order-badge + span { margin-left: 6px !important; } /* an "Out" tag after it */
+  #planner-join-order-btn.active { border-color: var(--gold); color: var(--gold); }
+  @media (max-width: 600px) {
+    .join-row { flex-wrap: wrap; }
+    .join-tools { width: 100%; justify-content: flex-end; }
+  }

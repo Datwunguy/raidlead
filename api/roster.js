@@ -17,6 +17,7 @@ const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate, fetchRaidCalendar, raidLaunchDate } = require('../lib/raiderioRaids');
+const { appendToJoinOrder, markLeftJoinOrder } = require('../lib/joinOrder');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
 const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 
@@ -1218,6 +1219,14 @@ module.exports = async (req, res) => {
         .insert({ team_id: teamId, character_id: characterId, joined_at: new Date().toISOString().slice(0, 10) });
       if (periodErr) throw periodErr;
 
+      // A new Main joins the end of this season's Join Order (alts share
+      // their main's spot). Added from Team Management > Recruits when
+      // joinSource says so.
+      if ((rank || 'Main') === 'Main') {
+        await appendToJoinOrder(supabase, teamId, [{ id: characterId, name: name.trim(), account_id: null }],
+          req.body.joinSource === 'recruit' ? 'recruit' : 'roster');
+      }
+
       return res.status(200).json({ success: true, id: characterId });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
@@ -1271,6 +1280,7 @@ module.exports = async (req, res) => {
         .from('character_membership_periods')
         .update({ left_at: new Date().toISOString().slice(0, 10) })
         .eq('character_id', characterId).is('left_at', null);
+      await markLeftJoinOrder(supabase, teamId, characterId, 'Removed from the roster');
 
       return res.status(200).json({ success: true });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }

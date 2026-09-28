@@ -732,6 +732,7 @@ async function importFromWowaudit() {
 // ── ADD/EDIT/REMOVE CHARACTER MODAL (officers only) ──
 let CHARACTER_MODAL_EDIT_ID     = null;
 let CHARACTER_MODAL_ORIGINAL_NAME = null;
+let CHARACTER_MODAL_JOIN_SOURCE  = null; // 'recruit' when opened from Team Management > Recruits (for Join Order)
 
 function populateClassDropdown(selectId, selected) {
   const sel = document.getElementById(selectId);
@@ -744,6 +745,7 @@ function populateClassDropdown(selectId, selected) {
 
 function openAddCharacterModal() {
   CHARACTER_MODAL_EDIT_ID = null;
+  CHARACTER_MODAL_JOIN_SOURCE = null;
   CHARACTER_MODAL_ORIGINAL_NAME = null;
   document.getElementById('character-modal-title').textContent = 'Add Character';
   populateClassDropdown('cm-class');
@@ -811,7 +813,7 @@ async function saveCharacterModal() {
     const action = CHARACTER_MODAL_EDIT_ID ? 'updateCharacter' : 'addCharacter';
     const body = CHARACTER_MODAL_EDIT_ID
       ? { teamId: STATE.teamId, characterId: CHARACTER_MODAL_EDIT_ID, name, class: cls, server, role, rank }
-      : { teamId: STATE.teamId, name, class: cls, server, role, rank };
+      : { teamId: STATE.teamId, name, class: cls, server, role, rank, joinSource: CHARACTER_MODAL_JOIN_SOURCE };
 
     const resp = await fetch(`/api/roster?action=${action}`, {
       method: 'POST',
@@ -825,6 +827,7 @@ async function saveCharacterModal() {
     await loadRosterFromDB(true);
     renderRoster();
     loadFlexData();
+    if (!CHARACTER_MODAL_EDIT_ID) invalidateJoinOrder(); // a new Main joined the end of the order
     showToast(CHARACTER_MODAL_EDIT_ID ? 'Character updated!' : 'Character added!', 'success');
   } catch (e) {
     msg.textContent = e.message;
@@ -852,6 +855,7 @@ async function removeCharacterFromModal() {
     await loadRosterFromDB(true);
     renderRoster();
     loadFlexData();
+    invalidateJoinOrder();
     showToast('Character removed.', 'success');
   } catch (e) {
     msg.textContent = e.message;
@@ -4693,7 +4697,7 @@ function renderOutUnavailableSection() {
     pill.style.background = 'transparent';
     pill.style.border = `1px solid #FF333366`;
     pill.style.opacity = '0.7';
-    pill.innerHTML = `<div class="class-dot" style="background:${color}; border:1px solid ${color};"></div><span style="color:${color};">${escapeHtml(p.name)}</span><span style="margin-left:auto; font-size:10px; color:#FF6666; text-transform:uppercase; letter-spacing:1px;">Out</span>`;
+    pill.innerHTML = `<div class="class-dot" style="background:${color}; border:1px solid ${color};"></div><span style="color:${color};">${escapeHtml(p.name)}</span>${joinOrderBadge(p)}<span style="margin-left:auto; font-size:10px; color:#FF6666; text-transform:uppercase; letter-spacing:1px;">Out</span>`;
     pill.title = `${p.name} marked themselves unavailable for this raid night`;
     pillsWrap.appendChild(pill);
   });
@@ -4738,7 +4742,7 @@ function renderPlannerSwaps() {
     const textColor = isLightColor(color) ? '#000000' : '#ffffff';
     return `<div class="plan-player-pill" style="background:${color}; border:1px solid ${color}; margin-bottom:0; cursor:default;">
       <div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div>
-      <span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${escapeHtml(name)}</span>
+      <span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${escapeHtml(name)}</span>${joinOrderBadge(player)}
     </div>`;
   };
 
@@ -5008,7 +5012,7 @@ function renderPlannerChecklist() {
       item.innerHTML = `
         <div class="checklist-checkbox">${checkedHere ? '✓' : ''}</div>
         <div class="checklist-name" style="color:${takenElsewhere ? 'var(--text-mute)' : color};">${escapeHtml(player.name)}</div>
-        ${outTag}
+        ${joinOrderBadge(player)}${outTag}
       `;
       if (!isDisabled) item.onclick = () => togglePlannerPlayer(player.name, slotType);
       playersDiv.appendChild(item);
@@ -5151,7 +5155,7 @@ function renderPlannerRoster() {
         pill.style.background = color;
         pill.style.border = `1px solid ${color}`;
         const textColor = isLightColor(color) ? '#000000' : '#ffffff';
-        pill.innerHTML = `<div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div><span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${escapeHtml(p.name)}</span>`;
+        pill.innerHTML = `<div class="class-dot" style="background:${textColor}22; border:1px solid ${textColor}44;"></div><span style="color:${textColor}; text-shadow: 0 1px 2px rgba(0,0,0,0.4);">${escapeHtml(p.name)}</span>${joinOrderBadge(p)}`;
         pill.title = 'Click to remove';
         pill.onclick = () => togglePlannerPlayer(p.name);
         col.appendChild(pill);
@@ -6549,6 +6553,11 @@ function applyRolePermissions(role) {
   // hamburger's copy of the button has to be toggled too.
   document.querySelectorAll('.nav-btn[data-tab="team"], .mobile-nav-item[data-tab="team"]')
     .forEach(el => el.classList.toggle('role-hidden', !isOfficer));
+
+  // Raid Night "Show Order Joined" -- officers only.
+  const joinOrderBtn = document.getElementById('planner-join-order-btn');
+  if (joinOrderBtn) joinOrderBtn.style.display = isOfficer ? 'inline-flex' : 'none';
+  if (isOfficer) restoreShowOrderJoined(); else JOIN.showOnPlanner = false;
   if (!isOfficer && document.getElementById('tab-team')?.classList.contains('active')) showTab('roster');
 }
 
@@ -6762,11 +6771,12 @@ function renderRecruitTab() {
 function setTeamSubTab(name, btn) {
   document.querySelectorAll('#team-subtab-filter .filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['applicants', 'recruits', 'season'].forEach(n => {
+  ['applicants', 'recruits', 'season', 'join'].forEach(n => {
     const el = document.getElementById('team-subtab-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
   if (name === 'season') return loadSeasonTab();
+  if (name === 'join') return loadJoinOrderTab();
 }
 
 function setRecruitView(view, btn) {
@@ -7210,6 +7220,7 @@ function addRecruitToRoster(recruitId) {
   const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
   if (!r) return;
   openAddCharacterModal();
+  CHARACTER_MODAL_JOIN_SOURCE = 'recruit';
   document.getElementById('cm-name').value = r.name;
   if (r.class && CLASS_COLORS[r.class]) document.getElementById('cm-class').value = r.class;
   if (r.role) document.getElementById('cm-role').value = r.role;
@@ -9125,4 +9136,328 @@ function surveyEditorRemoveOption(index, optionIndex) {
   syncSurveyEditor();
   SURVEY.editor.items[index].options.splice(optionIndex, 1);
   renderSurveyEditor();
+}
+
+// ─────────────────────────────────────────────
+//  JOIN ORDER
+// ─────────────────────────────────────────────
+// The order raiders joined this season (Team Management > Join Order). When
+// more than 30 -- Heroic's cap -- want to raid, #31 is next in if someone in
+// the first 30 is missing. Filled automatically (survey answers in the order
+// raiders finish, then roster additions; see lib/joinOrder.js) and editable
+// by officers. Raid Night can show each raider's number on their pill
+// (officers only).
+
+const HEROIC_RAID_CAP = 30;
+const JOIN_SOURCE_LABELS = { roster: 'Added to the roster', recruit: 'Added from Recruits', manual: 'Added by an officer' };
+
+const JOIN = {
+  lists:          [],    // every order this team has had, newest first
+  currentId:      null,  // this season's order
+  list:           null,  // the order the Join Order tab is showing
+  entries:        [],    // ...and its entries (including people who left)
+  currentEntries: null,  // this season's entries, for Raid Night numbers
+  loadedFor:      null,  // team id currentEntries belongs to
+  busy:           false,
+  saving:         null,  // the in-flight order save
+  pendingOrder:   null,  // a newer order to send once it finishes
+  showOnPlanner:  false, // Raid Night "Show Order Joined"
+  numberMaps:     null,  // cached { byChar, byAccount } for the badges
+};
+
+const joinActiveEntries = entries => (entries || []).filter(e => !e.left_at);
+
+// Loads an order (this season's by default) into JOIN.
+async function loadJoinOrder(listId = null) {
+  const data = await recruitingApi('getJoinOrder', listId ? { listId } : {});
+  JOIN.lists = data.lists || [];
+  JOIN.currentId = data.currentId;
+  JOIN.list = data.list;
+  JOIN.entries = data.entries || [];
+  if (!data.list || data.list.id === data.currentId) setJoinCurrentEntries(JOIN.entries);
+  return data;
+}
+
+function setJoinCurrentEntries(entries) {
+  JOIN.currentEntries = entries;
+  JOIN.loadedFor = STATE.teamId;
+  JOIN.numberMaps = null;
+}
+
+// The roster changed (someone added or removed): Raid Night's numbers reload.
+function invalidateJoinOrder() {
+  JOIN.loadedFor = null;
+  if (JOIN.showOnPlanner) toggleShowOrderJoined(true, { quiet: true });
+}
+
+async function loadJoinOrderTab(listId = null) {
+  const panel = document.getElementById('join-panel');
+  if (!panel) return;
+  if (!JOIN.list) panel.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading join order...</div></div>';
+  try {
+    await loadJoinOrder(listId);
+  } catch (e) {
+    panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load the join order</h3><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  renderJoinOrderTab();
+}
+
+function selectJoinOrderList(listId) {
+  return loadJoinOrderTab(listId);
+}
+
+function joinEntryPlayer(e) {
+  return (STATE.players || []).find(p => p.id === e.character_id) || null;
+}
+
+function joinEntrySource(e) {
+  if (e.source === 'survey') return `Survey · ${e.survey_status === 'unsure' ? 'Not sure yet' : 'Returning'}`;
+  return JOIN_SOURCE_LABELS[e.source] || '';
+}
+
+function renderJoinOrderTab() {
+  const panel = document.getElementById('join-panel');
+  if (!panel) return;
+
+  if (!JOIN.list) {
+    panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔢</div><h3>Track the order raiders joined</h3>
+      <p>Join Order numbers your raiders by when they joined this season. When more than ${HEROIC_RAID_CAP} want to raid (Heroic's cap),
+      #${HEROIC_RAID_CAP + 1} is next in if someone in the first ${HEROIC_RAID_CAP} is missing.</p>
+      <p>Opening a Next Season survey starts a new order automatically, in the order raiders finish it. You can also start one now from your current roster and arrange it by hand.</p>
+      <button class="btn-primary" style="margin-top:14px;" onclick="startJoinOrderFromRoster()">Start from current roster</button></div>`;
+    return;
+  }
+
+  const isCurrent = JOIN.list.id === JOIN.currentId;
+  const active = joinActiveEntries(JOIN.entries);
+  const left = JOIN.entries.filter(e => e.left_at).sort((a, b) => String(b.left_at).localeCompare(String(a.left_at)));
+  const nameHtml = e => {
+    const p = joinEntryPlayer(e);
+    return `<span class="recruit-name" style="color:${CLASS_COLORS[p?.class] || 'var(--text)'};">${escapeHtml(p?.name || e.character_name)}</span>`;
+  };
+
+  const picker = JOIN.lists.length > 1
+    ? `<select class="season-survey-select" onchange="selectJoinOrderList(this.value)" aria-label="Join order">${JOIN.lists.map(l =>
+        `<option value="${escapeHtml(l.id)}"${l.id === JOIN.list.id ? ' selected' : ''}>${escapeHtml(l.title)}${l.id === JOIN.currentId ? ' (this season)' : ` (${surveyDate(l.created_at)})`}</option>`).join('')}</select>`
+    : '';
+
+  const rows = active.map((e, i) => {
+    const tools = isCurrent ? `
+      <div class="join-tools">
+        <button class="survey-editor-icon" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="joinMove(${jsAttr(e.id)}, -1)">↑</button>
+        <button class="survey-editor-icon" title="Move down" ${i === active.length - 1 ? 'disabled' : ''} onclick="joinMove(${jsAttr(e.id)}, 1)">↓</button>
+        <input type="number" class="join-moveto" min="1" max="${active.length}" value="${i + 1}" title="Move to this number" aria-label="Move ${escapeHtml(e.character_name)} to number"
+          onchange="joinMoveTo(${jsAttr(e.id)}, this.value)" />
+        <button class="survey-editor-icon" title="Take out of the order" onclick="joinRemove(${jsAttr(e.id)})">✕</button>
+      </div>` : '';
+    const row = `<div class="join-row${i >= HEROIC_RAID_CAP ? ' over-cap' : ''}">
+      <div class="join-num">${i + 1}</div>
+      <div class="join-main">${nameHtml(e)}<span class="recruit-sub">${escapeHtml(joinEntrySource(e))} · ${surveyDate(e.joined_at)}</span></div>
+      ${tools}
+    </div>`;
+    const capLine = i === HEROIC_RAID_CAP - 1 && active.length > HEROIC_RAID_CAP
+      ? `<div class="join-cap">Heroic raid cap (${HEROIC_RAID_CAP}). Everyone below is next in line, in order.</div>` : '';
+    return row + capLine;
+  }).join('');
+
+  // Roster Mains who aren't numbered in this season's order.
+  const inOrder = e => ({ char: e.character_id, acct: e.account_id });
+  const numbered = active.map(inOrder);
+  const missing = isCurrent ? (STATE.players || []).filter(p => (p.rank || 'Main') === 'Main'
+    && !numbered.some(x => x.char === p.id || (p.account_id && x.acct === p.account_id))) : [];
+  const missingHtml = missing.length ? `
+    <div class="season-section">
+      <div class="season-section-head">
+        <div class="season-section-title">On the roster, not in the order (${missing.length})</div>
+        <button class="btn-secondary recruit-small-btn" onclick="joinAdd(${jsAttr(missing.map(p => p.id).join(','))})">Add all to the end</button>
+      </div>
+      <div class="recruit-sub" style="margin-bottom:8px;">Haven't answered the survey yet, or were on the roster before the order started.</div>
+      <div class="season-chips">${missing.map(p => `<button class="season-chip join-add-chip" style="color:${CLASS_COLORS[p.class] || 'var(--text)'};"
+        title="Add ${escapeHtml(p.name)} to the end" onclick="joinAdd(${jsAttr(p.id)})">+ ${escapeHtml(p.name)}</button>`).join('')}</div>
+    </div>` : '';
+
+  const leftHtml = left.length ? `
+    <div class="season-section">
+      <div class="season-section-title" style="margin-bottom:8px;">Left the order (${left.length})</div>
+      ${left.map(e => `<div class="join-row left">
+        <div class="join-num">–</div>
+        <div class="join-main">${nameHtml(e)}<span class="recruit-sub">${escapeHtml(e.left_reason || 'Left')} · ${surveyDate(e.left_at)} · joined ${surveyDate(e.joined_at)}</span></div>
+        ${isCurrent ? `<div class="join-tools"><button class="btn-secondary recruit-small-btn" onclick="joinRestore(${jsAttr(e.id)})">Put back</button></div>` : ''}
+      </div>`).join('')}
+    </div>` : '';
+
+  panel.innerHTML = `
+    <div class="season-header">
+      <div>
+        ${picker}
+        <div class="season-title">${escapeHtml(JOIN.list.title)}</div>
+        <div class="recruit-sub">${isCurrent
+          ? `This season's order, started ${surveyDate(JOIN.list.created_at)}. Survey answers and new roster Mains are added automatically; move anyone with the arrows or a number.`
+          : "A past season's order, kept for history."}</div>
+      </div>
+      <div class="join-count"><div class="stat-label">Raiders</div><div class="stat-value">${active.length}</div></div>
+    </div>
+    <div class="season-section">
+      ${rows || '<div class="recruit-empty-filter">Nobody yet. Raiders are added as they answer the survey or join the roster.</div>'}
+    </div>
+    ${missingHtml}
+    ${leftHtml}`;
+}
+
+function applyJoinOrderLocally(ids) {
+  const byId = new Map(JOIN.entries.map(e => [e.id, e]));
+  ids.forEach((id, i) => { if (byId.has(id)) byId.get(id).position = i + 1; });
+  JOIN.entries.sort((a, b) => a.position - b.position);
+}
+
+// Shows a new top-to-bottom order right away, then saves it. Moves made
+// while a save is in flight are shown immediately too, and the latest
+// order is sent as soon as that save finishes -- quick clicks aren't lost.
+async function saveJoinOrderIds(ids) {
+  applyJoinOrderLocally(ids);
+  renderJoinOrderTab();
+  if (JOIN.busy) { JOIN.pendingOrder = ids; return JOIN.saving?.catch(() => {}); } // errors are reported once, below
+  JOIN.busy = true;
+  JOIN.saving = (async () => {
+    let next = ids;
+    while (next) {
+      JOIN.pendingOrder = null;
+      const { entries } = await recruitingApi('saveJoinOrder', { listId: JOIN.list.id, order: next });
+      JOIN.entries = entries;
+      setJoinCurrentEntries(entries);
+      next = JOIN.pendingOrder;
+      if (next) applyJoinOrderLocally(next);
+    }
+  })();
+  try {
+    await JOIN.saving;
+  } catch (e) {
+    JOIN.pendingOrder = null;
+    showToast('Error: ' + e.message, 'error');
+    await loadJoinOrder(JOIN.list.id).catch(() => {});
+  } finally {
+    JOIN.busy = false;
+    renderJoinOrderTab();
+  }
+}
+
+function joinMove(entryId, dir) {
+  const ids = joinActiveEntries(JOIN.entries).map(e => e.id);
+  const i = ids.indexOf(entryId);
+  const to = i + dir;
+  if (i < 0 || to < 0 || to >= ids.length) return;
+  [ids[i], ids[to]] = [ids[to], ids[i]];
+  return saveJoinOrderIds(ids);
+}
+
+function joinMoveTo(entryId, number) {
+  const ids = joinActiveEntries(JOIN.entries).map(e => e.id);
+  const from = ids.indexOf(entryId);
+  const to = Math.min(Math.max(parseInt(number, 10) || 1, 1), ids.length) - 1;
+  if (from < 0 || from === to) { renderJoinOrderTab(); return; }
+  ids.splice(from, 1);
+  ids.splice(to, 0, entryId);
+  return saveJoinOrderIds(ids);
+}
+
+// Runs one of the Join Order edit actions and shows the result.
+async function joinOrderAction(action, body, doneMessage) {
+  if (JOIN.saving) await JOIN.saving.catch(() => {}); // let a reorder finish first
+  if (JOIN.busy) return;
+  JOIN.busy = true;
+  try {
+    const { entries } = await recruitingApi(action, { listId: JOIN.list.id, ...body });
+    JOIN.entries = entries;
+    setJoinCurrentEntries(entries);
+    if (doneMessage) showToast(doneMessage, 'success');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    await loadJoinOrder(JOIN.list.id).catch(() => {});
+  } finally {
+    JOIN.busy = false;
+    renderJoinOrderTab();
+  }
+}
+
+function joinAdd(characterIdsCsv) {
+  const characterIds = String(characterIdsCsv).split(',').filter(Boolean);
+  return joinOrderAction('addJoinOrderEntries', { characterIds },
+    characterIds.length > 1 ? `Added ${characterIds.length} raiders to the end` : 'Added to the end');
+}
+
+function joinRemove(entryId) {
+  const e = JOIN.entries.find(x => x.id === entryId);
+  if (!e || !confirm(`Take ${e.character_name} out of the order? They'll be listed under "Left the order" and can be put back.`)) return;
+  return joinOrderAction('removeJoinOrderEntry', { entryId });
+}
+
+function joinRestore(entryId) {
+  return joinOrderAction('restoreJoinOrderEntry', { entryId }, 'Put back at the end');
+}
+
+async function startJoinOrderFromRoster() {
+  try {
+    await recruitingApi('startJoinOrder');
+    showToast('Join order started from your roster. Arrange it by hand if needed.', 'success');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+  loadJoinOrderTab();
+}
+
+// ── Raid Night: "Show Order Joined" (officers) ──
+
+function joinOrderNumberMaps() {
+  const byChar = new Map(), byAccount = new Map();
+  joinActiveEntries(JOIN.currentEntries).forEach((e, i) => {
+    if (e.character_id) byChar.set(e.character_id, i + 1);
+    if (e.account_id && !byAccount.has(e.account_id)) byAccount.set(e.account_id, i + 1);
+  });
+  return { byChar, byAccount };
+}
+
+// "#12" on a Raid Night pill -- a raider's alts share their main's number
+// (matched through the account that claimed both).
+function joinOrderBadge(player) {
+  if (!JOIN.showOnPlanner || !player || !['owner', 'officer'].includes(STATE.myRole) || JOIN.loadedFor !== STATE.teamId) return '';
+  const maps = JOIN.numberMaps || (JOIN.numberMaps = joinOrderNumberMaps());
+  let n = maps.byChar.get(player.id);
+  if (!n && player.account_id) {
+    // An alt: borrow the main's number via the claiming account.
+    const main = (STATE.players || []).find(p => p.account_id === player.account_id && maps.byChar.has(p.id));
+    n = main ? maps.byChar.get(main.id) : maps.byAccount.get(player.account_id);
+  }
+  return n ? `<span class="join-order-badge${n > HEROIC_RAID_CAP ? ' over-cap' : ''}" title="Joined #${n} this season">#${n}</span>` : '';
+}
+
+async function toggleShowOrderJoined(force, { quiet = false } = {}) {
+  JOIN.showOnPlanner = typeof force === 'boolean' ? force : !JOIN.showOnPlanner;
+  try { localStorage.setItem('raidlead_show_join_order', JOIN.showOnPlanner ? '1' : ''); } catch (e) {}
+  if (JOIN.showOnPlanner && JOIN.loadedFor !== STATE.teamId) {
+    try {
+      const data = await recruitingApi('getJoinOrder');
+      setJoinCurrentEntries(data.list && data.list.id === data.currentId ? data.entries : []);
+      if (!data.list && !quiet) showToast('No join order yet. Start one in Team Management > Join Order.', '');
+    } catch (e) {
+      if (!quiet) showToast('Error: ' + e.message, 'error');
+      JOIN.showOnPlanner = false;
+    }
+  }
+  JOIN.numberMaps = null;
+  const btn = document.getElementById('planner-join-order-btn');
+  if (btn) {
+    btn.classList.toggle('active', JOIN.showOnPlanner);
+    btn.textContent = JOIN.showOnPlanner ? '# Hide Order Joined' : '# Show Order Joined';
+  }
+  renderPlannerChecklist();
+  renderPlannerRoster();
+}
+
+// Officers keep their Show Order Joined choice between visits.
+function restoreShowOrderJoined() {
+  let saved = false;
+  try { saved = localStorage.getItem('raidlead_show_join_order') === '1'; } catch (e) {}
+  if (!STATE.teamId || !saved) return;
+  if (!JOIN.showOnPlanner || JOIN.loadedFor !== STATE.teamId) toggleShowOrderJoined(true, { quiet: true });
 }
