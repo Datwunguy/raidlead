@@ -1589,6 +1589,11 @@ function showTab(name) {
   document.querySelector('.nav-btn[data-tab="' + name + '"]')?.classList.add('active');
   updateMobileNavActive(name);
 
+  // Data that loaded while another tab was showing (item levels after a team
+  // switch, flex roles) only redraws the Roster if it's visible -- so draw it
+  // fresh whenever it's opened.
+  if (name === 'roster') renderRoster();
+
   // Always load the published plan from DB when switching to planner
   // so every user sees the same roster regardless of device/localStorage
   if (name === 'planner' && STATE.teamId) {
