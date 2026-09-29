@@ -774,14 +774,172 @@ function populateClassDropdown(selectId, selected) {
   if (selected) sel.value = selected;
 }
 
+// Spec options for a class; the role always follows the spec. Picks the given
+// spec, else the first one filling `fallbackRole`, else the class's first.
+function populateSpecDropdown(cls, selectedSpec, fallbackRole) {
+  const sel = document.getElementById('cm-spec');
+  if (!sel) return;
+  const specs = CLASS_SPECS[cls] || [];
+  const pick = canonicalSpecFor(cls, selectedSpec)
+    || specs.find(([, role]) => role === fallbackRole)?.[0] || specs[0]?.[0] || '';
+  sel.innerHTML = specs.map(([name]) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+  sel.value = pick;
+  updateSpecRoleLabel();
+}
+
+const SPEC_ROLE_NAMES = { tank: 'Tank', heal: 'Healer', melee: 'Melee', ranged: 'Ranged' };
+
+// The role the chosen class + spec fills.
+function characterModalRole() {
+  const cls = document.getElementById('cm-class')?.value;
+  const spec = document.getElementById('cm-spec')?.value;
+  return (CLASS_SPECS[cls] || []).find(([name]) => name === spec)?.[1] || null;
+}
+
+function updateSpecRoleLabel() {
+  const el = document.getElementById('cm-role-label');
+  const role = characterModalRole();
+  if (el) el.textContent = role ? `· ${SPEC_ROLE_NAMES[role]}` : '';
+}
+
+// ── Name suggestions (Raider.io search) as an officer types a character name ──
+const NAME_SEARCH = { timer: null, seq: 0, results: [], active: -1 };
+
+function onCharacterNameInput() {
+  clearTimeout(NAME_SEARCH.timer);
+  const term = document.getElementById('cm-name').value.trim();
+  NAME_SEARCH.seq++; // anything still in flight is now out of date
+  if (term.length < 2) return hideNameSuggestions();
+  NAME_SEARCH.timer = setTimeout(() => searchCharacterNames(term), 300);
+}
+
+async function searchCharacterNames(term) {
+  const seq = ++NAME_SEARCH.seq;
+  try {
+    const data = await recruitingApi('searchCharacters', { term });
+    if (seq !== NAME_SEARCH.seq) return; // they kept typing
+    NAME_SEARCH.results = data.results || [];
+    NAME_SEARCH.active = -1;
+    renderNameSuggestions();
+  } catch (e) {
+    hideNameSuggestions(); // no suggestions -- typing the name still works
+  }
+}
+
+function renderNameSuggestions() {
+  const el = document.getElementById('cm-name-suggestions');
+  if (!el) return;
+  const list = NAME_SEARCH.results;
+  if (!list.length || document.activeElement?.id !== 'cm-name') return hideNameSuggestions();
+  el.innerHTML = list.map((c, i) => {
+    const onRoster = (STATE.players || []).some(p => p.name.toLowerCase() === c.name.toLowerCase() && p.server === c.realmSlug);
+    return `<button type="button" class="name-suggest-item${i === NAME_SEARCH.active ? ' active' : ''}" role="option"
+      onmousedown="event.preventDefault()" onclick="pickNameSuggestion(${i})">
+      <span class="name-suggest-name" style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>
+      <span class="name-suggest-realm">${escapeHtml(c.realmName)}${c.class ? ' · ' + escapeHtml(c.class.replace(/\b\w/g, ch => ch.toUpperCase())) : ''}</span>
+      ${onRoster ? '<span class="recruit-badge on-roster">On roster</span>' : ''}
+    </button>`;
+  }).join('');
+  el.style.display = 'block';
+}
+
+function hideNameSuggestions() {
+  const el = document.getElementById('cm-name-suggestions');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  NAME_SEARCH.active = -1;
+}
+
+function onCharacterNameKey(event) {
+  const n = NAME_SEARCH.results.length;
+  const open = document.getElementById('cm-name-suggestions')?.style.display === 'block';
+  if (!open || !n) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    NAME_SEARCH.active = (NAME_SEARCH.active + (event.key === 'ArrowDown' ? 1 : -1) + n) % n;
+    renderNameSuggestions();
+  } else if (event.key === 'Enter' && NAME_SEARCH.active >= 0) {
+    event.preventDefault();
+    pickNameSuggestion(NAME_SEARCH.active);
+  } else if (event.key === 'Escape') {
+    hideNameSuggestions();
+  }
+}
+
+// Fills name, server, and class from the pick, then their spec from Raider.io.
+function pickNameSuggestion(i) {
+  const c = NAME_SEARCH.results[i];
+  if (!c) return;
+  hideNameSuggestions();
+  NAME_SEARCH.seq++;
+  document.getElementById('cm-name').value = c.name;
+  document.getElementById('cm-server').value = c.realmName;
+  if (c.class && CLASS_COLORS[c.class]) {
+    document.getElementById('cm-class').value = c.class;
+    populateSpecDropdown(c.class, null, characterModalRole());
+  }
+  checkCharacterRename();
+  fillCharacterFromRaiderio(c.name, c.realmName, true);
+}
+
+// Like Add Recruit: class and spec come from Raider.io (the spec they last
+// logged out in). Both stay editable -- someone may raid as another spec, the
+// way Scootoot shows Elemental but heals. Runs once per name + realm.
+const CHARACTER_LOOKUP = { key: null };
+const characterLookupKey = (name, realm) => `${name}|${realm}`.toLowerCase();
+
+async function fillCharacterFromRaiderio(name, realm, force) {
+  const key = characterLookupKey(name, realm);
+  if (!force && CHARACTER_LOOKUP.key === key) return;
+  CHARACTER_LOOKUP.key = key;
+  const msg = document.getElementById('cm-msg');
+  msg.textContent = 'Looking them up on Raider.io...';
+  msg.className = 'status-msg loading';
+  try {
+    const { summary } = await recruitingApi('lookupCharacter', { name, realm });
+    if (CHARACTER_LOOKUP.key !== key) return; // they changed the name or realm since
+    if (!summary) {
+      msg.textContent = `${name} isn't on Raider.io for ${realm} -- check the spelling and realm, or set their class and spec by hand.`;
+      msg.className = 'status-msg';
+      return;
+    }
+    // Raider.io's spelling (capitals, accents), and their current name after a rename.
+    document.getElementById('cm-name').value = summary.name;
+    document.getElementById('cm-server').value = summary.realmName;
+    CHARACTER_LOOKUP.key = characterLookupKey(summary.name, summary.realmName);
+    checkCharacterRename();
+    if (summary.class && CLASS_COLORS[summary.class]) {
+      document.getElementById('cm-class').value = summary.class;
+      populateSpecDropdown(summary.class, summary.spec, summary.role);
+    }
+    const renamed = summary.renamedFrom ? ` (renamed from ${formerCharacterText(summary.renamedFrom)})` : '';
+    msg.textContent = summary.spec
+      ? `Raider.io: ${summary.spec} ${titleCaseClass(summary.class)}${renamed}. If they raid as another spec, change it above.`
+      : `Found ${summary.name} on Raider.io${renamed} -- pick their spec above.`;
+    msg.className = 'status-msg';
+  } catch (e) {
+    if (CHARACTER_LOOKUP.key === key) { msg.textContent = ''; msg.className = 'status-msg'; }
+  }
+}
+
+// Typed by hand: look them up once both boxes are filled -- only when adding;
+// editing keeps what's on file.
+function lookupTypedCharacter() {
+  if (CHARACTER_MODAL_EDIT_ID) return;
+  const name = document.getElementById('cm-name').value.trim();
+  const realm = document.getElementById('cm-server').value.trim();
+  if (name.length >= 2 && realm) fillCharacterFromRaiderio(name, realm);
+}
+
 function openAddCharacterModal() {
   CHARACTER_MODAL_EDIT_ID = null;
   CHARACTER_MODAL_JOIN_SOURCE = null;
   CHARACTER_MODAL_ORIGINAL_NAME = null;
   document.getElementById('character-modal-title').textContent = 'Add Character';
   populateClassDropdown('cm-class');
+  populateSpecDropdown(document.getElementById('cm-class').value, null, 'ranged');
+  hideNameSuggestions();
+  CHARACTER_LOOKUP.key = null;
   document.getElementById('cm-name').value = '';
-  document.getElementById('cm-role').value = 'ranged';
   document.getElementById('cm-server').value = titleCaseServer(STATE.config?.server);
   document.getElementById('cm-rank').value = 'Main';
   document.getElementById('cm-msg').textContent = '';
@@ -799,8 +957,10 @@ function openEditCharacterModal(characterId) {
   CHARACTER_MODAL_ORIGINAL_NAME = player.name;
   document.getElementById('character-modal-title').textContent = 'Edit Character';
   populateClassDropdown('cm-class', player.class);
+  // Their saved spec; characters from before specs were stored get one matching their role.
+  populateSpecDropdown(player.class, player.spec, ['heal', 'healer'].includes(player.role) ? 'heal' : player.role);
+  hideNameSuggestions();
   document.getElementById('cm-name').value = player.name;
-  document.getElementById('cm-role').value = ['heal', 'healer'].includes(player.role) ? 'heal' : player.role;
   document.getElementById('cm-server').value = player.serverDisplay || player.server || '';
   document.getElementById('cm-rank').value = player.rank || 'Main';
   document.getElementById('cm-msg').textContent = '';
@@ -827,7 +987,8 @@ function checkCharacterRename() {
 async function saveCharacterModal() {
   const name   = document.getElementById('cm-name').value.trim();
   const cls    = document.getElementById('cm-class').value;
-  const role   = document.getElementById('cm-role').value;
+  const spec   = document.getElementById('cm-spec').value;
+  const role   = characterModalRole();
   const server = document.getElementById('cm-server').value.trim();
   const rank   = document.getElementById('cm-rank').value;
   const msg    = document.getElementById('cm-msg');
@@ -843,8 +1004,8 @@ async function saveCharacterModal() {
   try {
     const action = CHARACTER_MODAL_EDIT_ID ? 'updateCharacter' : 'addCharacter';
     const body = CHARACTER_MODAL_EDIT_ID
-      ? { teamId: STATE.teamId, characterId: CHARACTER_MODAL_EDIT_ID, name, class: cls, server, role, rank }
-      : { teamId: STATE.teamId, name, class: cls, server, role, rank, joinSource: CHARACTER_MODAL_JOIN_SOURCE };
+      ? { teamId: STATE.teamId, characterId: CHARACTER_MODAL_EDIT_ID, name, class: cls, server, spec, role, rank }
+      : { teamId: STATE.teamId, name, class: cls, server, spec, role, rank, joinSource: CHARACTER_MODAL_JOIN_SOURCE };
 
     const resp = await fetch(`/api/roster?action=${action}`, {
       method: 'POST',
@@ -1033,12 +1194,15 @@ function pickGuildCharacter(idx) {
   const m = GUILD_ROSTER_FILTERED[idx];
   if (!m) return;
   document.getElementById('cm-name').value = m.name;
-  if (m.class) document.getElementById('cm-class').value = m.class.toLowerCase();
+  if (m.class) {
+    document.getElementById('cm-class').value = m.class.toLowerCase();
+    populateSpecDropdown(m.class.toLowerCase(), GUILD_SPEC_CACHE[`${m.name}|${m.realmSlug || ''}`], characterModalRole());
+  }
   document.getElementById('cm-server').value = titleCaseServer(m.realmSlug) || titleCaseServer(STATE.config?.server);
   document.getElementById('cm-guild-panel').style.display = 'none';
   document.getElementById('cm-guild-toggle-btn').textContent = '🔍 Add From Guild';
   const msg = document.getElementById('cm-msg');
-  msg.textContent = `Selected ${m.name} from the guild roster -- pick a Role and Rank, then Save.`;
+  msg.textContent = `Selected ${m.name} from the guild roster -- check their Spec and Rank, then Save.`;
   msg.className = 'status-msg';
 }
 
@@ -7100,11 +7264,14 @@ function addRecruitToRoster(recruitId) {
   openAddCharacterModal();
   CHARACTER_MODAL_JOIN_SOURCE = 'recruit';
   document.getElementById('cm-name').value = r.name;
-  if (r.class && CLASS_COLORS[r.class]) document.getElementById('cm-class').value = r.class;
-  if (r.role) document.getElementById('cm-role').value = r.role;
+  if (r.class && CLASS_COLORS[r.class]) {
+    document.getElementById('cm-class').value = r.class;
+    populateSpecDropdown(r.class, r.spec, r.role);
+  }
+  CHARACTER_LOOKUP.key = characterLookupKey(r.name, r.realm); // their recruit entry already has the right spec
   document.getElementById('cm-server').value = r.realm;
   const msg = document.getElementById('cm-msg');
-  msg.textContent = `Filled in from ${r.name}'s recruit entry. Check the role and rank, then Save.`;
+  msg.textContent = `Filled in from ${r.name}'s recruit entry. Check the spec and rank, then Save.`;
   msg.className   = 'status-msg';
 }
 

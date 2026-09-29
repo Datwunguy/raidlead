@@ -22,7 +22,7 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership, getTeamRole, isOfficerRole } = require('../lib/teamAuth');
 const { slugifyServer } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate, fetchRaidCalendar, seasonTransitionFrom } = require('../lib/raiderioRaids');
-const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
+const { fetchCharacterSummary, searchCharacters } = require('../lib/raiderioCharacter');
 const { resolveCurrentCharacter, wclCharacterIdFromUrl } = require('../lib/wclClient');
 const { canonicalSpec, roleForSpec, parseSpec } = require('../lib/wowSpecs');
 const { normalizeSurveyDefinition, normalizeSurveyResponse, upgradeQuestions, upgradeResponse, surveyPromptFor } = require('../lib/seasonSurvey');
@@ -251,6 +251,16 @@ module.exports = async (req, res) => {
       const existing = (summary?.renamedFrom && await findExisting(summary.name, slugifyServer(summary.realmName)))
         || await findExisting(name, slugifyServer(realm));
       return res.status(200).json({ summary, existing });
+    }
+
+    // ── SEARCH CHARACTERS: name suggestions as an officer types (Add
+    // Character's name box) -- this team's region, its own realm first. ──
+    if (action === 'searchCharacters') {
+      const term = String(req.query.term || req.body?.term || '').trim();
+      if (term.length < 2 || term.length > 24) return res.status(200).json({ results: [] });
+      const { data: team } = await supabase.from('teams').select('guilds ( server, region )').eq('id', teamId).single();
+      const results = await searchCharacters(term, team?.guilds?.region || 'us', slugifyServer(team?.guilds?.server || ''));
+      return res.status(200).json({ results });
     }
 
     // ── ADD RECRUIT ──

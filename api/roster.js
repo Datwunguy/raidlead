@@ -20,6 +20,24 @@ const { appendToJoinOrder, markLeftJoinOrder } = require('../lib/joinOrder');
 const { linkRosterCharacters } = require('../lib/characterClaims');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
 const { teamWclCredentials, wclRequest } = require('../lib/wclClient');
+const { CLASS_SPECS, canonicalSpec, roleForSpec } = require('../lib/wowSpecs');
+
+// A roster character's role comes from its spec -- a Death Knight is never
+// Ranged. With no spec (an older page), the role must still be one the class
+// can fill. Returns { spec, role } or { error }.
+function specAndRole(cls, spec, role) {
+  const c = String(cls || '').toLowerCase().trim();
+  const specs = CLASS_SPECS[c];
+  if (!specs) return { error: 'Pick a class' };
+  if (spec) {
+    const name = canonicalSpec(c, spec);
+    if (!name) return { error: `${spec} isn't a ${c} spec` };
+    return { spec: name, role: roleForSpec(c, name) };
+  }
+  const r = String(role || '').toLowerCase().trim();
+  if (!specs.some(([, specRole]) => specRole === r)) return { error: `A ${c} can't be ${r || 'that role'}` };
+  return { spec: null, role: r };
+}
 const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 
 // Cache listIlvl's live Raider.io results per team briefly, so several
@@ -916,7 +934,7 @@ module.exports = async (req, res) => {
 
       const { data: chars, error } = await supabase
         .from('characters')
-        .select(`id, name, class, server, realm_name, primary_role, rank, account_id,
+        .select(`id, name, class, spec, server, realm_name, primary_role, rank, account_id,
           flex_tank, flex_heal, flex_melee, flex_ranged,
           can_flex_tank, can_flex_heal, can_flex_melee, can_flex_ranged`)
         .eq('team_id', teamId)
@@ -927,6 +945,7 @@ module.exports = async (req, res) => {
         id:              c.id,
         name:            c.name,
         class:           c.class,
+        spec:            c.spec || null,
         server:          c.server,
         serverDisplay:   c.realm_name || serverDisplayFromSlug(c.server),
         role:            c.primary_role,
@@ -1060,10 +1079,12 @@ module.exports = async (req, res) => {
 
   // ── ADD CHARACTER (officer only): manually add one character to the roster ──
   if (action === 'addCharacter') {
-    const { teamId, name, class: charClass, server, role, rank } = req.body;
-    if (!teamId || !name || !charClass || !server || !role) {
-      return res.status(400).json({ error: 'name, class, server, and role are required' });
+    const { teamId, name, class: charClass, server, role, spec, rank } = req.body;
+    if (!teamId || !name || !charClass || !server || !(spec || role)) {
+      return res.status(400).json({ error: 'name, class, server, and spec are required' });
     }
+    const specRole = specAndRole(charClass, spec, role);
+    if (specRole.error) return res.status(400).json({ error: specRole.error });
     if (name.trim().length > 24 || server.trim().length > 64) return res.status(400).json({ error: 'That name or realm is too long' });
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
@@ -1086,7 +1107,8 @@ module.exports = async (req, res) => {
             class:        charClass.toLowerCase().trim(),
             server:       slugifyServer(server),
             realm_name:   server.trim(),
-            primary_role: role.toLowerCase().trim(),
+            primary_role: specRole.role,
+            spec:         specRole.spec,
             rank:         rank || 'Main',
             active:       true,
           })
@@ -1102,7 +1124,8 @@ module.exports = async (req, res) => {
             class:        charClass.toLowerCase().trim(),
             server:       slugifyServer(server),
             realm_name:   server.trim(),
-            primary_role: role.toLowerCase().trim(),
+            primary_role: specRole.role,
+            spec:         specRole.spec,
             rank:         rank || 'Main',
             active:       true,
           })
@@ -1138,7 +1161,7 @@ module.exports = async (req, res) => {
   // so a rename orphans past attendance under the old name (surfaced as a
   // warning in the UI, not blocked here). ──
   if (action === 'updateCharacter') {
-    const { teamId, characterId, name, class: charClass, server, role, rank } = req.body;
+    const { teamId, characterId, name, class: charClass, server, role, spec, rank } = req.body;
     if (!teamId || !characterId) return res.status(400).json({ error: 'teamId and characterId required' });
     if ((name && name.trim().length > 24) || (server && server.trim().length > 64)) return res.status(400).json({ error: 'That name or realm is too long' });
     try {
@@ -1149,7 +1172,20 @@ module.exports = async (req, res) => {
       if (charClass) updates.class        = charClass.toLowerCase().trim();
       if (server)    updates.server       = slugifyServer(server);
       if (server)    updates.realm_name   = server.trim();
-      if (role)      updates.primary_role = role.toLowerCase().trim();
+      if (spec || role || charClass) {
+        // Role follows spec, checked against the class being saved (or the one on file).
+        let cls = charClass;
+        if (!cls) {
+          const { data: current } = await supabase.from('characters').select('class').eq('id', characterId).eq('team_id', teamId).maybeSingle();
+          cls = current?.class;
+        }
+        if (spec || role) {
+          const specRole = specAndRole(cls, spec, role);
+          if (specRole.error) return res.status(400).json({ error: specRole.error });
+          updates.primary_role = specRole.role;
+          updates.spec = specRole.spec;
+        }
+      }
       if (rank)      updates.rank         = rank;
 
       const { error } = await supabase

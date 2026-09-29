@@ -1084,30 +1084,27 @@
               </div>
             </div>
             <div class="form-row">
-              <div class="form-group full">
+              <div class="form-group full name-suggest-wrap">
                 <label>Character Name</label>
-                <input type="text" id="cm-name" placeholder="e.g. Thrallmar" autocomplete="off" oninput="checkCharacterRename()" />
+                <input type="text" id="cm-name" placeholder="Start typing a name..." autocomplete="off"
+                  oninput="checkCharacterRename(); onCharacterNameInput()" onkeydown="onCharacterNameKey(event)" onblur="hideNameSuggestions(); lookupTypedCharacter()" />
+                <div id="cm-name-suggestions" class="name-suggest" role="listbox" style="display:none;"></div>
               </div>
             </div>
             <div class="form-row">
               <div class="form-group">
                 <label>Class</label>
-                <select id="cm-class"></select>
+                <select id="cm-class" onchange="populateSpecDropdown(this.value, null, characterModalRole())"></select>
               </div>
               <div class="form-group">
-                <label>Role</label>
-                <select id="cm-role">
-                  <option value="tank">Tank</option>
-                  <option value="heal">Healer</option>
-                  <option value="melee">Melee</option>
-                  <option value="ranged">Ranged</option>
-                </select>
+                <label>Spec <span id="cm-role-label" class="cm-role-label"></span></label>
+                <select id="cm-spec" onchange="updateSpecRoleLabel()"></select>
               </div>
             </div>
             <div class="form-row">
               <div class="form-group">
                 <label>Server</label>
-                <input type="text" id="cm-server" placeholder="e.g. Sargeras" autocomplete="off" onblur="this.value = titleCaseServer(this.value)" />
+                <input type="text" id="cm-server" placeholder="e.g. Sargeras" autocomplete="off" onblur="this.value = titleCaseServer(this.value); lookupTypedCharacter()" />
               </div>
               <div class="form-group">
                 <label>Rank</label>
