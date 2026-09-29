@@ -2783,6 +2783,18 @@ async function onSeasonHistoryChange(seasonId) {
   }
 }
 
+// The Roster's Zone card: the raid's name, with its WCL zone ID underneath
+// once one's on file (never "Zone null").
+function renderZoneCard() {
+  const zoneEl = document.getElementById('stat-zone');
+  const subEl  = document.getElementById('stat-difficulty');
+  if (!zoneEl || !subEl) return;
+  const zoneLabel   = STATE.zoneId ? 'Zone ' + STATE.zoneId : '';
+  const zoneDisplay = STATE.zoneName && STATE.zoneName !== '—' ? STATE.zoneName : (zoneLabel || '—');
+  zoneEl.textContent = zoneDisplay;
+  subEl.textContent  = zoneDisplay === zoneLabel ? '' : zoneLabel;
+}
+
 function renderRoster() {
   loadSeasonHistoryList();
   const players = STATE.rosterRankFilter === 'all'
@@ -2791,10 +2803,7 @@ function renderRoster() {
 
   // Stats
   document.getElementById('stat-total').textContent = players.length;
-  const zoneLabel   = STATE.zoneId ? 'Zone ' + STATE.zoneId : '';
-  const zoneDisplay = STATE.zoneName && STATE.zoneName !== '—' ? STATE.zoneName : (zoneLabel || '—');
-  document.getElementById('stat-zone').textContent  = zoneDisplay;
-  document.getElementById('stat-difficulty').textContent = zoneDisplay === zoneLabel ? '' : zoneLabel;
+  renderZoneCard();
 
   // Avg iLvl, plus the average of just the top 20 / top 10 equipped ilvls --
   // a closer read on raid-ready strength than a whole-roster average, which
@@ -3165,14 +3174,14 @@ async function checkAndAdvanceSeason() {
       body: JSON.stringify({ teamId: STATE.teamId }),
     });
     const data = await resp.json();
-    if (!resp.ok || !data.changed) return;
+    if (!resp.ok || !(data.changed || data.zoneIdFilled)) return;
 
     STATE.zoneId   = data.zoneId;
     STATE.zoneName = data.zoneName;
     if (STATE.config) { STATE.config.zoneId = data.zoneId; STATE.config.zoneName = data.zoneName; }
-    const zoneEl = document.getElementById('stat-zone');
-    if (zoneEl) zoneEl.textContent = data.zoneName || 'Zone ' + data.zoneId;
-    showToast('Season started: ' + data.zoneName, 'success');
+    renderZoneCard();
+    // zoneIdFilled: same raid, its WCL zone ID just filled in -- not a new season.
+    if (data.changed) showToast('Season started: ' + data.zoneName, 'success');
   } catch(e) { /* silent -- best-effort background sync */ }
 }
 
@@ -4325,8 +4334,7 @@ function switchToDetectedZone() {
   updateScoresFetchBtn(null);
   renderScoresTable('all');
   document.getElementById('zone-banner').style.display = 'none';
-  const zoneEl = document.getElementById('stat-zone');
-  if (zoneEl) zoneEl.textContent = STATE.zoneName || 'Zone ' + STATE.zoneId;
+  renderZoneCard();
   showToast('Switched to ' + STATE.zoneName + ' (Zone ' + STATE.zoneId + ')', 'success');
 }
 

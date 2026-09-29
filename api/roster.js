@@ -177,11 +177,10 @@ module.exports = async (req, res) => {
   //   1. Raider.io's static-data (primary) -- no WCL credentials needed,
   //      and its per-region start/end dates are real Blizzard-confirmed
   //      dates, not a guess based on who happened to notice first.
-  //   2. If the team has WCL credentials, look up that same raid *by name*
-  //      in their own WCL zone list to fill in a real zone_id (needed for
-  //      Scores/Mitigation) -- not found, or no credentials, zone_id just
-  //      stays null, which is fine since those features are already
-  //      unavailable to a credential-less team regardless.
+  //   2. Fill in that raid's WCL zone_id (needed for Scores/Mitigation) --
+  //      see resolveZoneId. A team that's on the right raid but has no
+  //      zone_id yet gets one as soon as one's available, not only when
+  //      the next raid launches.
   //   3. If Raider.io itself can't resolve anything (network hiccup, or a
   //      brand-new expansion not in its static data yet) and the team has
   //      WCL credentials, fall back to the WCL-only PTR/season-filtered
@@ -195,6 +194,25 @@ module.exports = async (req, res) => {
   // next one started. Only writes rows that are actually off, so it's cheap
   // to run on every advanceSeason call; seasons whose zone Raider.io doesn't
   // list keep their dates. Best-effort -- never fails the caller.
+  // WCL's zone IDs are the same for every guild, so a raid's ID comes from
+  // this team's own WCL zone list (by name) or, without WCL credentials,
+  // from any other team already on that raid. null if nobody knows it yet.
+  async function resolveZoneId(teamId, zoneName, detectedId) {
+    if (detectedId) return detectedId;
+    try {
+      const own = await lookupWclZoneIdByName(supabase, teamId, zoneName);
+      if (own) return own;
+    } catch (e) { /* no credentials or WCL unavailable: try the others */ }
+    try {
+      const { data: others } = await supabase
+        .from('teams').select('zone_id').eq('zone_name', zoneName).not('zone_id', 'is', null).limit(1);
+      if (others?.[0]?.zone_id) return others[0].zone_id;
+      const { data: known } = await supabase
+        .from('global_zone_transitions').select('zone_id').eq('zone_name', zoneName).not('zone_id', 'is', null).limit(1);
+      return known?.[0]?.zone_id ?? null;
+    } catch (e) { return null; } // never blocks a season change
+  }
+
   async function repairSeasonDates(teamId, region) {
     try {
       const raids = await fetchRaidCalendar(region);
@@ -228,7 +246,7 @@ module.exports = async (req, res) => {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
       const { data: team } = await supabase
-        .from('teams').select('zone_name, guilds ( region )').eq('id', teamId).single();
+        .from('teams').select('zone_name, zone_id, guilds ( region )').eq('id', teamId).single();
       if (!team) return res.status(404).json({ error: 'Team not found' });
 
       const region = team.guilds?.region || 'us';
@@ -239,10 +257,21 @@ module.exports = async (req, res) => {
       const zoneName = detected.zoneName;
       if (zoneName === team.zone_name) {
         await repairSeasonDates(teamId, region);
+        // Same raid, but no WCL zone ID on file yet (e.g. no WCL credentials
+        // when it started): fill it in now -- no new season.
+        if (!team.zone_id) {
+          const zoneId = await resolveZoneId(teamId, zoneName, detected.zoneId);
+          if (zoneId) {
+            await supabase.from('teams').update({ zone_id: zoneId }).eq('id', teamId);
+            await supabase.from('seasons').update({ zone_id: zoneId })
+              .eq('team_id', teamId).eq('zone_name', zoneName).is('zone_id', null);
+            return res.status(200).json({ success: true, changed: false, zoneIdFilled: true, zoneId, zoneName });
+          }
+        }
         return res.status(200).json({ success: true, changed: false });
       }
 
-      const zoneId = detected.zoneId ?? await lookupWclZoneIdByName(supabase, teamId, zoneName);
+      const zoneId = await resolveZoneId(teamId, zoneName, detected.zoneId);
 
       // A raid tier launches on one real date per region -- the season
       // boundary is that date, not whichever day an officer next happened
