@@ -13,13 +13,13 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
-const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate, fetchRaidCalendar, raidLaunchDate } = require('../lib/raiderioRaids');
 const { appendToJoinOrder, markLeftJoinOrder } = require('../lib/joinOrder');
 const { linkRosterCharacters } = require('../lib/characterClaims');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
+const { teamWclCredentials, wclRequest } = require('../lib/wclClient');
 const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 
 // Cache listIlvl's live Raider.io results per team briefly, so several
@@ -53,44 +53,17 @@ function toWclRegion(region) {
   return region === 'oceanic' ? 'us' : region;
 }
 
-// ── WCL token cache, keyed by client ID -- every guild brings its own WCL API client,
-// so each guild's usage draws only on its own quota, never a shared app-wide one. ──
-const wclTokenCache = new Map(); // clientId -> { token, exp }
-
-async function getWclToken(creds) {
-  if (!creds?.clientId || !creds?.clientSecret) throw new WclNotConfiguredError();
-
-  const cached = wclTokenCache.get(creds.clientId);
-  if (cached && cached.exp > Date.now() + 60000) return cached.token;
-
-  const resp = await fetch('https://www.warcraftlogs.com/oauth/token', {
-    method:  'POST',
-    headers: {
-      'Authorization': 'Basic ' + Buffer.from(`${creds.clientId}:${creds.clientSecret}`).toString('base64'),
-      'Content-Type':  'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials',
-  });
-
-  const data = await resp.json();
-  if (!resp.ok || !data.access_token) throw new Error("Failed to get a WCL token -- check that your guild's WCL Client ID/Secret in Guild Settings are correct");
-
-  const exp = Date.now() + ((data.expires_in || 3600) * 1000);
-  wclTokenCache.set(creds.clientId, { token: data.access_token, exp });
-  return data.access_token;
-}
-
+// WCL's whole response for one query, via the shared client in lib/wclClient.js
+// (tokens cached per team's own API client). Missing credentials and a
+// refused token get errors the UI can explain.
 async function wclQuery(query, creds) {
-  const token = await getWclToken(creds);
-  const resp  = await fetch('https://www.warcraftlogs.com/api/v2/client', {
-    method:  'POST',
-    headers: {
-      'Authorization': 'Bearer ' + token,
-      'Content-Type':  'application/json',
-    },
-    body: JSON.stringify({ query }),
-  });
-  return await resp.json();
+  if (!creds?.clientId || !creds?.clientSecret) throw new WclNotConfiguredError();
+  try {
+    return await wclRequest(creds, query);
+  } catch (e) {
+    if (e.tokenFailed) throw new Error("Failed to get a WCL token -- check that your guild's WCL Client ID/Secret in Guild Settings are correct");
+    throw e;
+  }
 }
 
 // Fetches ALL reports for a guild+zone by paginating through WCL's reports connection.
@@ -105,8 +78,8 @@ async function fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagP
   while (page <= maxPages) {
     const resp = await wclQuery(`query {
       reportData { reports(
-        guildName: "${guildName}" guildServerSlug: "${serverSlug}"
-        guildServerRegion: "${region}" zoneID: ${zoneId} limit: 50 page: ${page} ${tagParam}
+        guildName: ${JSON.stringify(String(guildName))} guildServerSlug: ${JSON.stringify(String(serverSlug))}
+        guildServerRegion: ${JSON.stringify(String(region))} zoneID: ${Number(zoneId) || 0} limit: 50 page: ${page} ${tagParam}
       ) { data { code startTime fights(killType: All) { id encounterID name difficulty startTime endTime kill } } has_more_pages } }
     }`, creds);
     if (resp?.errors) { console.error('[fetchAllZoneReports] page', page, 'error:', resp.errors[0]?.message); break; }
@@ -140,27 +113,12 @@ module.exports = async (req, res) => {
     return assertTeamMembership(supabase, session.id, teamId, opts);
   }
 
-  // Helper: resolve a specific team's own WCL API credentials (decrypted). Returns
-  // null if that team hasn't set any up -- there is no shared/app-wide fallback, so
-  // one team's usage can never draw on or be capped by another's WCL rate limit.
-  async function resolveWclCredentials(teamId) {
-    if (!teamId) return null;
-    const { data: teamRow } = await supabase
-      .from('teams')
-      .select('wcl_client_id, wcl_client_secret_enc')
-      .eq('id', teamId)
-      .single();
-    if (!teamRow?.wcl_client_id || !teamRow?.wcl_client_secret_enc) return null;
-    try {
-      return { clientId: teamRow.wcl_client_id, clientSecret: decrypt(teamRow.wcl_client_secret_enc) };
-    } catch (e) {
-      console.error('[wcl] failed to decrypt credentials for team', teamId, e.message);
-      return null;
-    }
-  }
+  // This team's own WCL API credentials -- no shared/app-wide fallback, so one
+  // team's usage can never draw on or be capped by another's WCL rate limit.
+  const resolveWclCredentials = teamId => teamWclCredentials(supabase, teamId);
 
   // ── WCL ZONES (accessible to all members of the team) ──
-  if (action === 'wclZones' || action === 'zones') {
+  if (action === 'wclZones') {
     const teamId = req.query.teamId || req.body?.teamId;
     try {
       await assertTeamOwnership(teamId);
@@ -364,8 +322,6 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── WCL QUERY PROXY (officers only) ──
-  // ── DIAGNOSTIC: probe Summary table structure for a known fight ──
   // ── GET MITIGATION CACHE ──
   if (action === 'getMitigationCache') {
     const teamId = req.query.teamId || req.body?.teamId;
@@ -603,101 +559,6 @@ module.exports = async (req, res) => {
 
       return res.status(200).json({ mitigationMap: finalMitigationMap, bossNames: finalBossNames });
     } catch(err) { console.error('[mitigation] error:', err.message); return res.status(err.status || 500).json({ error: err.message }); }
-  }
-
-  // ── DIAGNOSTIC: probe DamageTaken table structure for mitigation ──
-  if (action === 'diagMitigation') {
-    const { teamId, reportCode, encounterID, targetName } = req.body || {};
-    try {
-      await assertTeamOwnership(teamId, { requireOfficer: true });
-      const creds = await resolveWclCredentials(teamId);
-      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
-
-      // Get ALL fights for this encounter in the report
-      const fightsResp = await wclQuery(`query {
-        reportData {
-          report(code: "${reportCode}") {
-            fights(killType: All) { id encounterID name startTime endTime kill }
-          }
-        }
-      }`, creds);
-      const allFights = fightsResp?.data?.reportData?.report?.fights || [];
-      const targetFights = encounterID
-        ? allFights.filter(f => f.encounterID === parseInt(encounterID))
-        : allFights;
-      console.log('[diagMitigation] fights matched:', targetFights.length, 'of', allFights.length);
-
-      const masterResp = await wclQuery(`query { reportData { report(code: "${reportCode}") { masterData { actors(type: "Player") { id name } } } } }`, creds);
-      const actors = masterResp?.data?.reportData?.report?.masterData?.actors || [];
-      const actorMap = {};
-      actors.forEach(a => { actorMap[a.id] = a.name; });
-
-      let mitigatedSum = 0, unmitigatedSum = 0, hitCount = 0, totalEvents = 0;
-
-      for (const fight of targetFights) {
-        let events = [];
-        let nextTs = fight.startTime;
-        let guard = 0;
-        while (guard < 20) {
-          const resp = await wclQuery(`query { reportData { report(code: "${reportCode}") {
-            events(startTime: ${nextTs}, endTime: ${fight.endTime}, fightIDs: [${fight.id}], dataType: DamageTaken, limit: 10000) { data, nextPageTimestamp }
-          } } }`, creds);
-          const page = resp?.data?.reportData?.report?.events?.data || [];
-          events = events.concat(page);
-          nextTs = resp?.data?.reportData?.report?.events?.nextPageTimestamp;
-          guard++;
-          if (!nextTs) break;
-        }
-        totalEvents += events.length;
-
-        for (const ev of events) {
-          if (ev.type !== 'damage') continue;
-          const name = actorMap[ev.targetID];
-          if (targetName && name !== targetName) continue;
-          if (!targetName && !name) continue;
-          mitigatedSum   += ev.mitigated || 0;
-          unmitigatedSum += ev.unmitigatedAmount != null ? ev.unmitigatedAmount : (ev.amount||0) + (ev.mitigated||0);
-          hitCount++;
-        }
-      }
-
-      const mitigPct = unmitigatedSum > 0 ? (mitigatedSum / unmitigatedSum) * 100 : null;
-
-      return res.status(200).json({
-        fightsChecked: targetFights.length,
-        totalEvents, hitsForTarget: hitCount,
-        mitigatedSum, unmitigatedSum,
-        calculatedMitigPct: mitigPct != null ? mitigPct.toFixed(2) : null,
-      });
-    } catch(e) { return res.status(e.status || 500).json({ error: e.message }); }
-  }
-
-  if (action === 'diagSurvival') {
-    const { teamId, reportCode, fightId, startTime, endTime } = req.body || {};
-    try {
-      await assertTeamOwnership(teamId, { requireOfficer: true });
-      const creds = await resolveWclCredentials(teamId);
-      if (!creds) return res.status(400).json({ error: "Your guild hasn't connected Warcraft Logs API credentials yet. Add them in Guild Settings.", wclNotConfigured: true });
-      const q = `query {
-        reportData {
-          report(code: "${reportCode}") {
-            table(startTime: ${startTime}, endTime: ${endTime}, fightIDs: [${fightId}], dataType: Summary)
-          }
-        }
-      }`;
-      const resp = await wclQuery(q, creds);
-      const table  = resp?.data?.reportData?.report?.table;
-      const parsed = typeof table === 'string' ? JSON.parse(table) : table;
-      const data   = parsed?.data || parsed;
-      return res.status(200).json({
-        errors:            resp?.errors || null,
-        dataKeys:          data ? Object.keys(data) : null,
-        totalTime:         data?.totalTime,
-        playerDetailsSample: data?.playerDetails ? JSON.stringify(data.playerDetails).slice(0, 1200) : null,
-        deathEventsSample:   data?.deathEvents   ? JSON.stringify(data.deathEvents).slice(0, 1200)   : null,
-        compositionSample:   data?.composition   ? JSON.stringify(data.composition).slice(0, 400)    : null,
-      });
-    } catch(e) { return res.status(e.status || 500).json({ error: e.message }); }
   }
 
   // ── GET SURVIVAL CACHE: read incremental survival cache from Supabase ──
@@ -1020,7 +881,7 @@ module.exports = async (req, res) => {
     }
   }
 
-  if (action === 'wclQuery' || action === 'query') {
+  if (action === 'wclQuery') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const { teamId, query } = req.body || {};
     if (!query) return res.status(400).json({ error: 'query required' });
@@ -1196,6 +1057,7 @@ module.exports = async (req, res) => {
     if (!teamId || !name || !charClass || !server || !role) {
       return res.status(400).json({ error: 'name, class, server, and role are required' });
     }
+    if (name.trim().length > 24 || server.trim().length > 64) return res.status(400).json({ error: 'That name or realm is too long' });
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
@@ -1204,7 +1066,7 @@ module.exports = async (req, res) => {
       // exact old name would otherwise hit that constraint and fail outright.
       // Look up any existing row (active or not) instead of blind-inserting.
       const { data: existing } = await supabase
-        .from('characters').select('id, active').eq('team_id', teamId).ilike('name', name.trim()).maybeSingle();
+        .from('characters').select('id, active').eq('team_id', teamId).ilike('name', name.trim().replace(/[\\%_]/g, '\\$&')).maybeSingle();
       if (existing?.active) return res.status(409).json({ error: `${name.trim()} is already on this roster.` });
 
       let characterId;
@@ -1271,6 +1133,7 @@ module.exports = async (req, res) => {
   if (action === 'updateCharacter') {
     const { teamId, characterId, name, class: charClass, server, role, rank } = req.body;
     if (!teamId || !characterId) return res.status(400).json({ error: 'teamId and characterId required' });
+    if ((name && name.trim().length > 24) || (server && server.trim().length > 64)) return res.status(400).json({ error: 'That name or realm is too long' });
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
@@ -1301,9 +1164,11 @@ module.exports = async (req, res) => {
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
-      const { error } = await supabase
-        .from('characters').update({ active: false, account_id: null }).eq('id', characterId).eq('team_id', teamId);
+      const { data: removed, error } = await supabase
+        .from('characters').update({ active: false, account_id: null, claim_verified: false })
+        .eq('id', characterId).eq('team_id', teamId).select('id');
       if (error) throw error;
+      if (!removed?.length) return res.status(404).json({ error: 'Character not found on this team' });
 
       // Close their open membership period, if any -- best-effort: a
       // character added before this feature existed may have no period rows

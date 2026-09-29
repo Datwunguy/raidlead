@@ -251,7 +251,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => showToast(authError === 'access_denied' ? 'Battle.net connection cancelled' : "Couldn't sync with Battle.net. Try again later.", 'error'), 300);
   }
   AUTH.session = { id: sessionAccount.id, battletag: sessionAccount.battletag, bnetSynced: !!sessionAccount.wow_characters_synced_at };
-  try { localStorage.setItem('raidlead_display', JSON.stringify({ battletag: sessionAccount.battletag, displayName: sessionAccount.display_name })); } catch(e) {}
 
   // Show battletag in header immediately
   if (sessionAccount.battletag) {
@@ -289,8 +288,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       try { await loadRosterFromDB(); } catch(e) {}
 
-      showDashboard();
-      loadCachedScores();
+      showDashboard(freshData);
       showToast(joinWelcomeMessage(), 'success');
       checkAndAdvanceSeason();
       return;
@@ -311,9 +309,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadRosterFromDB();
 
 
-    showDashboard();
+    showDashboard(guildData);
     updateRosterTitle();
-    loadCachedScores();
     // Pre-load attendance data so marks are available immediately on any tab
     loadAttendanceData();
     checkAndAdvanceSeason(); // silent, best-effort -- never blocks the dashboard
@@ -335,9 +332,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (!saved.wclUrl) {
         try {
           const detected = await detectCurrentZone();
-          if (detected && detected.id !== saved.zoneId) {
-            const ackKey = ZONE_ACK_KEY + '_' + detected.id;
-            if (!localStorage.getItem(ackKey)) STATE.detectedZone = detected;
+          if (detected && detected.id !== saved.zoneId && getDismissedZone() !== detected.id) {
+            STATE.detectedZone = detected;
           }
         } catch(e) {}
       }
@@ -1066,7 +1062,9 @@ function joinWelcomeMessage() {
   return `Welcome to ${STATE.config?.guild || 'the team'}!`;
 }
 
-function showDashboard() {
+// `guildData`: this team's data, when the caller has just loaded it -- skips
+// fetching it again. Without it (offline fallback, settings save), it's fetched.
+function showDashboard(guildData = null) {
   hideBootLoader();
   document.getElementById('setup-screen').style.display = 'none';
   document.getElementById('dashboard').style.display    = 'block';
@@ -1080,17 +1078,10 @@ function showDashboard() {
   document.getElementById('landing-choice-screen').style.display = 'none';
   document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('account-menu').style.display       = 'flex';
-  if (AUTH.session && AUTH.session.battletag) {
-    document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
-    document.getElementById('dropdown-battletag').textContent = AUTH.session.battletag;
-  }
   if (AUTH.session?.battletag) {
     document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
     document.getElementById('dropdown-battletag').textContent = AUTH.session.battletag;
   }
-
-  // Load cached scores if available for current zone
-  loadCachedScores();
 
   // Restore non-authoritative IDs only until Supabase responds.
   // Role-based UI is applied from DB data, not cached browser state.
@@ -1099,7 +1090,7 @@ function showDashboard() {
   if (!STATE.teamId && cachedTeamId)   STATE.teamId  = cachedTeamId;
   if (!STATE.guildId && cachedGuildId) STATE.guildId = cachedGuildId;
 
-  loadFlexData();
+  if (!guildData) loadFlexData(); // with fresh data, it's loaded once below
   renderRoster();
   renderPlannerChecklist();
   renderPlannerRoster();
@@ -1111,8 +1102,8 @@ function showDashboard() {
     updateScoresFetchBtn(cached.fetchedAt);
   }
 
-  // Fetch guild/role/teamId from Supabase
-  fetchActiveGuildData().then(async data => {
+  // Fetch guild/role/teamId from Supabase (unless the caller just did)
+  (guildData ? Promise.resolve(guildData) : fetchActiveGuildData()).then(async data => {
     if (data && data.team) {
       applyGuildData(data);
       updateRosterTitle();
@@ -1191,7 +1182,7 @@ async function loadAttendanceData() {
     renderAttendanceCalendar();
   } catch(e) {
     console.error('[Attendance] load error:', e.message);
-    if (wrap) wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load attendance</h3><p>${e.message}</p></div>`;
+    if (wrap) wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load attendance</h3><p>${escapeHtml(e.message)}</p></div>`;
   }
 }
 
@@ -1402,7 +1393,7 @@ function renderDiscordConnectStatus() {
   const el = document.getElementById('discord-connect-status');
   if (!el) return;
   el.innerHTML = STATE.discordGuildId
-    ? `<span style="color:#5865F2;">🔗 Connected</span> <span style="color:var(--text-mute);">(Server ID: ${STATE.discordGuildId})</span>`
+    ? `<span style="color:#5865F2;">🔗 Connected</span> <span style="color:var(--text-mute);">(Server ID: ${escapeHtml(STATE.discordGuildId)})</span>`
     : '<span style="color:var(--text-mute);">Not connected yet.</span>';
 }
 
@@ -1760,7 +1751,7 @@ async function loadProgressTab() {
     STATE.progressCache[cacheKey] = data;
     renderProgress(data);
   } catch (e) {
-    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load progress</h3><p>${e.message}</p></div>`;
+    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load progress</h3><p>${escapeHtml(e.message)}</p></div>`;
   }
 }
 
@@ -1789,7 +1780,7 @@ function renderProgress(data) {
       : isOutage
         ? "Raider.io's servers are temporarily unavailable, so we can't pull rankings right now. This is on their end, not RaidLead -- try again in a few minutes."
         : data.reason === 'RAID_NOT_FOUND'
-          ? `Couldn't match your zone ("${data.zoneName || STATE.config?.zoneName || ''}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
+          ? `Couldn't match your zone ("${escapeHtml(data.zoneName || STATE.config?.zoneName || '')}") to a raid on Raider.io yet. This should resolve once Raider.io has indexed the current tier.`
           : 'The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.';
     content.innerHTML = `
       <div class="empty-state">
@@ -1918,7 +1909,7 @@ function renderBossList(data) {
     row.onclick = () => loadProgressComposition(data, boss.slug);
     row.innerHTML = `
       <div class="progress-boss-rank">${i + 1}</div>
-      ${boss.iconUrl ? `<img class="progress-boss-icon" src="${boss.iconUrl}" alt="">` : ''}
+      ${/^https:\/\//.test(boss.iconUrl || '') ? `<img class="progress-boss-icon" src="${escapeHtml(boss.iconUrl)}" alt="">` : ''}
       <div class="progress-boss-name">
         <span class="progress-boss-name-text">${escapeHtml(boss.name)}</span>
         ${youKilled ? `<span title="Your guild has killed this boss" style="color:var(--gold); font-size:13px; flex-shrink:0;">✓</span>` : ''}
@@ -2359,7 +2350,7 @@ async function loadLootTab() {
     renderLootRuns(STATE.lootDrops, 'loot-boe-runs', d => d.is_boe, 'No BoEs recorded yet.');
   } catch (e) {
     const el = document.getElementById('loot-runs');
-    if (el) el.innerHTML = `<div style="color:var(--text-mute); font-size:13px;">Error loading loot: ${e.message}</div>`;
+    if (el) el.innerHTML = `<div style="color:var(--text-mute); font-size:13px;">Error loading loot: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -2390,7 +2381,7 @@ function renderTierTracker(drops) {
       : `<div style="display:flex; flex-wrap:wrap; gap:8px;">
           ${names.map(name => `
             <div style="background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:6px 12px; font-size:12px;">
-              ${name} <span style="color:var(--gold); font-weight:700;">×${tokensByHolder[name]}</span>
+              ${escapeHtml(name)} <span style="color:var(--gold); font-weight:700;">×${tokensByHolder[name]}</span>
             </div>
           `).join('')}
         </div>`}
@@ -2543,11 +2534,11 @@ function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
       <div style="background:var(--bg3); border:1px solid ${likelyPug ? 'rgba(196,30,58,0.4)' : 'var(--border)'}; border-radius:6px; padding:14px; margin-bottom:14px;">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
           <div>
-            <span style="font-weight:700;">${raidDate}</span>
+            <span style="font-weight:700;">${escapeHtml(raidDate)}</span>
             <span style="color:var(--text-mute); font-size:12px; margin-left:8px;">${bossCount} boss${bossCount === 1 ? '' : 'es'} · ${items.length} item${items.length === 1 ? '' : 's'}</span>
             ${likelyPug ? '<span style="margin-left:8px; font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#ff6b6b; border:1px solid rgba(196,30,58,0.4); border-radius:3px; padding:2px 6px;">Likely PUG</span>' : ''}
           </div>
-          ${isOfficer && allowDeleteRun ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="deleteLootRun('${sessionId}')">Delete Run</button>` : ''}
+          ${isOfficer && allowDeleteRun ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="deleteLootRun(${jsAttr(sessionId)})">Delete Run</button>` : ''}
         </div>
         <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
           ${orderedItems.map(d => renderLootRow(d, isOfficer)).join('')}
@@ -2561,32 +2552,32 @@ function renderLootRow(d, isOfficer) {
   const traded = d.current_holder_name && d.current_holder_name !== d.recipient_name;
   const trackColor = QUALITY_TRACK_COLORS[d.item_quality_track];
   const trackBadge = d.item_quality_track
-    ? `<span style="color:${trackColor || 'var(--text-mute)'}; margin-left:6px;">${d.item_quality_track}${d.upgrade_level ? ` ${d.upgrade_level}/${d.upgrade_level_max || '?'}` : ''}</span>`
+    ? `<span style="color:${trackColor || 'var(--text-mute)'}; margin-left:6px;">${escapeHtml(d.item_quality_track)}${d.upgrade_level ? ` ${escapeHtml(d.upgrade_level)}/${escapeHtml(d.upgrade_level_max || '?')}` : ''}</span>`
     : '';
   const metaBits = [d.item_slot, d.armor_type].filter(Boolean).join(' · ');
   // bind_type is the real GetItemInfo-reported bind (set on every drop, not
   // just untracked trash BoEs) -- prefer it, and only fall back to the older
   // is_boe heuristic badge for records captured before bind_type existed.
   const bindBadge = d.bind_type
-    ? `<span style="color:${BIND_TYPE_COLORS[d.bind_type] || 'var(--text-mute)'}; margin-left:6px;">${d.bind_type}</span>`
+    ? `<span style="color:${BIND_TYPE_COLORS[d.bind_type] || 'var(--text-mute)'}; margin-left:6px;">${escapeHtml(d.bind_type)}</span>`
     : (d.is_boe ? '<span style="color:var(--text-mute); margin-left:6px;">BoE</span>' : '');
   return `
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px; padding:6px 8px; background:var(--bg2); border-radius:4px;">
       <div>
-        <span style="font-weight:600;">${d.item_name || ('Item ' + d.item_id)}</span>
+        <span style="font-weight:600;">${escapeHtml(d.item_name || ('Item ' + d.item_id))}</span>
         ${d.is_tier_token ? '<span style="color:var(--gold); margin-left:6px;">Tier Token</span>' : ''}
         ${bindBadge}
         ${trackBadge}
-        <span style="color:var(--text-mute); margin-left:6px;">${d.boss_name || 'Trash'}</span>
-        ${metaBits ? `<span style="color:var(--text-mute); margin-left:6px;">(${metaBits})</span>` : ''}
+        <span style="color:var(--text-mute); margin-left:6px;">${escapeHtml(d.boss_name || 'Trash')}</span>
+        ${metaBits ? `<span style="color:var(--text-mute); margin-left:6px;">(${escapeHtml(metaBits)})</span>` : ''}
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
-        <span>${d.current_holder_name || '?'}${traded ? ` <span style="color:var(--text-mute);">(was ${d.recipient_name})</span>` : ''}</span>
+        <span>${escapeHtml(d.current_holder_name || '?')}${traded ? ` <span style="color:var(--text-mute);">(was ${escapeHtml(d.recipient_name)})</span>` : ''}</span>
         ${isOfficer ? `
-          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','BoE')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
-          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType('${d.id}','Warbound Until Equipped')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
-          <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="reassignLootItem('${d.id}')">Reassign</button>
-          <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" onclick="deleteLootItem('${d.id}')">✕</button>
+          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType(${jsAttr(d.id)},'BoE')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
+          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType(${jsAttr(d.id)},'Warbound Until Equipped')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
+          <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="reassignLootItem(${jsAttr(d.id)})">Reassign</button>
+          <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" onclick="deleteLootItem(${jsAttr(d.id)})">✕</button>
         ` : ''}
       </div>
     </div>
@@ -3453,7 +3444,7 @@ async function fetchScores() {
     if (fetchBtn) fetchBtn.textContent = '↻ Refresh Scores';
 
   } catch(e) {
-    wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Error</h3><p>${e.message}</p></div>`;
+    wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Error</h3><p>${escapeHtml(e.message)}</p></div>`;
     showToast('Error: ' + e.message, 'error');
   }
 
@@ -3570,8 +3561,8 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
   : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('best')" title="Sort by ${col1Label}">${col1Label}${sortArrow('best')}</th><th class="sep-col"></th>`;
 
   const bossHeaders = bosses.map(b =>
-    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${b}" onclick="${sortHandler}('${b.replace(/'/g,"\\'")}')">
-      <span style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px;">${b.substring(0,5)}${sortArrow(b)}</span>
+    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${escapeHtml(b)}" onclick="${sortHandler}(${jsAttr(b)})">
+      <span style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px;">${escapeHtml(b.substring(0,5))}${sortArrow(b)}</span>
     </th>`
   ).join('');
 
@@ -3624,7 +3615,7 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
           const disp = val != null ? val.toFixed(1) + '%' : 'N/A';
           const bg   = val != null ? survColor(val) : '';
           const fg   = bg ? '#000' : 'var(--text-mute)';
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${disp}</td>`;
+          return `<td class="score-cell" title="${escapeHtml(bossName)}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${escapeHtml(disp)}</td>`;
         }).join('');
         html += `<tr>${nameCell(p, color)}
           ${summaryCols}${bossCols}
@@ -3645,7 +3636,7 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
           const disp = val != null ? parseFloat(val).toFixed(1) + '%' : 'N/A';
           const bg   = val != null ? mitColor(val) : '';
           const fg   = bg ? '#000' : 'var(--text-mute)';
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${disp}</td>`;
+          return `<td class="score-cell" title="${escapeHtml(bossName)}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${escapeHtml(disp)}</td>`;
         }).join('');
         html += `<tr>${nameCell(p, color)}
           ${summaryCols}${bossCols}
@@ -3669,7 +3660,7 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
           const val = p.firstKillMap?.[bossName] || 'N/A';
           const bg = val !== 'N/A' ? parseColor(parseFloat(val)) : '';
           const fg = bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)';
-          return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${val}</td>`;
+          return `<td class="score-cell" title="${escapeHtml(bossName)}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:700; font-size:13px; text-align:center;">${escapeHtml(val)}</td>`;
         }).join('');
         // Return early with firstkill-specific row
         html += `<tr>${nameCell(p, color)}
@@ -3688,9 +3679,9 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
       }
 
       const summaryCols = `
-        <td class="score-cell" style="width:52px; background:${bestColor}; color:${bestColor ? '#000' : 'var(--text-mute)'}; font-weight:700; font-size:13px; text-align:center;">${bestAvgVal || '—'}</td>
+        <td class="score-cell" style="width:52px; background:${bestColor}; color:${bestColor ? '#000' : 'var(--text-mute)'}; font-weight:700; font-size:13px; text-align:center;">${escapeHtml(bestAvgVal || '—')}</td>
         <td class="sep-col"></td>
-        <td class="score-cell" style="width:52px; min-width:52px; max-width:52px; background:${col2Bg}; color:${col2Fg}; font-weight:700; font-size:13px; text-align:center;">${col2Val}</td>
+        <td class="score-cell" style="width:52px; min-width:52px; max-width:52px; background:${col2Bg}; color:${col2Fg}; font-weight:700; font-size:13px; text-align:center;">${escapeHtml(col2Val)}</td>
         <td class="sep-col"></td>`;
 
       // Per-boss columns: performance/oppoparse = best parse (firstkill returns earlier above)
@@ -3707,7 +3698,7 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
         const bg = !showRaw && val !== 'N/A' ? parseColor(parseFloat(val)) : '';
         const fg = showRaw ? 'var(--text-dim)' : (bg ? (parseFloat(val) < 25 ? '#fff' : '#000') : 'var(--text-mute)');
         const fw = showRaw ? 400 : 700;
-        return `<td class="score-cell" title="${bossName}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:${fw}; font-size:13px; text-align:center;">${showVal}</td>`;
+        return `<td class="score-cell" title="${escapeHtml(bossName)}" style="width:52px; min-width:52px; max-width:52px; background:${bg}; color:${fg}; font-family:Rajdhani,sans-serif; font-weight:${fw}; font-size:13px; text-align:center;">${escapeHtml(showVal)}</td>`;
       }).join('');
 
       if (view !== 'firstkill') {
@@ -3722,30 +3713,6 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
   html += '</tbody></table></div>';
   return html;
 }
-
-// Debug function — call from console: diagSurvival('REPORTCODE', fightId, startTime, endTime)
-window.diagSurvival = async function(reportCode, fightId, startTime, endTime) {
-  const resp = await fetch('/api/roster?action=diagSurvival', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ teamId: STATE.teamId, reportCode, fightId, startTime, endTime }),
-  });
-  const data = await resp.json();
-  console.log('[diagSurvival] result:', JSON.stringify(data, null, 2));
-  return data;
-};
-
-// Debug function — call from console: diagMitigation('REPORTCODE', fightId, startTime, endTime)
-window.diagMitigation = async function(reportCode, encounterID, targetName) {
-  const resp = await fetch('/api/roster?action=diagMitigation', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ teamId: STATE.teamId, reportCode, encounterID, targetName }),
-  });
-  const data = await resp.json();
-  console.log('[diagMitigation] result:', JSON.stringify(data, null, 2));
-  return data;
-};
 
 async function fetchMitigationData(reset) {
   // Guard against overlapping fetches (e.g. an impatient double-click) racing on the
@@ -4063,13 +4030,6 @@ function setScoreView(view, btn) {
   renderScoresTable('all');
 }
 
-function filterScores(role, btn) {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  STATE.scoreRoleFilter = role;
-  renderScoresTable(role);
-}
-
 // Click a column header to sort by it -- clicking the same column again flips direction.
 function setScoreSort(column) {
   // Always highest-to-lowest -- there's no meaningful use case for ascending here.
@@ -4171,11 +4131,11 @@ function openProfile(player) {
     statsEl.innerHTML = `
       <div class="profile-stat">
         <div class="profile-stat-label">Best Avg</div>
-        <div class="profile-stat-value" style="color:${bestColor};">${scoreData.bestAvg}</div>
+        <div class="profile-stat-value" style="color:${bestColor};">${escapeHtml(scoreData.bestAvg)}</div>
       </div>
       <div class="profile-stat">
         <div class="profile-stat-label">Median Avg</div>
-        <div class="profile-stat-value" style="color:${medianColor};">${scoreData.medianAvg}</div>
+        <div class="profile-stat-value" style="color:${medianColor};">${escapeHtml(scoreData.medianAvg)}</div>
       </div>
       <div class="profile-stat">
         <div class="profile-stat-label">iLvl</div>
@@ -4190,9 +4150,9 @@ function openProfile(player) {
       const w   = !isNaN(pct) ? pct : 0;
       return `
         <div class="boss-row">
-          <div class="boss-name">${boss}</div>
+          <div class="boss-name">${escapeHtml(boss)}</div>
           <div class="boss-bar"><div class="boss-bar-fill" style="width:${w}%; background:${c};"></div></div>
-          <div class="boss-parse" style="color:${c};">${val}</div>
+          <div class="boss-parse" style="color:${c};">${escapeHtml(val)}</div>
         </div>
       `;
     }).join('');
@@ -4348,13 +4308,6 @@ function dismissZoneBanner() {
 //  RAID NIGHT (internal names still say "planner" -- not user-facing)
 // ─────────────────────────────────────────────
 const PLANNER_KEY = 'raidlead_planner';
-
-function loadPlannerState() {
-  try {
-    const saved = localStorage.getItem(PLANNER_KEY);
-    return saved ? new Set(JSON.parse(saved)) : new Set();
-  } catch(e) { return new Set(); }
-}
 
 function savePlannerState(selected) {
   // No longer persisting to localStorage — DB is source of truth
@@ -5240,12 +5193,6 @@ const AUTH = {
   account: null,
 };
 
-// saveSession / loadSession are no longer used for auth —
-// session is now an HttpOnly cookie managed server-side.
-// These stubs remain so any lingering call sites don't throw.
-function saveSession(_token) {}
-function loadSession() { return null; }
-
 async function signOut() {
   // Expire the HttpOnly session cookie server-side
   try { await fetch('/api/auth?action=logout', { method: 'POST' }); } catch(e) {}
@@ -5411,8 +5358,7 @@ async function completeGuildJoin(joinCode) {
   applyGuildData(freshData);
   await loadRosterFromDB();
 
-  showDashboard();
-  loadCachedScores();
+  showDashboard(freshData);
   showToast(joinWelcomeMessage(), 'success');
   checkAndAdvanceSeason();
 }
@@ -5519,9 +5465,8 @@ async function createGuild(confirmNewTeam) {
 
     await loadRosterFromDB();
 
-    showDashboard();
+    showDashboard(freshGuildData);
     checkAndAdvanceSeason();
-    loadCachedScores();
 
   } catch(e) {
     document.getElementById('gs-status').textContent = 'Error: ' + e.message;
@@ -5871,7 +5816,7 @@ function renderMembersListFromDB(members) {
     <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:var(--bg3); border:1px solid var(--border); border-radius:6px; margin-bottom:8px;">
       <div>
         <div style="font-size:14px; font-weight:700;">
-          <span style="color:${displayName ? 'var(--text)' : 'var(--gold)'};">${displayName || bt}</span>
+          <span style="color:${displayName ? 'var(--text)' : 'var(--gold)'};">${escapeHtml(displayName || bt)}</span>
           ${isSelf ? '<span style="font-size:10px; color:var(--text-mute);"> · you</span>' : ''}
         </div>
         <div style="font-size:12px; color:var(--text-mute); margin-top:2px;">
@@ -6279,7 +6224,7 @@ async function switchActiveTeam(teamId) {
   STATE.plannerDate = null;
   STATE.attendanceLoaded = false; STATE.attendanceExtraDays = []; STATE.attendanceMarks = [];
   ROLES.members = null; JOIN.list = null; JOIN.entries = []; SURVEY.results = null; SURVEY.surveys = []; SURVEY.selectedId = null;
-  showDashboard();
+  showDashboard(guildData);
   updateRosterTitle();
   renderScoresTable('all');
   loadCachedScores();

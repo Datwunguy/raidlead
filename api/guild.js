@@ -50,6 +50,16 @@ async function generateUniqueJoinCode(supabase) {
   return null;
 }
 
+// raid_days: weekday numbers, 0 (Sunday) to 6.
+function cleanRaidDays(days) {
+  return Array.isArray(days) ? [...new Set(days.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6))] : [];
+}
+
+// Names typed into Guild Settings: trimmed, and not a novel.
+function tooLong(...values) {
+  return values.some(v => typeof v === 'string' && v.trim().length > 64);
+}
+
 // Two WowAudit API keys are "the same source" if they hash the same -- catches
 // the same real mistake the old spreadsheet-URL dedup caught (two teams
 // accidentally pointed at one WowAudit team), just keyed on the key itself
@@ -156,6 +166,7 @@ module.exports = async (req, res) => {
   if (action === 'create') {
     const { guild, server, region, difficulty, teamName, wclTeamId, raidDays, confirmNewTeam } = req.body;
     if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
+    if (tooLong(guild, server, teamName)) return res.status(400).json({ error: 'Names must be 64 characters or fewer' });
 
     try {
       const normServer = server.trim().toLowerCase();
@@ -195,7 +206,7 @@ module.exports = async (req, res) => {
           name:         teamName || 'Main Team',
           wcl_team_id:  wclTeamId || null,
           difficulty:   difficulty || 'mythic',
-          raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          raid_days:    cleanRaidDays(raidDays),
           join_code:    await generateUniqueJoinCode(supabase),
         })
         .select(TEAM_FIELDS)
@@ -219,6 +230,7 @@ module.exports = async (req, res) => {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const { teamId, teamName, wclTeamId, difficulty, raidDays } = req.body;
     if (!teamId || !teamName) return res.status(400).json({ error: 'teamId and teamName are required' });
+    if (tooLong(teamName)) return res.status(400).json({ error: 'Team names must be 64 characters or fewer' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
@@ -233,7 +245,7 @@ module.exports = async (req, res) => {
           name:         teamName,
           wcl_team_id:  wclTeamId || null,
           difficulty:   difficulty || 'mythic',
-          raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          raid_days:    cleanRaidDays(raidDays),
           join_code:    await generateUniqueJoinCode(supabase),
         })
         .select(TEAM_FIELDS)
@@ -259,22 +271,36 @@ module.exports = async (req, res) => {
       if (!teamId) return res.status(400).json({ error: 'teamId required' });
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
+      if (tooLong(guild, server, teamName)) return res.status(400).json({ error: 'Names must be 64 characters or fewer' });
 
       const { data: currentTeam } = await supabase.from('teams').select('guild_id').eq('id', teamId).single();
       if (!currentTeam) return res.status(404).json({ error: 'Team not found' });
 
-      if (guild && server) {
-        await supabase.from('guilds').update({
-          name: guild.trim(), server: server.trim().toLowerCase(), region: region || 'us',
-        }).eq('id', currentTeam.guild_id);
+      // The guild's name/server/region are shared by every team under it, and
+      // anyone can start a team under an existing guild -- so changing them
+      // takes the guild's creator, or someone who runs every team in it.
+      const next = { name: guild.trim(), server: server.trim().toLowerCase(), region: region || 'us' };
+      const { data: guildRow } = await supabase
+        .from('guilds').select('name, server, region, created_by').eq('id', currentTeam.guild_id).single();
+      const changed = guildRow && (guildRow.name !== next.name || guildRow.server !== next.server || (guildRow.region || 'us') !== next.region);
+      if (changed && guildRow.created_by !== session.id) {
+        const [{ data: siblings }, mine] = await Promise.all([
+          supabase.from('teams').select('id').eq('guild_id', currentTeam.guild_id),
+          getMyTeams(supabase, session.id),
+        ]);
+        const runs = new Set(mine.filter(t => t.role === 'owner' || t.role === 'officer').map(t => t.teamId));
+        if ((siblings || []).some(t => !runs.has(t.id))) {
+          return res.status(403).json({ error: "Other teams share this guild's name, server, and region, so only the person who created the guild can change them." });
+        }
       }
+      if (changed) await supabase.from('guilds').update(next).eq('id', currentTeam.guild_id);
 
       const { data, error } = await supabase
         .from('teams')
         .update({
           name:         teamName || undefined,
           wcl_team_id:  wclTeamId || null,
-          raid_days:    Array.isArray(raidDays) ? raidDays : [],
+          raid_days:    cleanRaidDays(raidDays),
         })
         .eq('id', teamId)
         .select(TEAM_FIELDS)
@@ -436,10 +462,10 @@ module.exports = async (req, res) => {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!Array.isArray(raidDays)) return res.status(400).json({ error: 'raidDays must be an array' });
 
-      const { error } = await supabase.from('teams').update({ raid_days: raidDays }).eq('id', teamId);
+      const { error } = await supabase.from('teams').update({ raid_days: cleanRaidDays(raidDays) }).eq('id', teamId);
       if (error) throw error;
 
-      return res.status(200).json({ success: true, raidDays });
+      return res.status(200).json({ success: true, raidDays: cleanRaidDays(raidDays) });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 

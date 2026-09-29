@@ -1,17 +1,11 @@
 // ============================================================
 //  loot.js — handles loot-tracking actions
-//  Actions: import, get, reassign, delete, deleteSession,
+//  Actions: get, reassign, setBindType, delete, deleteSession,
 //           getTierChecks, setTierCheck, resetTierChecks, resolveCharacterIds
 //
-//  `import` is append-only -- there is no update/delete path reachable
-//  through it, even though it only needs a normal team-member session. This
-//  is now a legacy path: it was originally how the browser (reading the
-//  addon's SavedVariables via the File System Access API) uploaded loot on
-//  the addon's behalf. The Companion app now uploads directly via its own
-//  credential -- see api/companion.js's `uploadLoot` action and
-//  lib/lootImport.js, which both this action and that one call into, so
-//  there's one implementation of the actual insert/tombstone logic. Kept
-//  live as a manual-import fallback rather than deleted outright.
+//  Loot is uploaded by the Companion app (api/companion.js `uploadLoot`,
+//  via lib/lootImport.js). The browser upload path that used to live here
+//  as `import` was unused and let any member post arbitrary records.
 //  Every other action requires Officer/Owner, exactly like the rest of this
 //  codebase's officer-gated actions (see plans.js, members.js). This split
 //  is deliberate: anything that changes recorded history (a trade, or
@@ -21,32 +15,13 @@
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership } = require('../lib/teamAuth');
-const { resolveCharacterIds, importLootRecords } = require('../lib/lootImport');
+const { resolveCharacterIds } = require('../lib/lootImport');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
   const action  = req.query.action || req.body?.action;
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-
-  // ── IMPORT: append-only, any team member (whoever's running the addon that raid). ──
-  if (action === 'import') {
-    const importSession = getSession(req);
-    if (!importSession) return res.status(401).json({ error: 'Not authenticated' });
-    const teamId = req.body?.teamId;
-    try { await assertTeamMembership(supabase, importSession.id, teamId); }
-    catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
-
-    try {
-      const { imported } = await importLootRecords(supabase, {
-        teamId, records: req.body?.records, reportedByAccountId: importSession.id,
-      });
-      return res.status(200).json({ success: true, imported });
-    } catch (err) {
-      console.error('[loot import] error:', err.message);
-      return res.status(err.status || 500).json({ error: err.message });
-    }
-  }
 
   // ── Every action below requires a real team session ──
   const session = getSession(req);

@@ -22,7 +22,7 @@ module.exports = async (req, res) => {
   const discordGuildId = req.query.guild_id;
   const state = req.query.state;
 
-  if (!discordGuildId || !state) {
+  if (!/^\d{5,25}$/.test(discordGuildId || '') || !state) {
     return res.redirect(302, '/?discord_connect_error=' + encodeURIComponent('Discord did not return the expected information. Please try connecting again from RaidLead.'));
   }
 

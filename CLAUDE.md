@@ -2,10 +2,9 @@
 
 ## Deploying changes to styles.css / app.js
 
-`public/index.html` used to be one file with inline `<style>`/`<script>`
-blocks. It's now split into `public/index.html` (markup shell),
-`public/styles.css`, and `public/app.js`, referenced with a cache-busting
-`?v=` query string:
+The site's source lives in `public/`: `index.html` (markup shell),
+`styles.css`, and `app.js`, referenced with a cache-busting `?v=` query
+string:
 
 ```html
 <link rel="stylesheet" href="styles.css?v=20260918">
@@ -15,14 +14,20 @@ blocks. It's now split into `public/index.html` (markup shell),
 
 `vercel.json` serves both files with `Cache-Control: public, max-age=31536000,
 immutable` — a returning visitor's browser will **never** re-check for a
-newer version at the same URL. That's the whole point (repeat visits skip
-re-downloading ~98KB of CSS/JS), but it means:
+newer version at the same URL, so the `?v=` has to change whenever a file
+does.
 
-**Any time you edit `styles.css`, bump the `?v=` on its `<link>` tag.**
-**Any time you edit `app.js`, bump the `?v=` on its `<script>` tag.**
+**That's automatic now.** Vercel runs `npm run build` (`scripts/build.js`),
+which copies `public/` to `dist/` (what Vercel actually serves), minifies
+`dist/app.js`, and replaces both `?v=` values in `dist/index.html` with a
+hash of each file's contents. So:
 
-Any different value works (today's date, e.g. `20260919`, is the convention
-already in use) — it just has to change, or every browser with a warm cache
-will keep serving the old file forever, silently. They're independent, so
-bump only the one that actually changed. There's no build step here to
-automate this, so it's a manual habit until one exists.
+- Don't bump `?v=` by hand; the values in `public/index.html` are
+  placeholders the build overwrites.
+- Edit the readable source in `public/`, never `dist/` (it's gitignored and
+  rebuilt on every deploy).
+- `npm run build` locally shows exactly what will be served. The build fails,
+  and the deploy with it, if `index.html` doesn't have exactly one `app.js?v=`
+  and one `styles.css?v=`.
+- Top-level function names survive minification on purpose: `onclick="..."`
+  attributes and string-named handlers call them.

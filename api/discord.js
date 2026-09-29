@@ -185,8 +185,10 @@ async function handleAttendanceCommand(supabase, interaction) {
     }
     const matches = [];
     for (const t of candidateTeams) {
-      const { data: char } = await supabase
-        .from('characters').select('name').eq('team_id', t.id).eq('account_id', account.id).maybeSingle();
+      const { data: chars } = await supabase
+        .from('characters').select('name, rank').eq('team_id', t.id).eq('account_id', account.id).eq('active', true);
+      // Their Main, if they have more than one (character: picks an alt).
+      const char = (chars || []).sort((a, b) => ((a.rank || 'Main') === 'Main' ? 0 : 1) - ((b.rank || 'Main') === 'Main' ? 0 : 1))[0];
       if (char) matches.push({ team: t, character: char });
     }
     if (matches.length === 0) {

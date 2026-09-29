@@ -158,8 +158,10 @@ module.exports = async (req, res) => {
         .eq('team_id', teamId);
 
       if (raidDate) {
-        // Fetch the plan for this specific date (published or draft)
+        // This date's plan -- drafts too for officers; members only ever see
+        // a lineup once it's published.
         query = query.eq('raid_date', raidDate).limit(1);
+        if (!isOfficer) query = query.eq('published', true);
       } else {
         // Fall back: most recently updated published plan
         query = query.eq('published', true).order('updated_at', { ascending: false }).limit(1);

@@ -9,6 +9,8 @@ const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership, isOfficerRole } = require('../lib/teamAuth');
 
+const isDateString = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
@@ -96,10 +98,11 @@ module.exports = async (req, res) => {
 
   // ── UPDATE DISPLAY NAME (self-service, no team context) ──
   if (action === 'updateDisplayName') {
-    const { displayName } = req.body;
-    if (!displayName?.trim()) return res.status(400).json({ error: 'Display name required' });
+    const displayName = String(req.body?.displayName || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+    if (!displayName) return res.status(400).json({ error: 'Display name required' });
+    if (displayName.length > 40) return res.status(400).json({ error: 'Keep your display name to 40 characters or fewer' });
     try {
-      const { error } = await supabase.from('accounts').update({ display_name: displayName.trim() }).eq('id', session.id);
+      const { error } = await supabase.from('accounts').update({ display_name: displayName }).eq('id', session.id);
       if (error) throw error;
       return res.status(200).json({ success: true });
     } catch (err) { return res.status(500).json({ error: err.message }); }
@@ -155,7 +158,7 @@ module.exports = async (req, res) => {
 
   // ── CLAIM CHARACTER ──
   if (action === 'claimCharacter') {
-    const { characterName, teamId, targetAccountId, characterClass, characterServer, characterRole } = req.body;
+    const { characterName, teamId, targetAccountId } = req.body;
     if (!characterName || !teamId) return res.status(400).json({ error: 'characterName and teamId required' });
 
     try {
@@ -164,6 +167,11 @@ module.exports = async (req, res) => {
 
       // Officers can claim on behalf of another account; regular members can only claim for themselves
       const accountId = (isOfficer && targetAccountId) ? targetAccountId : session.id;
+      if (accountId !== session.id) {
+        const { data: target } = await supabase
+          .from('team_members').select('account_id').eq('team_id', teamId).eq('account_id', accountId).maybeSingle();
+        if (!target) return res.status(400).json({ error: 'That account is not a member of this team' });
+      }
 
       // A member can't take a character someone else holds -- that's an
       // officer's call (or Battle.net's: the real owner's sign-in moves it).
@@ -184,22 +192,11 @@ module.exports = async (req, res) => {
         .select('name');
       if (claimErr) throw new Error(claimErr.message);
 
-      // The character row may not exist yet (roster hasn't synced to the DB for this
-      // name/team combo) — a plain UPDATE silently matches zero rows in that case.
-      // Fall back to creating the row so the claim isn't lost.
+      // Only characters already on the roster can be claimed -- adding to the
+      // roster is an officer action (api/roster.js addCharacter). This used to
+      // create the row, which let any member, Viewers included, add characters.
       if (!updated || updated.length === 0) {
-        const { error: upsertErr } = await supabase
-          .from('characters')
-          .upsert({
-            team_id:      teamId,
-            name:         characterName,
-            class:        characterClass  || 'unknown',
-            server:       characterServer || '',
-            primary_role: characterRole   || 'ranged',
-            account_id:   accountId,
-          }, { onConflict: 'team_id,name' });
-        if (upsertErr) throw new Error(upsertErr.message);
-        console.warn('[claimCharacter] character row did not exist, created via upsert:', characterName, teamId);
+        return res.status(404).json({ error: "That character isn't on this team's roster" });
       }
 
       return res.status(200).json({ success: true, characterName, accountId });
@@ -262,7 +259,7 @@ module.exports = async (req, res) => {
       // Unclaim any characters this member owned on this team
       const { error: unclaimErr } = await supabase
         .from('characters')
-        .update({ account_id: null })
+        .update({ account_id: null, claim_verified: false })
         .eq('account_id', targetAccountId)
         .eq('team_id', teamId);
       if (unclaimErr) throw new Error('unclaim: ' + unclaimErr.message);
@@ -337,6 +334,7 @@ module.exports = async (req, res) => {
   if (action === 'markAttendance') {
     const { teamId, characterName, raidDate, unavailable } = req.body;
     if (!teamId || !characterName || !raidDate) return res.status(400).json({ error: 'teamId, characterName, raidDate required' });
+    if (!isDateString(raidDate)) return res.status(400).json({ error: 'raidDate must be YYYY-MM-DD' });
 
     let isOfficer;
     try {
@@ -392,6 +390,7 @@ module.exports = async (req, res) => {
   if (action === 'addRaidNight') {
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
+    if (!isDateString(raidDate)) return res.status(400).json({ error: 'raidDate must be YYYY-MM-DD' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       const { error } = await supabase.from('raid_extra_days').upsert({
@@ -409,6 +408,7 @@ module.exports = async (req, res) => {
   if (action === 'removeRaidNight') {
     const { teamId, raidDate } = req.body;
     if (!teamId || !raidDate) return res.status(400).json({ error: 'teamId and raidDate required' });
+    if (!isDateString(raidDate)) return res.status(400).json({ error: 'raidDate must be YYYY-MM-DD' });
     try {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       const { error } = await supabase.from('raid_extra_days').delete().eq('team_id', teamId).eq('raid_date', raidDate);

@@ -1,0 +1,11 @@
+{
+  "name": "raidlead",
+  "private": true,
+  "description": "Build step for the static site (see scripts/build.js). The API's own dependencies live in api/package.json.",
+  "scripts": {
+    "build": "node scripts/build.js"
+  },
+  "devDependencies": {
+    "terser": "^5.51.2"
+  }
+}

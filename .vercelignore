@@ -8,3 +8,5 @@ companion/
 # a GitHub Release asset instead (see companion/README.md), never served
 # from this site directly.
 public/RaidLead-Companion-Setup.exe
+# Build output (scripts/build.js) -- Vercel builds its own
+dist/

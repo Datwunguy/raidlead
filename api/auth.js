@@ -6,6 +6,12 @@ const { createClient } = require('@supabase/supabase-js');
 const { encodeSession, getSession, setCommonHeaders } = require('../lib/session');
 const { fetchAccountCharacters, saveAccountCharacters, syncAccountClaims } = require('../lib/characterClaims');
 
+// Join codes are 6 characters, so they're guessable with enough tries: an
+// account gets 5 wrong ones an hour (sql/2026_09_join_code_failures.sql).
+const JOIN_FAIL_LIMIT = 5;
+const JOIN_FAIL_WINDOW_MS = 60 * 60 * 1000;
+const TOO_MANY_JOIN_CODES = 'Too many incorrect join codes. Try again in an hour, or ask an officer for an invite link.';
+
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
@@ -164,13 +170,24 @@ module.exports = async (req, res) => {
 
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
     try {
+      const since = new Date(Date.now() - JOIN_FAIL_WINDOW_MS).toISOString();
+      const { count: recentFailures, error: failErr } = await supabase
+        .from('join_code_failures').select('id', { count: 'exact', head: true })
+        .eq('account_id', session.id).gte('failed_at', since);
+      if (failErr) console.error('[join-guild] failure count:', failErr.message); // fails open (e.g. SQL not run yet)
+      if ((recentFailures || 0) >= JOIN_FAIL_LIMIT) return res.status(429).json({ error: TOO_MANY_JOIN_CODES });
+
       const { data: team, error: codeErr } = await supabase
         .from('teams')
         .select('id, name')
-        .eq('join_code', joinCode.trim().toUpperCase())
+        .eq('join_code', String(joinCode).trim().toUpperCase())
         .maybeSingle();
       if (codeErr) throw codeErr;
-      if (!team) return res.status(404).json({ error: 'Invalid join code.' });
+      if (!team) {
+        await supabase.from('join_code_failures').insert({ account_id: session.id });
+        const last = (recentFailures || 0) + 1 >= JOIN_FAIL_LIMIT;
+        return res.status(last ? 429 : 404).json({ error: last ? TOO_MANY_JOIN_CODES : 'Invalid join code.' });
+      }
 
       const { data: existing } = await supabase
         .from('team_members')

@@ -19,7 +19,7 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
-const { assertTeamMembership } = require('../lib/teamAuth');
+const { assertTeamMembership, getTeamRole, isOfficerRole } = require('../lib/teamAuth');
 const { slugifyServer } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate, fetchRaidCalendar, seasonTransitionFrom } = require('../lib/raiderioRaids');
 const { fetchCharacterSummary } = require('../lib/raiderioCharacter');
@@ -504,6 +504,17 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: /\/forms\//.test(url)
           ? "That's the form itself -- paste the link to its responses spreadsheet instead (in the form: Responses → View in Sheets)."
           : "That doesn't look like a Google Sheets link." });
+      }
+
+      // Every guild shares its sheet with the same RaidLead Google account, so
+      // a sheet already connected elsewhere stays there -- unless you're an
+      // officer on that team too (one guild running two teams off one form).
+      const { data: holders } = await supabase
+        .from('teams').select('id').eq('application_sheet_id', parsed.id).neq('id', teamId);
+      for (const h of holders || []) {
+        if (!isOfficerRole(await getTeamRole(supabase, session.id, h.id))) {
+          return res.status(409).json({ error: 'That spreadsheet is already connected to another team. An officer of that team would need to disconnect it first.' });
+        }
       }
 
       let sheet;

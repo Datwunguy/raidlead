@@ -17,3 +17,5 @@ Discord Bot Keys/
 RaidLead Session Secret.txt
 WCL Client Secret.txt
 WCL Credentials Key.txt
+# Build output (scripts/build.js) -- Vercel builds its own
+dist/
