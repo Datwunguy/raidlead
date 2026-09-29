@@ -30,7 +30,7 @@ const { LIST_FIELDS: JOIN_LIST_FIELDS, listEntries: listJoinEntries, currentJoin
 const { serviceAccountEmail, parseSheetUrl, readSheetTab } = require('../lib/googleSheets');
 const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeApplications } = require('../lib/applications');
 
-const STATUSES     = ['contacted', 'no_response', 'not_interested', 'interested', 'joined']; // must match RECRUIT_STATUSES in app.js
+const STATUSES     = ['contacted', 'no_response', 'not_interested', 'interested', 'joined', 'rejected']; // must match RECRUIT_STATUSES in app.js
 const CHANNELS     = ['mail', 'whisper', 'discord', 'form', 'other'];
 const ROLES        = ['tank', 'heal', 'melee', 'ranged'];
 const DIFFICULTIES = ['lfr', 'normal', 'heroic', 'mythic'];

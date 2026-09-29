@@ -6477,7 +6477,7 @@ const TEAM_MGMT = {
   recruits:          [],
   templates:         [],
   view:              'list',        // list | scores
-  statusFilter:      'active',      // active | history | all
+  statusFilter:      'active',      // active | history | rejected | all
   scoreView:         'performance', // performance | oppoparse | firstkill
   scoreDifficulty:   'mythic',
   scoreSortCol:      'best',
@@ -6505,9 +6505,10 @@ const RECRUIT_STATUSES = [
   { value: 'not_interested', label: 'Not Interested' },
   { value: 'interested',     label: 'Interested' },
   { value: 'joined',         label: 'Joined' },
+  { value: 'rejected',       label: 'Rejected' },
 ];
-// Outcome settled -> shown under History instead of Active.
-const RECRUIT_CLOSED_STATUSES = ['no_response', 'not_interested', 'joined'];
+// Outcome settled -> shown under History instead of Active (Rejected has its own filter).
+const RECRUIT_CLOSED_STATUSES = ['no_response', 'not_interested', 'joined', 'rejected'];
 // Every class's specs and the role each fills -- must match CLASS_SPECS in
 // lib/wowSpecs.js (the server derives a recruit's role from the same table).
 const CLASS_SPECS = {
@@ -6668,6 +6669,7 @@ function formatRecruitDate(dateStr) {
 
 function recruitMatchesFilter(r, filter) {
   if (filter === 'all') return true;
+  if (filter === 'rejected' || r.status === 'rejected') return filter === 'rejected' && r.status === 'rejected';
   const closed = RECRUIT_CLOSED_STATUSES.includes(r.status);
   return filter === 'history' ? closed : !closed;
 }
@@ -6933,7 +6935,9 @@ function renderRecruits() {
         <div class="recruit-actions">
           ${templateOptions ? `<select class="recruit-template-select" title="Copy a message template with this recruit's name filled in"
             onchange="copyTemplateForRecruit(this.value, ${jsAttr(r.id)}); this.value='';"><option value="">Copy template…</option>${templateOptions}</select>` : ''}
-          <button class="recruit-delete" title="Stop tracking" onclick="deleteRecruit(${jsAttr(r.id)})">✕</button>
+          ${r.status === 'rejected'
+            ? `<button class="recruit-delete" title="Delete permanently" onclick="deleteRecruit(${jsAttr(r.id)})">✕</button>`
+            : `<button class="recruit-delete" title="Reject" onclick="rejectRecruit(${jsAttr(r.id)})">✕</button>`}
         </div>
       </div>`;
   }).join('');
@@ -7052,10 +7056,33 @@ async function updateRecruitField(recruitId, field, value) {
   }
 }
 
+// The ✕ on a recruit works like Reject on an application: an optional note
+// for the other officers, then they move to Rejected -- kept on record, so
+// re-adding them later says they were already rejected.
+async function rejectRecruit(recruitId) {
+  const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
+  if (!r) return;
+  const note = prompt(`Reject ${r.name}? Optional note for the other officers:`, '');
+  if (note === null) return;
+  const reason = note.trim();
+  const changes = { recruitId, status: 'rejected' };
+  if (reason) changes.notes = [r.notes, `Rejected: ${reason}`].filter(Boolean).join(' · ').slice(0, 500);
+  try {
+    const data = await recruitingApi('updateRecruit', changes);
+    const i = TEAM_MGMT.recruits.findIndex(x => x.id === recruitId);
+    if (i >= 0) TEAM_MGMT.recruits[i] = data.recruit;
+    renderRecruitTab();
+    showToast(`${r.name} moved to Rejected`, 'success');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// Only from Rejected (the ✕ there): removes them and their notes and scores.
 async function deleteRecruit(recruitId) {
   const r = TEAM_MGMT.recruits.find(x => x.id === recruitId);
   if (!r) return;
-  if (!confirm(`Stop tracking ${r.name}? Their notes and scores are deleted. To keep a record instead, set their status to Not Interested.`)) return;
+  if (!confirm(`Delete ${r.name} permanently? Their notes and scores are removed, and nothing will show they were rejected if they're added again.`)) return;
   try {
     await recruitingApi('deleteRecruit', { recruitId });
     TEAM_MGMT.recruits = TEAM_MGMT.recruits.filter(x => x.id !== recruitId);
