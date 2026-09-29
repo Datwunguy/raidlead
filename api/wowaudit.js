@@ -27,6 +27,7 @@ const { decrypt } = require('../lib/crypto');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer } = require('../lib/serverSlug');
 const { appendToJoinOrder } = require('../lib/joinOrder');
+const { linkRosterCharacters } = require('../lib/characterClaims');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -133,6 +134,8 @@ module.exports = async (req, res) => {
         const ordered = joining.map(n => (joined || []).find(c => c.name === n)).filter(Boolean);
         await appendToJoinOrder(supabase, teamId, ordered, 'roster');
       }
+      // Anyone unclaimed connects to the member whose Battle.net account has them.
+      await linkRosterCharacters(supabase, teamId);
 
       return res.status(200).json({ success: true, imported: upsertData.length });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }

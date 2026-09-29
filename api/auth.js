@@ -4,6 +4,7 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { encodeSession, getSession, setCommonHeaders } = require('../lib/session');
+const { fetchAccountCharacters, saveAccountCharacters, syncAccountClaims } = require('../lib/characterClaims');
 
 module.exports = async (req, res) => {
   setCommonHeaders(res);
@@ -25,7 +26,10 @@ module.exports = async (req, res) => {
     const state  = randomBytes(16).toString('hex');
     const params = new URLSearchParams({
       client_id:     clientId,
-      scope:         'openid',
+      // wow.profile: the WoW characters on the player's own Battle.net account,
+      // so their roster characters connect automatically (lib/characterClaims.js).
+      // Blizzard shows it on the same one-time consent screen as the BattleTag.
+      scope:         'openid wow.profile',
       state,
       redirect_uri:  redirectUri,
       response_type: 'code',
@@ -79,8 +83,9 @@ module.exports = async (req, res) => {
 
       const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
       // The Battle.net access token is only ever needed once, right here, to read the
-      // BattleTag below -- it's intentionally never persisted (nothing in the app reads
-      // it back, so storing it would just be unused, needlessly-retained credential data).
+      // BattleTag and the player's WoW characters below -- it's intentionally never
+      // persisted (Blizzard's tokens only last a day, and storing one would just be
+      // needlessly-retained credential data).
       const { data: account, error: dbError } = await supabase
         .from('accounts')
         .upsert(
@@ -90,6 +95,17 @@ module.exports = async (req, res) => {
         .select()
         .single();
       if (dbError) { console.error('DB error:', dbError); return res.redirect(302, '/?auth_error=db_failed'); }
+
+      // Their WoW characters, straight from Blizzard, and any roster characters
+      // on their teams that match -- connected now. Never blocks signing in.
+      let connected = [];
+      try {
+        const characters = await fetchAccountCharacters(access_token);
+        if (characters) {
+          await saveAccountCharacters(supabase, account.id, characters);
+          connected = await syncAccountClaims(supabase, account.id);
+        }
+      } catch (e) { console.error('Battle.net characters:', e.message); }
 
       // ── Build a HMAC-signed session token ──
       const sessionToken = encodeSession({
@@ -104,7 +120,7 @@ module.exports = async (req, res) => {
         'Set-Cookie',
         `raidlead_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${30 * 24 * 60 * 60}`
       );
-      return res.redirect(302, '/');
+      return res.redirect(302, connected.length ? `/?bnet_connected=${connected.length}` : '/');
     } catch (err) {
       console.error('Callback error:', err);
       return res.redirect(302, '/?auth_error=server_error');
@@ -164,8 +180,13 @@ module.exports = async (req, res) => {
         .maybeSingle();
       if (existing) return res.status(200).json({ success: true, role: existing.role, alreadyMember: true, teamId: team.id });
 
-      await supabase.from('team_members').insert({ team_id: team.id, account_id: session.id, role: 'member' });
-      return res.status(200).json({ success: true, role: 'member', teamId: team.id });
+      // Everyone joins as a Viewer; if their Battle.net account has a character
+      // on this roster, it's connected and they become a Member right away.
+      await supabase.from('team_members').insert({ team_id: team.id, account_id: session.id, role: 'viewer' });
+      const connected = await syncAccountClaims(supabase, session.id);
+      const { data: joined } = await supabase
+        .from('team_members').select('role').eq('team_id', team.id).eq('account_id', session.id).maybeSingle();
+      return res.status(200).json({ success: true, role: joined?.role || 'viewer', teamId: team.id, connected });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 

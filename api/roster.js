@@ -18,6 +18,7 @@ const { assertTeamMembership } = require('../lib/teamAuth');
 const { slugifyServer, serverDisplayFromSlug } = require('../lib/serverSlug');
 const { resolveCurrentRaidByDate, fetchRaidCalendar, raidLaunchDate } = require('../lib/raiderioRaids');
 const { appendToJoinOrder, markLeftJoinOrder } = require('../lib/joinOrder');
+const { linkRosterCharacters } = require('../lib/characterClaims');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
 const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 
@@ -1226,6 +1227,8 @@ module.exports = async (req, res) => {
         await appendToJoinOrder(supabase, teamId, [{ id: characterId, name: name.trim(), account_id: null }],
           req.body.joinSource === 'recruit' ? 'recruit' : 'roster');
       }
+      // Connected to whichever team member's Battle.net account has it.
+      await linkRosterCharacters(supabase, teamId, [characterId]);
 
       return res.status(200).json({ success: true, id: characterId });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }

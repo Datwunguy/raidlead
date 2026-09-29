@@ -184,6 +184,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Build the mobile hamburger nav from the real .nav-btn tabs
   initMobileNav();
 
+  // Sign-in connected roster characters from Battle.net (?bnet_connected=N)
+  checkBnetConnectedParam();
+
   // Handle a Next Season survey link (?survey=<teamId>) -- before the
   // invite handler, which resets the URL
   checkSurveyParam();
@@ -279,17 +282,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       try { await loadRosterFromDB(); } catch(e) {}
 
-      // Gate: new members must claim a character before accessing the
-      // dashboard -- except officers/owners, who bypass regardless.
-      if (needsClaimGate()) {
-        showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
-        await showClaimGateScreen();
-      } else {
-        showDashboard();
-        loadCachedScores();
-        showToast('Welcome to ' + STATE.config.guild + '!', 'success');
-        checkAndAdvanceSeason();
-      }
+      showDashboard();
+      loadCachedScores();
+      showToast(joinWelcomeMessage(joinData), 'success');
+      checkAndAdvanceSeason();
       return;
     } catch(e) {
       showToast(e.message || 'Could not use that invite link.', 'error');
@@ -307,13 +303,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     applyGuildData(guildData);
     await loadRosterFromDB();
 
-    // Gate: block access until this account has claimed a character --
-    // except officers/owners, whose permission level has nothing to do
-    // with whether they personally play a character on this team.
-    if (needsClaimGate()) {
-      showClaimGateScreen();
-      return;
-    }
 
     showDashboard();
     updateRosterTitle();
@@ -1040,120 +1029,14 @@ function updateRosterTitle() {
   }
 }
 
-let CLAIM_GATE_UNCLAIMED = [];
-
-// The claim-a-character screen is for members who haven't picked their
-// character yet. Officers/owners never need it, and Viewers already chose
-// "Continue as a Viewer" -- that's saved as their role, so it sticks.
-function needsClaimGate() {
-  return !STATE.claimedCharacter && !['owner', 'officer', 'viewer'].includes(STATE.myRole);
-}
-
-async function showClaimGateScreen() {
-  hideBootLoader();
-  document.getElementById('setup-screen').style.display       = 'none';
-  document.getElementById('dashboard').style.display          = 'none';
-  document.getElementById('login-screen').style.display       = 'none';
-  document.getElementById('guild-setup-screen').style.display = 'none';
-  document.getElementById('landing-choice-screen').style.display = 'none';
-  document.getElementById('join-guild-screen').style.display  = 'none';
-  document.getElementById('main-nav').style.display            = 'none';
-  document.getElementById('guild-badge').style.display         = 'none';
-  const _shareBtnGate = document.getElementById('share-btn');
-  if (_shareBtnGate) _shareBtnGate.style.display = 'none';
-  document.getElementById('account-menu').style.display        = 'none';
-  document.getElementById('claim-gate-screen').style.display   = 'flex';
-
-  // Figure out which characters are already claimed by ANY account, so we only offer unclaimed ones
-  let claimedNames = [];
-  try {
-    const data = await fetchMembersFromDB();
-    const members = data?.members || [];
-    claimedNames = members
-      .flatMap(m => Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []))
-      .map(c => c.name?.toLowerCase())
-      .filter(Boolean);
-  } catch(e) { /* if this fails, fall through and show the full roster rather than blocking entirely */ }
-
-  CLAIM_GATE_UNCLAIMED = (STATE.players || []).filter(p => !claimedNames.includes(p.name.toLowerCase()));
-  renderClaimGateList();
-}
-
-function renderClaimGateList() {
-  const search = (document.getElementById('claim-gate-search')?.value || '').toLowerCase().trim();
-  const listEl  = document.getElementById('claim-gate-list');
-  const emptyEl = document.getElementById('claim-gate-empty');
-  if (!listEl) return;
-
-  const filtered = CLAIM_GATE_UNCLAIMED.filter(p => p.name.toLowerCase().includes(search));
-
-  if (filtered.length === 0) {
-    listEl.innerHTML = '';
-    if (emptyEl) emptyEl.style.display = 'block';
-    return;
-  }
-  if (emptyEl) emptyEl.style.display = 'none';
-
-  listEl.innerHTML = filtered
-    .sort((a,b) => a.name.localeCompare(b.name))
-    .map(p => {
-      const color = CLASS_COLORS[p.class] || '#888';
-      return `<div onclick="claimMyCharacter(${jsAttr(p.name)})" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
-        <div style="width:10px; height:10px; border-radius:50%; background:${color};"></div>
-        <span style="color:${color}; font-weight:700; font-size:14px;">${escapeHtml(p.name)}</span>
-        <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${escapeHtml(p.class)} · ${escapeHtml(p.serverDisplay || p.server)}</span>
-      </div>`;
-    }).join('');
-}
-
-async function claimMyCharacter(characterName) {
-  try {
-    const player = STATE.players.find(p => p.name === characterName);
-    const resp = await fetch('/api/members?action=claimCharacter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        characterName, teamId: STATE.teamId,
-        characterClass: player?.class, characterServer: player?.server, characterRole: player?.role,
-      }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Claim failed');
-    STATE.claimedCharacter = characterName;
-    STATE.claimedCharacters = [{
-      id: null, name: characterName, class: player?.class || 'unknown',
-      primary_role: player?.role || 'ranged', rank: player?.rank || 'Main',
-    }];
-    showToast('Character claimed: ' + characterName, 'success');
-    showDashboard();
-    updateRosterTitle();
-    loadCachedScores();
-  } catch(e) {
-    showToast('Error: ' + e.message, 'error');
-  }
-}
-
-// Lets someone past the claim gate without a character -- read-only access
-// from then on (see api/members.js's becomeViewer and the officer-only
-// write actions it's checked against).
-async function continueAsViewer() {
-  try {
-    const resp = await fetch('/api/members?action=becomeViewer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Could not continue as a Viewer');
-    STATE.myRole = data.role;
-    applyRolePermissions(STATE.myRole);
-    showDashboard();
-    updateRosterTitle();
-    loadCachedScores();
-    showToast('Continuing as a Viewer -- read-only access', 'success');
-  } catch(e) {
-    showToast('Error: ' + e.message, 'error');
-  }
+// The welcome after joining a team says what happened with their characters:
+// connected from Battle.net, or Viewer until one is on the roster.
+function joinWelcomeMessage(joinData) {
+  const guild = STATE.config?.guild || 'the team';
+  const names = joinData?.connected || [];
+  if (names.length) return `Welcome to ${guild}! Connected from your Battle.net account: ${names.join(', ')}`;
+  if (joinData?.role === 'viewer') return `Welcome to ${guild}! You're a Viewer for now. Once your character is on the roster, it connects to your account automatically.`;
+  return `Welcome to ${guild}!`;
 }
 
 function showDashboard() {
@@ -1167,7 +1050,6 @@ function showDashboard() {
   document.getElementById('badge-server').textContent = titleCaseServer(STATE.config.server);
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'none';
-  document.getElementById('claim-gate-screen').style.display  = 'none';
   document.getElementById('landing-choice-screen').style.display = 'none';
   document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('account-menu').style.display       = 'flex';
@@ -5447,7 +5329,6 @@ function showLandingChoice() {
   document.getElementById('guild-setup-screen').style.display = 'none';
   document.getElementById('join-guild-screen').style.display  = 'none';
   document.getElementById('dashboard').style.display          = 'none';
-  document.getElementById('claim-gate-screen').style.display  = 'none';
   document.getElementById('main-nav').style.display           = 'none';
   document.getElementById('guild-badge').style.display        = 'none';
   const _shareBtnSetup = document.getElementById('share-btn');
@@ -5467,7 +5348,6 @@ function showJoinGuildScreen() {
   document.getElementById('guild-setup-screen').style.display    = 'none';
   document.getElementById('landing-choice-screen').style.display = 'none';
   document.getElementById('dashboard').style.display             = 'none';
-  document.getElementById('claim-gate-screen').style.display     = 'none';
   document.getElementById('main-nav').style.display              = 'none';
   document.getElementById('guild-badge').style.display           = 'none';
   const _shareBtnSetup = document.getElementById('share-btn');
@@ -5494,15 +5374,10 @@ async function completeGuildJoin(joinCode) {
   applyGuildData(freshData);
   await loadRosterFromDB();
 
-  if (needsClaimGate()) {
-    showToast('Welcome to ' + STATE.config.guild + '! Please claim your character to continue.', 'success');
-    await showClaimGateScreen();
-  } else {
-    showDashboard();
-    loadCachedScores();
-    showToast('Welcome to ' + STATE.config.guild + '!', 'success');
-    checkAndAdvanceSeason();
-  }
+  showDashboard();
+  loadCachedScores();
+  showToast(joinWelcomeMessage(joinData), 'success');
+  checkAndAdvanceSeason();
 }
 
 async function joinGuildByCode() {
@@ -5607,19 +5482,9 @@ async function createGuild(confirmNewTeam) {
 
     await loadRosterFromDB();
 
-    // A brand-new guild has no roster yet (no WowAudit import or manual adds
-    // have happened), so there's nothing to claim from -- skip straight to
-    // the dashboard rather than showing a claim gate with nobody to pick.
-    // The creator is always this team's owner anyway, so the officer bypass
-    // below would apply regardless -- kept for consistency with every other
-    // gate check site.
-    if (STATE.players.length > 0 && needsClaimGate()) {
-      await showClaimGateScreen();
-    } else {
-      showDashboard();
-      checkAndAdvanceSeason();
-      loadCachedScores();
-    }
+    showDashboard();
+    checkAndAdvanceSeason();
+    loadCachedScores();
 
   } catch(e) {
     document.getElementById('gs-status').textContent = 'Error: ' + e.message;
@@ -5849,7 +5714,7 @@ function renderMemberClaimSection(members) {
   const chars = mainsFirst(Array.isArray(me?.characters) ? me.characters : (me?.characters ? [me.characters] : []));
 
   if (chars.length === 0) {
-    claimedEl.textContent = 'No character claimed yet — claim one below:';
+    claimedEl.textContent = 'No character connected yet. Your characters connect automatically once they\'re on the roster (Sync from Battle.net if one is missing), or claim one below.';
   } else {
     claimedEl.innerHTML = chars.map(c => {
       const color = CLASS_COLORS[c.class] || '#888';
@@ -5858,12 +5723,14 @@ function renderMemberClaimSection(members) {
         <span style="color:${color}; font-weight:700; font-size:16px;">${escapeHtml(c.name)}</span>
         <span style="color:var(--text-mute); font-size:12px;">${escapeHtml(c.class)} · ${escapeHtml(c.primary_role)}</span>
         ${rankBadge}
+        ${c.claim_verified ? '<span class="bnet-verified" title="Confirmed by your Battle.net account">✓ Battle.net</span>' : ''}
         <button onclick="releaseCharacterClaim('${escapeHtml(c.name)}')" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>
       </div>`;
     }).join('');
   }
 
-  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter('${AUTH.session?.id}')">+ Claim ${chars.length ? 'Another ' : 'a '}Character</button>`;
+  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" onclick="syncFromBattleNet()">↻ Sync from Battle.net</button>
+    <button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter('${AUTH.session?.id}')">+ Claim ${chars.length ? 'Another ' : 'a '}Character</button>`;
 }
 
 async function releaseCharacterClaim(characterName) {
@@ -5958,6 +5825,7 @@ function renderMembersListFromDB(members) {
     // characters may also be array -- a member can claim more than one (Main + Alt(s))
     const chars = mainsFirst(Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []));
     const charNames = chars.map(c => c.name).filter(Boolean);
+    const charLabels = chars.filter(c => c.name).map(c => escapeHtml(c.name) + (c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : ''));
     const accountId = m.account_id;
     const isSelf = AUTH.session?.id === accountId;
     const discordId = acct?.discord_id || null;
@@ -5971,7 +5839,7 @@ function renderMembersListFromDB(members) {
         </div>
         <div style="font-size:12px; color:var(--text-mute); margin-top:2px;">
           ${charNames.length
-            ? `<span style="color:var(--text-dim);">Character${charNames.length > 1 ? 's' : ''}: <strong>${charNames.join(', ')}</strong></span>`
+            ? `<span style="color:var(--text-dim);">Character${charNames.length > 1 ? 's' : ''}: <strong>${charLabels.join(', ')}</strong></span>`
             : `<span style="color:#ff6b6b;">No character claimed</span>`
           }
         </div>
@@ -6365,7 +6233,6 @@ async function switchActiveTeam(teamId) {
   if (!guildData || !guildData.team) { showToast('Could not switch teams', 'error'); return; }
   applyGuildData(guildData);
   await loadRosterFromDB();
-  if (needsClaimGate()) { showClaimGateScreen(); return; }
   // Nothing from the previous team carries over: its scores, and its raid
   // night -- showDashboard picks this team's next raid night once its
   // attendance (extra raid nights) has loaded.
@@ -8153,6 +8020,22 @@ function surveySpecLabel(choice) {
 // ?survey=<teamId> -- the link officers share in Discord -- opens the survey
 // once the dashboard has loaded. Stashed first, since a signed-out visitor
 // goes through the Battle.net login redirect before getting there.
+function checkBnetConnectedParam() {
+  const params = new URLSearchParams(window.location.search);
+  const n = parseInt(params.get('bnet_connected'), 10);
+  if (!n) return;
+  params.delete('bnet_connected');
+  const rest = params.toString();
+  window.history.replaceState({}, '', '/' + (rest ? '?' + rest : ''));
+  setTimeout(() => showToast(`Connected ${n} character${n === 1 ? '' : 's'} from your Battle.net account`, 'success'), 1500);
+}
+
+// Re-runs Battle.net sign-in to refresh this player's character list (new
+// characters, renames). Instant once they've allowed it the first time.
+function syncFromBattleNet() {
+  window.location.href = '/api/auth?action=login';
+}
+
 function checkSurveyParam() {
   const params = new URLSearchParams(window.location.search);
   const teamId = params.get('survey');
@@ -9508,7 +9391,7 @@ function renderRolesTab() {
     const isSelf = m.account_id === me;
     const chars = mainsFirst(Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []));
     const charHtml = chars.length
-      ? chars.map(c => `<span style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>${(c.rank || 'Main') !== 'Main' ? '<span class="recruit-sub"> (alt)</span>' : ''}`).join(', ')
+      ? chars.map(c => `<span style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>${c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : ''}${(c.rank || 'Main') !== 'Main' ? '<span class="recruit-sub"> (alt)</span>' : ''}`).join(', ')
       : '<span class="roles-none">No character claimed</span>';
     const id = jsAttr(m.account_id);
     let control;

@@ -131,7 +131,7 @@ module.exports = async (req, res) => {
         // the first one for the many call sites that only need a yes/no or a
         // default name (the attendance gate, etc).
         const { data: charRows } = await supabase
-          .from('characters').select('id, name, class, primary_role, rank')
+          .from('characters').select('id, name, class, primary_role, rank, claim_verified')
           .eq('account_id', session.id).eq('team_id', activeTeamId)
           .eq('active', true);
         // Main first, then Alts -- claimedCharacter is the Main.

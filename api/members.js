@@ -40,7 +40,7 @@ module.exports = async (req, res) => {
 
       const { data: chars } = await supabase
         .from('characters')
-        .select('id, name, class, primary_role, rank, account_id')
+        .select('id, name, class, primary_role, rank, account_id, claim_verified')
         .eq('team_id', teamId)
         .eq('active', true)
         .not('account_id', 'is', null);
@@ -91,28 +91,6 @@ module.exports = async (req, res) => {
         .eq('account_id', targetAccountId)
         .eq('team_id', teamId);
       return res.status(200).json({ success: true });
-    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
-  }
-
-  // ── BECOME VIEWER (self-service): lets someone past the character-claim
-  // gate without claiming a character, for anyone who just wants read-only
-  // access -- officers/owners never need this, they bypass the gate
-  // entirely on the client side regardless of role. Only ever changes the
-  // caller's own role, and only downward (never touches an existing
-  // officer/owner), so there's no privilege-escalation surface here. ──
-  if (action === 'becomeViewer') {
-    const { teamId } = req.body;
-    if (!teamId) return res.status(400).json({ error: 'teamId required' });
-    try {
-      const myRole = await assertTeamMembership(supabase, session.id, teamId);
-      if (isOfficerRole(myRole)) return res.status(200).json({ success: true, role: myRole }); // nothing to do
-
-      await supabase
-        .from('team_members')
-        .update({ role: 'viewer' })
-        .eq('account_id', session.id)
-        .eq('team_id', teamId);
-      return res.status(200).json({ success: true, role: 'viewer' });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
@@ -186,9 +164,20 @@ module.exports = async (req, res) => {
       // Officers can claim on behalf of another account; regular members can only claim for themselves
       const accountId = (isOfficer && targetAccountId) ? targetAccountId : session.id;
 
+      // A member can't take a character someone else holds -- that's an
+      // officer's call (or Battle.net's: the real owner's sign-in moves it).
+      if (!isOfficer) {
+        const { data: current } = await supabase
+          .from('characters').select('account_id').eq('team_id', teamId).eq('name', characterName).maybeSingle();
+        if (current?.account_id && current.account_id !== accountId) {
+          return res.status(409).json({ error: 'Another member already has that character. Ask an officer if that looks wrong.' });
+        }
+      }
+
+      // Claims made by hand aren't verified by Blizzard (see lib/characterClaims.js).
       const { data: updated, error: claimErr } = await supabase
         .from('characters')
-        .update({ account_id: accountId })
+        .update({ account_id: accountId, claim_verified: false })
         .eq('name', characterName)
         .eq('team_id', teamId)
         .select('name');
@@ -238,7 +227,7 @@ module.exports = async (req, res) => {
       }
 
       const { error } = await supabase
-        .from('characters').update({ account_id: null }).eq('team_id', teamId).eq('name', characterName);
+        .from('characters').update({ account_id: null, claim_verified: false }).eq('team_id', teamId).eq('name', characterName);
       if (error) throw error;
 
       return res.status(200).json({ success: true });

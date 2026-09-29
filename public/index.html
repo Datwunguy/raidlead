@@ -12,7 +12,7 @@
      value works -- today's date is the convention) every time you edit
      styles.css, or deployed style changes won't reach anyone with a warm
      cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<link rel="stylesheet" href="styles.css?v=20260928e">
+<link rel="stylesheet" href="styles.css?v=20260928f">
 </head>
 <body>
 <div id="app">
@@ -298,26 +298,6 @@
         <div style="display:flex; gap:12px; align-items:center;">
           <button class="btn-secondary" id="cancel-btn" style="display:none;" onclick="cancelSetup()">Cancel</button>
           <button class="btn-primary" id="load-btn" onclick="loadGuild()">Load Guild</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- CLAIM CHARACTER GATE SCREEN -->
-  <div id="claim-gate-screen" style="display:none;">
-    <div class="setup-card" style="max-width:560px;">
-      <div class="setup-header">
-        <h1>Claim Your Character</h1>
-        <p>Before you can access the dashboard, select which character on the roster belongs to you. This links your raid attendance, planner assignments, and scores to your account.</p>
-      </div>
-      <div class="setup-body">
-        <input type="text" id="claim-gate-search" placeholder="Search your character name..." style="width:100%; margin-bottom:14px;" oninput="renderClaimGateList()">
-        <div id="claim-gate-list" style="max-height:360px; overflow-y:auto;"></div>
-        <div id="claim-gate-empty" style="display:none; text-align:center; color:var(--text-mute); padding:24px 0;">
-          No matching unclaimed characters. Ask an officer if your character isn't listed.
-        </div>
-        <div style="text-align:center; margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
-          <a href="#" onclick="continueAsViewer(); return false;" style="font-size:13px; color:var(--text);">Don't have a character? Continue as a Viewer (read-only access)</a>
         </div>
       </div>
     </div>
@@ -1301,6 +1281,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260928g"></script>
+<script src="app.js?v=20260928h"></script>
 </body>
 </html>

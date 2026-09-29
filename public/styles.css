@@ -2068,3 +2068,6 @@
   .roles-badge.role-officer { color: #69CCF0; border-color: rgba(105,204,240,0.4); }
   .roles-badge.role-member  { color: var(--text); }
   @media (max-width: 700px) { .roles-legend { grid-template-columns: 1fr; } }
+
+  /* A character Blizzard confirmed is on this player's Battle.net account */
+  .bnet-verified { color: #3fa9ff; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; cursor: help; }
