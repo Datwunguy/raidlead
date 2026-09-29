@@ -716,6 +716,7 @@ async function loadRosterIlvls(force) {
 }
 
 async function importFromWowaudit() {
+  if (!STATE.config?.hasWowauditKey) return showWowauditKeyPrompt();
   const btn = document.getElementById('wowaudit-import-btn');
   if (btn) { btn.textContent = 'Importing...'; btn.disabled = true; }
   try {
@@ -725,6 +726,12 @@ async function importFromWowaudit() {
       body: JSON.stringify({ teamId: STATE.teamId }),
     });
     const data = await resp.json();
+    if (data.wowauditNotConfigured) {
+      // The key was cleared since this page loaded (e.g. by another officer).
+      STATE.config.hasWowauditKey = false;
+      renderWowauditKeyStatus();
+      return showWowauditKeyPrompt();
+    }
     if (!resp.ok) throw new Error(data.error || 'Import failed');
 
     await loadRosterFromDB(true);
@@ -734,8 +741,27 @@ async function importFromWowaudit() {
     loadOfficerNudge();
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.textContent = '⬇ Import from WowAudit'; btn.disabled = false; }
   }
-  if (btn) { btn.textContent = '⬇ Import from WowAudit'; btn.disabled = false; }
+}
+
+// No WowAudit key yet: say what's needed, and take them to where it goes.
+function showWowauditKeyPrompt() {
+  document.getElementById('wowaudit-key-modal').classList.add('open');
+}
+
+function closeWowauditKeyPrompt(goToSettings) {
+  document.getElementById('wowaudit-key-modal').classList.remove('open');
+  if (!goToSettings) return;
+  showSetup();
+  const help  = document.getElementById('wowaudit-key-help');
+  const input = document.getElementById('inp-wowaudit-key');
+  if (help) help.open = true;
+  if (input) setTimeout(() => {
+    input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    input.focus({ preventScroll: true });
+  }, 50);
 }
 
 // ── ADD/EDIT/REMOVE CHARACTER MODAL (officers only) ──
@@ -2765,9 +2791,10 @@ function renderRoster() {
 
   // Stats
   document.getElementById('stat-total').textContent = players.length;
-  const zoneDisplay = STATE.zoneName && STATE.zoneName !== '—' ? STATE.zoneName : 'Zone ' + STATE.zoneId;
+  const zoneLabel   = STATE.zoneId ? 'Zone ' + STATE.zoneId : '';
+  const zoneDisplay = STATE.zoneName && STATE.zoneName !== '—' ? STATE.zoneName : (zoneLabel || '—');
   document.getElementById('stat-zone').textContent  = zoneDisplay;
-  document.getElementById('stat-difficulty').textContent = 'Zone ' + STATE.zoneId;
+  document.getElementById('stat-difficulty').textContent = zoneDisplay === zoneLabel ? '' : zoneLabel;
 
   // Avg iLvl, plus the average of just the top 20 / top 10 equipped ilvls --
   // a closer read on raid-ready strength than a whole-roster average, which
@@ -6419,14 +6446,13 @@ function applyRolePermissions(role) {
   if (!isOfficer && document.getElementById('tab-team')?.classList.contains('active')) showTab('roster');
 }
 
-// The Import button is officer-only AND needs a WowAudit key connected --
-// called both from applyRolePermissions (role changes) and after
-// saving/clearing the key in Guild Settings (STATE.config changes).
+// The Import button is officer-only. It shows with or without a WowAudit
+// key -- without one, clicking it asks for a key (showWowauditKeyPrompt).
+// Called from applyRolePermissions and after saving/clearing the key.
 function updateWowauditImportBtn() {
   const btn = document.getElementById('wowaudit-import-btn');
   if (!btn) return;
-  const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
-  btn.style.display = (isOfficer && STATE.config?.hasWowauditKey) ? 'inline-flex' : 'none';
+  btn.style.display = ['owner', 'officer'].includes(STATE.myRole) ? 'inline-flex' : 'none';
 }
 
 // ─────────────────────────────────────────────

@@ -172,7 +172,7 @@
           <div class="form-group full">
             <label>WowAudit API Key <span style="color:var(--text-mute);font-weight:400;">(optional — powers the "Import from WowAudit" button on the Roster tab. Your roster is managed directly on RaidLead either way; this just saves typing everyone in by hand)</span></label>
 
-            <details style="margin-bottom:14px;">
+            <details id="wowaudit-key-help" style="margin-bottom:14px;">
               <summary style="cursor:pointer; font-size:16px; color:var(--gold); text-transform:none; letter-spacing:0; font-weight:700;">How do I get this?</summary>
               <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
                 <li>Open your team on WowAudit and go to Settings &gt; API.</li>
@@ -971,6 +971,28 @@
       </div>
 
       <!-- COMPANION APP PAIRING MODAL -->
+      <!-- WOWAUDIT KEY PROMPT (Import clicked with no key saved) -->
+      <div class="modal-overlay" id="wowaudit-key-modal" onclick="if (event.target === this) closeWowauditKeyPrompt(false)">
+        <div class="modal" style="max-width:460px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;">Connect WowAudit</div>
+            <button class="modal-close" onclick="closeWowauditKeyPrompt(false)">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:14px; line-height:1.6;">
+              To import your roster from WowAudit, add your team's WowAudit API key in Guild Settings.
+            </p>
+            <p style="font-size:13px; color:var(--text-dim); line-height:1.6; margin-top:10px;">
+              You'll find the key in WowAudit under your team's Settings &gt; API.
+            </p>
+            <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-top:20px;">
+              <button class="btn-secondary" onclick="closeWowauditKeyPrompt(false)">Cancel</button>
+              <button class="btn-primary" onclick="closeWowauditKeyPrompt(true)">Go to Guild Settings</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- BATTLE.NET CONNECT PROMPT (accounts that haven't shared their WoW characters) -->
       <div class="modal-overlay" id="bnet-connect-modal">
         <div class="modal" style="max-width:460px;">
@@ -1304,6 +1326,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260928i"></script>
+<script src="app.js?v=20260929a"></script>
 </body>
 </html>
