@@ -1122,14 +1122,12 @@ function showDashboard(guildData = null) {
           if (!STATE.plannerDate) {
             STATE.plannerDate = nextUpcomingRaidDate();
           }
-          // Fetch the plan for that specific date -- NOT the most-recently-published
-          // plan overall, which could be for a raid night that's already passed and
-          // would otherwise clobber the auto-advanced date.
-          const planData = await fetchRaidPlanFromDB(STATE.plannerDate);
-          console.log('[Planner] showDashboard fetch:', STATE.teamId, planData?.plan ? 'plan found, members:' + (planData.plan.raid_plan_members?.length || 0) : 'no plan for ' + STATE.plannerDate);
-          if (planData && planData.plan) {
-            applyPlanData(planData);
-          }
+          // That date's plan -- NOT the most-recently-published plan overall,
+          // which could be for a raid night that's already passed. Through
+          // loadPlanForDate, which clears the previous plan first: after a
+          // team switch, a team with no plan yet used to keep showing the
+          // other team's swaps and PUBLISHED badge.
+          await loadPlanForDate(STATE.plannerDate, { attendanceFresh: true });
           updatePlannerDateLabel();
         })();
       }
@@ -4406,8 +4404,9 @@ function nextUpcomingRaidDate() {
   return todayStr;
 }
 
-// Load the plan for a specific raid date, clearing selections if none exists
-async function loadPlanForDate(dateStr) {
+// Load the plan for a specific raid date, clearing selections if none exists.
+// attendanceFresh: the caller just loaded attendance, so don't fetch it again.
+async function loadPlanForDate(dateStr, { attendanceFresh = false } = {}) {
   if (!dateStr || !STATE.teamId) return;
 
   // Reset immediately so checklist is never stuck in a stale locked/published state
@@ -4426,7 +4425,7 @@ async function loadPlanForDate(dateStr) {
   // unavailable after this session's first Raid Night visit would silently
   // never show up as Out here, even on a fresh publish or a later reopen
   // of this same tab, without an explicit refresh on every load.
-  const [planData] = await Promise.all([fetchRaidPlanFromDB(dateStr), loadAttendanceData()]);
+  const [planData] = await Promise.all([fetchRaidPlanFromDB(dateStr), attendanceFresh ? null : loadAttendanceData()]);
   console.log('[Planner] loadPlanForDate', dateStr, planData?.plan ? 'found' : 'none');
   if (planData?.plan) {
     applyPlanData(planData);

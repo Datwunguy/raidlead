@@ -26,8 +26,16 @@ const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
 // people opening the Roster tab around the same time don't each trigger a
 // fresh batch of per-character lookups. A character's gear doesn't change
 // fast enough to justify hitting Raider.io on every page load either way.
-const ilvlCache = new Map(); // teamId -> { data: {name: ilvl}, fetchedAt }
+// Only lookups that worked are cached -- a failed one (Raider.io busy or
+// rate-limiting) is tried again on the next load instead of showing "—".
+const ilvlCache = new Map(); // teamId -> Map("name|server" -> { ilvl, at })
 const ILVL_CACHE_MS = 10 * 60 * 1000;
+const ILVL_LOOKUPS_AT_ONCE = 5;
+// If Raider.io rate limits ever become a real problem (roster ilvl stuck on
+// "—", with "[listIlvl] ... status 429" in the Vercel logs): a free Raider.io
+// API key raises the limit and ties it to us rather than Vercel's shared IPs.
+// It's an `access_key=` query param on every raider.io call (here,
+// api/raiderio.js, lib/raiderioCharacter.js, lib/raiderioRaids.js).
 
 // Cache guildRoster's live Blizzard results per team briefly -- it's fetched
 // once when the "Add From Guild" panel opens, not per keystroke, but two
@@ -953,11 +961,6 @@ module.exports = async (req, res) => {
     try {
       await assertTeamOwnership(teamId);
 
-      const cached = ilvlCache.get(teamId);
-      if (!force && cached && Date.now() - cached.fetchedAt < ILVL_CACHE_MS) {
-        return res.status(200).json({ ilvls: cached.data });
-      }
-
       const { data: team } = await supabase
         .from('teams').select('id, guilds ( region )').eq('id', teamId).single();
       const region = team?.guilds?.region === 'oceanic' ? 'us' : (team?.guilds?.region || 'us');
@@ -966,23 +969,27 @@ module.exports = async (req, res) => {
         .from('characters').select('name, server').eq('team_id', teamId).eq('active', true);
       if (error) throw error;
 
-      const entries = await Promise.all((chars || []).map(async c => {
-        let ilvl = 0;
-        try {
-          const resp = await fetch(
-            `https://raider.io/api/v1/characters/profile?region=${encodeURIComponent(region)}` +
-            `&realm=${encodeURIComponent(c.server)}&name=${encodeURIComponent(c.name)}&fields=gear`
-          );
-          if (resp.ok) {
-            const data = await resp.json();
-            ilvl = data?.gear?.item_level_equipped || 0;
-          }
-        } catch (e) { /* leave ilvl at 0 */ }
-        return [c.name, ilvl];
-      }));
+      const cache = ilvlCache.get(teamId) || new Map();
+      ilvlCache.set(teamId, cache);
+      const key = c => `${c.name}|${c.server}`;
+      const stale = (chars || []).filter(c => force || !(Date.now() - (cache.get(key(c))?.at || 0) < ILVL_CACHE_MS));
 
-      const ilvls = Object.fromEntries(entries);
-      ilvlCache.set(teamId, { data: ilvls, fetchedAt: Date.now() });
+      // A few at a time, not the whole roster at once.
+      for (let i = 0; i < stale.length; i += ILVL_LOOKUPS_AT_ONCE) {
+        await Promise.all(stale.slice(i, i + ILVL_LOOKUPS_AT_ONCE).map(async c => {
+          try {
+            const resp = await fetch(
+              `https://raider.io/api/v1/characters/profile?region=${encodeURIComponent(region)}` +
+              `&realm=${encodeURIComponent(c.server)}&name=${encodeURIComponent(c.name)}&fields=gear`
+            );
+            const ilvl = resp.ok ? (await resp.json())?.gear?.item_level_equipped || 0 : 0;
+            if (ilvl) cache.set(key(c), { ilvl, at: Date.now() });
+            else console.warn('[listIlvl] no item level for', c.name, c.server, 'status', resp.status);
+          } catch (e) { console.warn('[listIlvl] lookup failed for', c.name, e.message); }
+        }));
+      }
+
+      const ilvls = Object.fromEntries((chars || []).map(c => [c.name, cache.get(key(c))?.ilvl || 0]));
       return res.status(200).json({ ilvls });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
