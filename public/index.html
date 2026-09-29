@@ -971,6 +971,29 @@
       </div>
 
       <!-- COMPANION APP PAIRING MODAL -->
+      <!-- BATTLE.NET CONNECT PROMPT (accounts that haven't shared their WoW characters) -->
+      <div class="modal-overlay" id="bnet-connect-modal">
+        <div class="modal" style="max-width:460px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;">Connect your WoW characters</div>
+            <button class="modal-close" onclick="closeBnetPrompt(false)">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:14px; line-height:1.6;">
+              RaidLead now links your characters from your Battle.net account automatically, so you never have to claim them by hand.
+            </p>
+            <p id="bnet-connect-viewer-note" style="font-size:14px; color:var(--gold); line-height:1.6; margin-top:10px; display:none;"></p>
+            <p style="font-size:13px; color:var(--text-dim); line-height:1.6; margin-top:10px;">
+              Battle.net will ask you once to share your World of Warcraft character list, then bring you right back here.
+            </p>
+            <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-top:20px;">
+              <button class="btn-secondary" onclick="closeBnetPrompt(false)">Not now</button>
+              <button class="btn-primary" onclick="closeBnetPrompt(true)">Connect with Battle.net</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-overlay" id="companion-pair-modal">
         <div class="modal" style="max-width:420px;">
           <div class="modal-header">
@@ -1281,6 +1304,6 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
-<script src="app.js?v=20260928h"></script>
+<script src="app.js?v=20260928i"></script>
 </body>
 </html>

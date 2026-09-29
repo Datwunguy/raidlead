@@ -136,7 +136,7 @@ module.exports = async (req, res) => {
       const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
       const { data: account, error } = await supabase
         .from('accounts')
-        .select('id, battletag, display_name, discord_id')
+        .select('id, battletag, display_name, discord_id, wow_characters_synced_at')
         .eq('id', session.id)
         .single();
       if (error || !account) return res.status(404).json({ error: 'Account not found' });

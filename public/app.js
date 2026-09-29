@@ -209,18 +209,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Handle auth errors from Battle.net callback
+  // Handle auth errors from Battle.net callback. Someone who's still signed
+  // in (e.g. they cancelled Blizzard's permission screen from the Connect
+  // prompt) stays signed in; only a failed sign-in goes to the login screen.
   const authError = urlParams.get('auth_error');
-  if (authError) {
-    const banner = document.getElementById('auth-error-banner');
-    if (banner) {
-      banner.textContent = 'Sign in failed: ' + authError.replace(/_/g, ' ') + '. Please try again.';
-      banner.style.display = 'block';
-    }
-    showLoginScreen();
-    window.history.replaceState({}, '', '/');
-    return;
-  }
+  if (authError) window.history.replaceState({}, '', '/');
 
   // Kick off the active-team lookup concurrently with the session check right
   // below -- both re-authenticate independently via the session cookie
@@ -242,8 +235,22 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     } catch(e) {}
   }
-  if (!sessionAccount) { showLoginScreen(); return; }
-  AUTH.session = { id: sessionAccount.id, battletag: sessionAccount.battletag };
+  if (!sessionAccount) {
+    if (authError) {
+      const banner = document.getElementById('auth-error-banner');
+      if (banner) {
+        banner.textContent = 'Sign in failed: ' + authError.replace(/_/g, ' ') + '. Please try again.';
+        banner.style.display = 'block';
+      }
+    }
+    showLoginScreen();
+    return;
+  }
+  if (authError) {
+    clearBnetSyncPending();
+    setTimeout(() => showToast(authError === 'access_denied' ? 'Battle.net connection cancelled' : "Couldn't sync with Battle.net. Try again later.", 'error'), 300);
+  }
+  AUTH.session = { id: sessionAccount.id, battletag: sessionAccount.battletag, bnetSynced: !!sessionAccount.wow_characters_synced_at };
   try { localStorage.setItem('raidlead_display', JSON.stringify({ battletag: sessionAccount.battletag, displayName: sessionAccount.display_name })); } catch(e) {}
 
   // Show battletag in header immediately
@@ -284,7 +291,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       showDashboard();
       loadCachedScores();
-      showToast(joinWelcomeMessage(joinData), 'success');
+      showToast(joinWelcomeMessage(), 'success');
       checkAndAdvanceSeason();
       return;
     } catch(e) {
@@ -1029,14 +1036,8 @@ function updateRosterTitle() {
   }
 }
 
-// The welcome after joining a team says what happened with their characters:
-// connected from Battle.net, or Viewer until one is on the roster.
-function joinWelcomeMessage(joinData) {
-  const guild = STATE.config?.guild || 'the team';
-  const names = joinData?.connected || [];
-  if (names.length) return `Welcome to ${guild}! Connected from your Battle.net account: ${names.join(', ')}`;
-  if (joinData?.role === 'viewer') return `Welcome to ${guild}! You're a Viewer for now. Once your character is on the roster, it connects to your account automatically.`;
-  return `Welcome to ${guild}!`;
+function joinWelcomeMessage() {
+  return `Welcome to ${STATE.config?.guild || 'the team'}!`;
 }
 
 function showDashboard() {
@@ -1091,6 +1092,7 @@ function showDashboard() {
       updateRosterTitle();
       loadMySurvey(); // Next Season survey banner, now that role + team are fresh
       loadOfficerNudge(); // owners of a team with no officers yet
+      setTimeout(checkBnetPrompt, 600); // accounts that haven't shared their WoW characters yet
       if (STATE.config?.wclTeamId) localStorage.setItem('raidlead_wcl_team_id', STATE.config.wclTeamId);
       if (STATE.teamId) {
         loadFlexData();
@@ -5376,7 +5378,7 @@ async function completeGuildJoin(joinCode) {
 
   showDashboard();
   loadCachedScores();
-  showToast(joinWelcomeMessage(joinData), 'success');
+  showToast(joinWelcomeMessage(), 'success');
   checkAndAdvanceSeason();
 }
 
@@ -6430,23 +6432,32 @@ function updateWowauditImportBtn() {
 // ─────────────────────────────────────────────
 //  DISPLAY NAME
 // ─────────────────────────────────────────────
+// One name for the account, shown the same on every team it's on.
 async function saveDisplayName(name) {
-  if (!token || !name.trim()) return;
+  name = (name || '').trim();
+  if (!name) return;
+  const btn = document.getElementById('display-name-save-btn');
+  if (btn) btn.disabled = true;
   try {
-    await fetch('/api/members?action=updateDisplayName', {
+    const resp = await fetch('/api/members?action=updateDisplayName', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ displayName: name.trim() }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: name }),
     });
-    if (AUTH.session) AUTH.session.displayName = name.trim();
-    ORIGINAL_DISPLAY_NAME = name.trim();
-    updateDisplayNameSaveState();
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || 'Could not save');
+    if (AUTH.session) AUTH.session.displayName = name;
+    ORIGINAL_DISPLAY_NAME = name;
+    // The member list in this window shows it too.
+    const self = CURRENT_MEMBERS.find(m => m.account_id === AUTH.session?.id);
+    const acct = Array.isArray(self?.accounts) ? self.accounts[0] : self?.accounts;
+    if (acct) acct.display_name = name;
+    if (['owner', 'officer'].includes(STATE.myRole)) renderMembersListFromDB(CURRENT_MEMBERS);
     showToast('Display name saved!', 'success');
-  } catch(e) {
-    showToast('Error saving display name', 'error');
+  } catch (e) {
+    showToast('Error saving display name: ' + e.message, 'error');
   }
+  updateDisplayNameSaveState();
 }
 
 function showToast(msg, type='') {
@@ -8017,25 +8028,80 @@ function surveySpecLabel(choice) {
 
 // ── Raider side ──
 
-// ?survey=<teamId> -- the link officers share in Discord -- opens the survey
-// once the dashboard has loaded. Stashed first, since a signed-out visitor
-// goes through the Battle.net login redirect before getting there.
+// Sign-in connected roster characters from Battle.net (?bnet_connected=N): say so.
 function checkBnetConnectedParam() {
   const params = new URLSearchParams(window.location.search);
   const n = parseInt(params.get('bnet_connected'), 10);
   if (!n) return;
+  clearBnetSyncPending(); // this toast is the answer to Connect / Sync
   params.delete('bnet_connected');
   const rest = params.toString();
   window.history.replaceState({}, '', '/' + (rest ? '?' + rest : ''));
-  setTimeout(() => showToast(`Connected ${n} character${n === 1 ? '' : 's'} from your Battle.net account`, 'success'), 1500);
+  setTimeout(() => showToast('Connected with Battle.net', 'success'), 1500);
 }
 
-// Re-runs Battle.net sign-in to refresh this player's character list (new
-// characters, renames). Instant once they've allowed it the first time.
+// ── Connect prompt: anyone still signed in from before sign-in asked Battle.net
+// for WoW characters (sessions last 30 days) gets a pop-up asking them to allow
+// it, since nothing else would send them back through Battle.net. "Not now"
+// hides it for 3 days. ──
+const BNET_SYNC_PENDING_KEY = 'raidlead_bnet_sync_pending';
+const bnetPromptSnoozeKey  = () => `raidlead_bnet_prompt_snoozed_until_${AUTH.session?.id}`;
+let BNET_PROMPT_CHECKED = false;
+
+// Re-runs Battle.net sign-in to read this player's character list (the first
+// time, new characters, renames). Instant once they've allowed it.
 function syncFromBattleNet() {
+  try { sessionStorage.setItem(BNET_SYNC_PENDING_KEY, '1'); } catch (e) {}
   window.location.href = '/api/auth?action=login';
 }
 
+function clearBnetSyncPending() {
+  try { sessionStorage.removeItem(BNET_SYNC_PENDING_KEY); } catch (e) {}
+}
+
+// Once per page load, after the dashboard has this team's data.
+function checkBnetPrompt() {
+  if (BNET_PROMPT_CHECKED || !AUTH.session) return;
+  let pending = false;
+  try { pending = sessionStorage.getItem(BNET_SYNC_PENDING_KEY) === '1'; } catch (e) {}
+  if (pending) {
+    // Back from Connect / Sync with nothing newly connected (that says "Connected").
+    BNET_PROMPT_CHECKED = true;
+    clearBnetSyncPending();
+    if (AUTH.session.bnetSynced) {
+      showToast('Synced with Battle.net', 'success');
+    } else {
+      snoozeBnetPrompt(1);
+      showToast("Couldn't sync with Battle.net. Try again later.", 'error');
+    }
+    return;
+  }
+  if (AUTH.session.bnetSynced) { BNET_PROMPT_CHECKED = true; return; }
+  let snoozedUntil = 0;
+  try { snoozedUntil = Number(localStorage.getItem(bnetPromptSnoozeKey())) || 0; } catch (e) {}
+  if (snoozedUntil > Date.now()) { BNET_PROMPT_CHECKED = true; return; }
+  // Another pop-up is up (a survey link, Companion login): ask on the next dashboard load.
+  if (document.querySelector('.modal-overlay.open')) return;
+  BNET_PROMPT_CHECKED = true;
+  const note = document.getElementById('bnet-connect-viewer-note');
+  note.textContent = STATE.myRole === 'viewer' ? `You're a Viewer on ${currentTeamLabel()} until one of your characters is connected.` : '';
+  note.style.display = STATE.myRole === 'viewer' ? '' : 'none';
+  document.getElementById('bnet-connect-modal').classList.add('open');
+}
+
+function snoozeBnetPrompt(days) {
+  try { localStorage.setItem(bnetPromptSnoozeKey(), String(Date.now() + days * 86400000)); } catch (e) {}
+}
+
+function closeBnetPrompt(connect) {
+  document.getElementById('bnet-connect-modal').classList.remove('open');
+  if (connect) return syncFromBattleNet();
+  snoozeBnetPrompt(3);
+}
+
+// ?survey=<teamId> -- the link officers share in Discord -- opens the survey
+// once the dashboard has loaded. Stashed first, since a signed-out visitor
+// goes through the Battle.net login redirect before getting there.
 function checkSurveyParam() {
   const params = new URLSearchParams(window.location.search);
   const teamId = params.get('survey');
@@ -9505,6 +9571,12 @@ function openRolesTab() {
 // as soon as the team has an officer, or when dismissed for this team. ──
 const officerNudgeKey = () => `raidlead_officer_nudge_hidden_${STATE.teamId}`;
 
+// This team's name -- or the guild's, for a guild with a single default "Main Team".
+function currentTeamLabel() {
+  const name = STATE.teamName && STATE.teamName !== 'Main Team' ? STATE.teamName : STATE.config?.guild;
+  return name || 'your team';
+}
+
 async function loadOfficerNudge() {
   const el = document.getElementById('officer-nudge-banner');
   if (!el) return;
@@ -9519,9 +9591,7 @@ async function loadOfficerNudge() {
   if (!members?.length || members.some(m => m.role === 'officer')) return hide();
 
   const others = members.filter(m => m.account_id !== AUTH.session?.id);
-  // This team's name -- or the guild's, for a guild with a single default "Main Team".
-  const teamName = STATE.teamName && STATE.teamName !== 'Main Team' ? STATE.teamName : STATE.config?.guild;
-  const team = teamName ? escapeHtml(teamName) : 'your team';
+  const team = escapeHtml(currentTeamLabel());
   el.className = 'survey-banner';
   el.style.display = '';
   el.innerHTML = others.length

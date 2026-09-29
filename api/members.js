@@ -99,7 +99,8 @@ module.exports = async (req, res) => {
     const { displayName } = req.body;
     if (!displayName?.trim()) return res.status(400).json({ error: 'Display name required' });
     try {
-      await supabase.from('accounts').update({ display_name: displayName.trim() }).eq('id', session.id);
+      const { error } = await supabase.from('accounts').update({ display_name: displayName.trim() }).eq('id', session.id);
+      if (error) throw error;
       return res.status(200).json({ success: true });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
