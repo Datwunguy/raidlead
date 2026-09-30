@@ -321,6 +321,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const saved = loadSavedConfig();
   if (saved && saved.guild) {
     STATE.config   = saved;
+    applyGameRules(saved.game);
     // Restore wclTeamId from localStorage if not in saved config
     if (!STATE.config.wclTeamId) {
       STATE.config.wclTeamId = localStorage.getItem('raidlead_wcl_team_id') || null;
@@ -364,31 +365,48 @@ function titleCaseServer(raw) {
   return String(raw || '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-// Standard class -> armor-type mapping (unchanged across expansions), used
-// to group the Tier Token roster grid into Cloth/Leather/Mail/Plate columns.
-const ARMOR_TYPE_BY_CLASS = {
-  'warrior':'Plate', 'paladin':'Plate', 'death knight':'Plate',
-  'hunter':'Mail', 'shaman':'Mail', 'evoker':'Mail',
-  'rogue':'Leather', 'monk':'Leather', 'druid':'Leather', 'demon hunter':'Leather',
-  'mage':'Cloth', 'priest':'Cloth', 'warlock':'Cloth',
-};
-const ARMOR_TYPE_ORDER = ['Cloth', 'Leather', 'Mail', 'Plate'];
+// ── The active team's WoW version (public/games.js): classes, specs, raid
+// buffs and utility, difficulties and raid sizes, tier token groups, and
+// where its data lives. Retail until a team loads; applyGameRules() switches
+// it whenever a team's data is applied. ──
+const GAMES_API = window.RAIDLEAD_GAMES;
+let GAME = GAMES_API.gameFor('retail');
+// Every class's specs and the raid role each fills, in this version.
+let CLASS_SPECS = GAME.specs;
 
-const RAID_BUFFS = [
-  { class:'demon hunter', buff:'3% Magic'    },
-  { class:'druid',        buff:'3% Vers'     },
-  { class:'evoker',       buff:'Movement'    },
-  { class:'hunter',       buff:'3% Damage'   },
-  { class:'mage',         buff:'3% Int'      },
-  { class:'monk',         buff:'5% Physical' },
-  { class:'paladin',      buff:'3% DR'       },
-  { class:'priest',       buff:'5% Stam'     },
-  { class:'rogue',        buff:'3% Boss DR'  },
-  { class:'shaman',       buff:'2% Mastery'  },
-  { class:'warrior',      buff:'5% AP'       },
-];
+// A difficulty of this version by key ("mythic", "heroic25", "raid40"),
+// or its default: { key, label, wcl (WCL difficulty id), size? }.
+function difficultyInfo(key) {
+  return GAME.difficulties.find(d => d.key === key)
+    || GAME.difficulties.find(d => d.key === GAME.defaultDifficulty) || GAME.difficulties[0];
+}
 
-const DIFF_MAP = { lfr:1, normal:3, heroic:4, mythic:5 };
+// Does anyone in `players` provide this raid buff/utility? A provider can
+// need a spec (Moonkin Aura: Balance druids); someone with no spec on file
+// counts when their role is that spec's.
+function playerHasSpec(p, spec) {
+  if (p.spec) return p.spec === spec;
+  const role = (CLASS_SPECS[p.class] || []).find(([name]) => name === spec)?.[1];
+  return !!role && role === (['heal', 'healer'].includes(p.role) ? 'heal' : p.role);
+}
+const providerPresent = (pr, players) => players.some(p => p.class === pr.class && (!pr.spec || playerHasSpec(p, pr.spec)));
+const buffCovered = (b, players) => b.providers.some(pr => providerPresent(pr, players));
+const providerLabel = pr => (pr.spec ? `${pr.spec} ${titleCaseClass(pr.class)}` : titleCaseClass(pr.class));
+
+// What a buff/utility pill shows. Covered: the buff, and who's bringing it.
+// Missing: the class to bring (Retail's single-class buffs), or the buff and
+// everyone who could bring it (Classic's shared ones).
+function buffPill(b, players) {
+  const present = b.providers.filter(pr => providerPresent(pr, players));
+  if (present.length) {
+    const classes = [...new Set(present.map(pr => pr.class))];
+    return { covered: true, color: CLASS_COLORS[classes[0]] || '#888', title: b.name, sub: classes.map(c => c.toUpperCase()).join(' · ') };
+  }
+  const simple = b.providers.length === 1 && !b.providers[0].spec;
+  return simple
+    ? { covered: false, color: null, title: b.providers[0].class.toUpperCase(), sub: '' }
+    : { covered: false, color: null, title: b.name, sub: b.providers.map(providerLabel).join(' / ') };
+}
 
 // "Oceanic" is a RaidLead-only region choice (it only changes which Raider.io
 // rankings pool the Progress tab compares against) -- Oceanic realms are
@@ -409,7 +427,7 @@ function setScoreDifficulty(diff, btn) {
     STATE.mitigationMapDifficulty = diff;
     const loaded = loadCachedMitigation();
     if (!loaded) {
-      document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No ' + diff.toUpperCase() + ' Mitigation Data</h3><p>Click "Refresh Scores" to fetch mitigation data.</p></div>';
+      document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No ' + difficultyInfo(diff).label.toUpperCase() + ' Mitigation Data</h3><p>Click "Refresh Scores" to fetch mitigation data.</p></div>';
     }
     return;
   }
@@ -421,7 +439,7 @@ function setScoreDifficulty(diff, btn) {
     STATE.survivorMapDifficulty = diff;
     const loaded = loadCachedSurvival();
     if (!loaded) {
-      document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No ' + diff.toUpperCase() + ' Survival Data</h3><p>Click "Refresh Scores" to fetch survival data.</p></div>';
+      document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🛡</div><h3>No ' + difficultyInfo(diff).label.toUpperCase() + ' Survival Data</h3><p>Click "Refresh Scores" to fetch survival data.</p></div>';
     }
     return;
   }
@@ -431,7 +449,7 @@ function setScoreDifficulty(diff, btn) {
   STATE.scoresDifficulty = diff;
   const loaded = loadCachedScores();
   if (!loaded) {
-    document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><h3>No ' + diff.toUpperCase() + ' Scores</h3><p>Click "Fetch Scores" to load ' + diff.toUpperCase() + ' data from Warcraft Logs.</p></div>';
+    document.getElementById('scores-table-wrap').innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><h3>No ' + difficultyInfo(diff).label.toUpperCase() + ' Scores</h3><p>Click "Fetch Scores" to load ' + difficultyInfo(diff).label.toUpperCase() + ' data from Warcraft Logs.</p></div>';
     document.getElementById('scores-timestamp').textContent = '';
   }
 }
@@ -511,6 +529,13 @@ function showSetup() {
     set('inp-guild',    s.guild);
     set('inp-server',   titleCaseServer(s.server));
     set('inp-region',   s.region);
+    const gameNote = document.getElementById('settings-game-note');
+    if (gameNote) gameNote.textContent = `Game: ${GAME.label}${GAME.beta ? ' (launches November 4)' : ''}`;
+    const wclLink = document.getElementById('wcl-clients-link');
+    if (wclLink && GAME.sources.wclHost) {
+      wclLink.href = `https://${GAME.sources.wclHost}.warcraftlogs.com/api/clients/`;
+      wclLink.textContent = `${GAME.sources.wclHost}.warcraftlogs.com/api/clients`;
+    }
 
     set('inp-wcl-team',  s.wclTeamId);
     set('inp-discord-guild', STATE.discordGuildId);
@@ -628,7 +653,7 @@ async function loadGuild() {
   const guild      = document.getElementById('inp-guild').value.trim();
   const server     = document.getElementById('inp-server').value.trim();
   const region     = document.getElementById('inp-region').value;
-  const difficulty = 'mythic'; // difficulty is now set per-fetch in WCL Scores tab
+  const difficulty = STATE.config?.difficulty || GAME.defaultDifficulty;
   const wclTeamId  = document.getElementById('inp-wcl-team').value.trim() || null;
   const multiTeam  = document.querySelector('input[name="inp-multi-team"]:checked')?.value === 'yes';
   const teamName   = (multiTeam ? document.getElementById('inp-team')?.value.trim() : '') || 'Main Team';
@@ -768,7 +793,7 @@ let CHARACTER_MODAL_JOIN_SOURCE  = null; // 'recruit' when opened from Team Mana
 function populateClassDropdown(selectId, selected) {
   const sel = document.getElementById(selectId);
   if (!sel) return;
-  sel.innerHTML = Object.keys(CLASS_COLORS).map(c =>
+  sel.innerHTML = GAME.classes.map(c =>
     `<option value="${c}">${c.replace(/\b\w/g, ch => ch.toUpperCase())}</option>`
   ).join('');
   if (selected) sel.value = selected;
@@ -1883,6 +1908,10 @@ async function loadProgressTab() {
   const content = document.getElementById('progress-content');
   const subtitle = document.getElementById('progress-subtitle');
 
+  // World rankings, pulls, and comps are Retail's (Raider.io); every other
+  // version shows boss kills per raid and difficulty/size.
+  if (!GAME.sources.raiderio?.rankings) return loadProgressKills();
+
   loadProgressRaidsList();
 
   // The current-raid flow depends on a detected WCL zone; a specific past
@@ -1920,6 +1949,50 @@ async function loadProgressTab() {
   } catch (e) {
     content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load progress</h3><p>${escapeHtml(e.message)}</p></div>`;
   }
+}
+
+async function loadProgressKills() {
+  const content = document.getElementById('progress-content');
+  document.getElementById('progress-raid-name').textContent = STATE.config?.zoneName || '';
+  document.getElementById('progress-subtitle').textContent = GAME.sources.raiderio
+    ? `Boss kills from Raider.io's Classic site`
+    : `Boss kills from your Warcraft Logs reports`;
+  const cacheKey = 'kills';
+  if (STATE.progressCache[cacheKey]) return renderProgressKills(STATE.progressCache[cacheKey]);
+  content.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading Progress...</div></div>';
+  try {
+    const resp = await fetch(`/api/raiderio?action=progressKills&teamId=${encodeURIComponent(STATE.teamId)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Failed to load progress');
+    STATE.progressCache[cacheKey] = data;
+    renderProgressKills(data);
+  } catch (e) {
+    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load progress</h3><p>${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+// Each raid: bosses killed per difficulty/size ("25 H 4/14").
+function renderProgressKills(data) {
+  const content = document.getElementById('progress-content');
+  if (data.wclNotConfigured) { content.innerHTML = wclNotConnectedHtml(); return; }
+  if (!data.raids?.length) {
+    content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🗺</div><h3>No boss kills yet</h3><p>${escapeHtml(data.message || 'Nothing recorded for this guild yet.')}</p></div>`;
+    return;
+  }
+  content.innerHTML = data.raids.map(r => ({ ...r, totalBosses: Number(r.totalBosses) || 0,
+      kills: (r.kills || []).map(k => ({ label: String(k.label), killed: Number(k.killed) || 0 })) })).map(r => `
+    <div class="progress-kills-raid">
+      <div class="progress-kills-name">${escapeHtml(r.name)}${r.totalBosses ? `<span class="recruit-sub"> · ${r.totalBosses} bosses</span>` : ''}</div>
+      <div class="progress-kills-row">${(r.kills || []).map(k => {
+        const pct = r.totalBosses ? Math.round((k.killed / r.totalBosses) * 100) : 0;
+        return `<div class="progress-kills-cell${k.killed ? ' has-kills' : ''}">
+          <div class="progress-kills-label">${escapeHtml(k.label)}</div>
+          <div class="progress-kills-count">${k.killed}/${r.totalBosses || '?'}</div>
+          <div class="progress-kills-bar"><div style="width:${pct}%;"></div></div>
+        </div>`;
+      }).join('')}</div>
+    </div>`).join('')
+    + (data.profileUrl ? `<div class="recruit-links" style="margin-top:8px;"><a href="${escapeHtml(data.profileUrl)}" target="_blank" rel="noopener noreferrer">Guild on Raider.io</a></div>` : '');
 }
 
 // Bypasses the session cache and re-fetches live from Raider.io -- normally
@@ -2564,6 +2637,7 @@ function renderTierRoster() {
   if (!el) return;
 
   const chars = STATE.teamRosterChars || [];
+  if (!GAME.tokenGroups) { el.innerHTML = `<div style="font-size:12px; color:var(--text-mute);">${escapeHtml(GAME.label)} has no tier tokens to track.</div>`; return; }
   if (chars.length === 0) {
     el.innerHTML = '<div style="font-size:12px; color:var(--text-mute);">No guild roster yet — add characters on the Roster tab, or import from WowAudit in Guild Settings.</div>';
     return;
@@ -2577,9 +2651,12 @@ function renderTierRoster() {
     if (d.current_holder_name) tokensByName[d.current_holder_name] = (tokensByName[d.current_holder_name] || 0) + 1;
   });
 
-  const byArmor = { Plate: [], Mail: [], Leather: [], Cloth: [] };
+  // Tokens by armor type in Retail, by token group (Conqueror, Champion, ...)
+  // in Classic. A version without tier tokens has no checklist.
+  const groups = GAME.tokenGroups || [];
+  const byArmor = Object.fromEntries(groups.map(g => [g.name, []]));
   chars.forEach(c => {
-    const armor = ARMOR_TYPE_BY_CLASS[(c.class || '').toLowerCase()];
+    const armor = groups.find(g => g.classes.includes((c.class || '').toLowerCase()))?.name;
     if (armor) byArmor[armor].push(c);
   });
   Object.values(byArmor).forEach(list => list.sort((a, b) => (a.name || '').localeCompare(b.name || '')));
@@ -2590,9 +2667,9 @@ function renderTierRoster() {
       ${isOfficer ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="resetTierChecklist()">Reset for New Tier</button>` : ''}
     </div>
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px;">
-      ${ARMOR_TYPE_ORDER.map(armor => `
+      ${groups.map(g => g.name).map(armor => `
         <div style="background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:10px;">
-          <div style="font-weight:700; font-size:12px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">${armor}</div>
+          <div style="font-weight:700; font-size:12px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;">${escapeHtml(armor)}</div>
           ${byArmor[armor].length === 0 ? '<div style="font-size:11px; color:var(--text-mute);">—</div>' : byArmor[armor].map(c => {
             const checked = checkedIds.has(c.id);
             const color = CLASS_COLORS[(c.class || '').toLowerCase()] || '#fff';
@@ -2822,7 +2899,7 @@ function renderResources() {
   if (!content) return;
   content.innerHTML = '';
 
-  Object.entries(RESOURCES).forEach(([category, items]) => {
+  Object.entries(GAME.resources || RESOURCES).forEach(([category, items]) => {
     const section = document.createElement('div');
     section.style.cssText = 'margin-bottom: 32px;';
 
@@ -2979,6 +3056,7 @@ function renderRoster() {
 
   // Raid buffs
   renderRaidBuffs(players);
+  renderRaidUtility(players);
 
   // Roster by role
   const roles = [
@@ -2991,10 +3069,9 @@ function renderRoster() {
   const rosterEl = document.getElementById('roster-by-role');
   rosterEl.innerHTML = '';
 
-  let buffCount = 0;
-  const presentClasses = new Set(players.map(p => p.class));
-  RAID_BUFFS.forEach(b => { if (presentClasses.has(b.class)) buffCount++; });
-  document.getElementById('stat-buffs').textContent = buffCount;
+  document.getElementById('stat-buffs').textContent = GAME.raidBuffs.filter(b => buffCovered(b, players)).length;
+  const buffsTotal = document.getElementById('stat-buffs-total');
+  if (buffsTotal) buffsTotal.textContent = `of ${GAME.raidBuffs.length} covered`;
 
   // ── Role sections (flat list, wrapping) ──
   roles.forEach(role => {
@@ -3224,25 +3301,31 @@ function renderRoster() {
 
 // Renders into the roster tab's grid by default; the Next Season survey's
 // projected roster passes its own.
-function renderRaidBuffs(players, grid = document.getElementById('raid-buffs-grid')) {
-  const presentClasses = new Set(players.map(p => p.class));
+function renderRaidBuffs(players, grid = document.getElementById('raid-buffs-grid'), list = GAME.raidBuffs) {
   if (!grid) return;
   grid.innerHTML = '';
-
-  RAID_BUFFS.forEach(b => {
-    const covered = presentClasses.has(b.class);
-    const color   = CLASS_COLORS[b.class] || '#888';
-    const card    = document.createElement('div');
+  list.forEach(b => {
+    const pill = buffPill(b, players);
+    const card = document.createElement('div');
     card.className = 'buff-card';
-    const buffInner = covered
-      ? `<div class="buff-name" style="color:${color};">${b.buff}</div><div class="buff-class" style="color:${color};">${b.class.toUpperCase()}</div>`
-      : `<div class="buff-name" style="color:var(--text-dim);">${b.class.toUpperCase()}</div>`;
+    card.title = b.providers.map(providerLabel).join(', ');
+    const buffInner = pill.covered
+      ? `<div class="buff-name" style="color:${pill.color};">${escapeHtml(pill.title)}</div><div class="buff-class" style="color:${pill.color};">${escapeHtml(pill.sub)}</div>`
+      : `<div class="buff-name" style="color:var(--text-dim);">${escapeHtml(pill.title)}</div>${pill.sub ? `<div class="buff-class" style="color:var(--text-mute);">${escapeHtml(pill.sub)}</div>` : ''}`;
     card.innerHTML = `
-      <div class="buff-indicator ${covered ? 'covered' : 'missing'}"></div>
+      <div class="buff-indicator ${pill.covered ? 'covered' : 'missing'}"></div>
       <div style="flex:1;">${buffInner}</div>
     `;
     grid.appendChild(card);
   });
+}
+
+// Raid Utility: same pills as Raid Buffs (Grip, Gate & Stones, ...), not
+// counted in the buff total. Hidden for a version with none.
+function renderRaidUtility(players) {
+  const section = document.getElementById('raid-utility-section');
+  if (section) section.style.display = GAME.raidUtility.length ? '' : 'none';
+  renderRaidBuffs(players, document.getElementById('raid-utility-grid'), GAME.raidUtility);
 }
 
 async function refreshRoster() {
@@ -3424,7 +3507,9 @@ async function ensureZoneBosses(zoneId) {
 // through onto the result. Never throws: failures come back as
 // result.error. `encounterNames` is the boss list from this character's
 // rankings, which the roster table uses to pick its columns.
-async function fetchCharacterWclScores(char, { zoneId, diffId, region, bossIds, bossOrder, verbose = false }) {
+// `size`: Classic's raid size (10/25, 20/40), part of which rankings to read.
+async function fetchCharacterWclScores(char, { zoneId, diffId, size, region, bossIds, bossOrder, verbose = false }) {
+  const diffArg    = `difficulty: ${diffId}${size ? `, size: ${size}` : ''}`;
   const isHealer   = ['heal', 'healer'].includes(char.role);
   const metric     = isHealer ? ', metric: hps' : ', metric: dps';
   const oppoMetric = isHealer ? ', metric: dps' : ', metric: hps';
@@ -3433,13 +3518,13 @@ async function fetchCharacterWclScores(char, { zoneId, diffId, region, bossIds, 
   // encounterRankings is also a JSON scalar -- alias one per boss, then sort
   // each boss's kills by startTime to find the first kill.
   const bossAliases = bossIds.map((id, i) =>
-    `boss${i}: encounterRankings(encounterID: ${id}, difficulty: ${diffId}${metric})`
+    `boss${i}: encounterRankings(encounterID: ${id}, ${diffArg}${metric})`
   ).join(' ');
 
   const query = `query { characterData { character(name: "${char.name}", serverSlug: "${serverSlug}", serverRegion: "${region}") {
     name
-    best: zoneRankings(zoneID: ${zoneId}, difficulty: ${diffId}${metric})
-    oppo: zoneRankings(zoneID: ${zoneId}, difficulty: ${diffId}${oppoMetric})
+    best: zoneRankings(zoneID: ${zoneId}, ${diffArg}${metric})
+    oppo: zoneRankings(zoneID: ${zoneId}, ${diffArg}${oppoMetric})
     ${bossAliases}
   } } }`;
 
@@ -3550,7 +3635,7 @@ async function fetchScores() {
 
   try {
     const zoneId = STATE.zoneId;
-    const diffId = DIFF_MAP[STATE.scoreDifficulty] || 5;
+    const { wcl: diffId, size } = difficultyInfo(STATE.scoreDifficulty);
     const region = toWclRegion(STATE.config.region);
 
     const results    = [];
@@ -3560,7 +3645,7 @@ async function fetchScores() {
 
     for (const player of STATE.players) {
       const { result, encounterNames } = await fetchCharacterWclScores(player,
-        { zoneId, diffId, region, bossIds, bossOrder, verbose: results.length === 0 });
+        { zoneId, diffId, size, region, bossIds, bossOrder, verbose: results.length === 0 });
       results.push(result);
 
       // Always update bossNames from player with most kills
@@ -3599,7 +3684,7 @@ async function fetchScores() {
           scores:     STATE.scores,
           bossNames:  STATE.bossNames,
           fetchedAt:  Date.now(),
-          difficulty: STATE.scoreDifficulty || 'mythic',
+          difficulty: STATE.scoreDifficulty || GAME.defaultDifficulty,
         }),
       }).catch(() => {});
     }
@@ -3621,6 +3706,10 @@ async function fetchScores() {
 
 function wclNotConnectedHtml() {
   const isOfficer = ['owner', 'officer'].includes(STATE.myRole);
+  if (!GAME.sources.wclHost) {
+    return `<div class="empty-state"><div class="empty-state-icon">⏳</div><h3>Warcraft Logs for ${escapeHtml(GAME.label)} is coming</h3>
+      <p>WCL Scores turn on once Warcraft Logs supports ${escapeHtml(GAME.label)}. Everything else on RaidLead works now.</p></div>`;
+  }
   return `<div class="empty-state">
       <div class="empty-state-icon">🔒</div>
       <h3>Warcraft Logs Not Connected</h3>
@@ -3629,7 +3718,7 @@ function wclNotConnectedHtml() {
         : "Your guild hasn't connected Warcraft Logs API credentials yet — ask an officer to set this up."}</p>
       ${isOfficer ? `
         <div style="display:flex; gap:10px; margin-top:12px;">
-          <a class="btn-secondary" style="padding:8px 16px; font-size:13px; text-decoration:none; display:inline-flex; align-items:center;" href="https://www.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer">Create WCL Credentials ↗</a>
+          <a class="btn-secondary" style="padding:8px 16px; font-size:13px; text-decoration:none; display:inline-flex; align-items:center;" href="https://${GAME.sources.wclHost}.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer">Create WCL Credentials ↗</a>
           <button class="btn-primary" onclick="showSetup()">Go to Guild Settings</button>
         </div>
       ` : ''}
@@ -3905,7 +3994,7 @@ async function fetchMitigationData(reset) {
   const guildName  = STATE.config?.guild;
   const serverSlug = (STATE.config?.server || '').toLowerCase().replace(/\s+/g, '-');
   const region     = toWclRegion((STATE.config?.region || 'us').toLowerCase());
-  const diffId     = DIFF_MAP[STATE.scoreDifficulty] || 5;
+  const { wcl: diffId, size } = difficultyInfo(STATE.scoreDifficulty);
   if (!zoneId || !guildName) {
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh Scores'; }
     STATE.mitigationFetchInFlight = false;
@@ -3916,7 +4005,7 @@ async function fetchMitigationData(reset) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        guildName, serverSlug, region, zoneId, diffId,
+        guildName, serverSlug, region, zoneId, diffId, size,
         guildTagID:   STATE.config?.wclTeamId || null,
         memberNames:  STATE.players.map(p => p.name),
         validBossIds: STATE.bossIds || [],
@@ -3939,7 +4028,7 @@ async function fetchMitigationData(reset) {
     STATE.mitigationMap           = mitigationMap || {};
     STATE.mitigationFetched       = true;
     STATE.mitigationMapDifficulty = STATE.scoreDifficulty;
-    const mitKey = 'raidlead_mitigation_' + STATE.teamId + '_' + zoneId + '_' + (STATE.scoreDifficulty || 'mythic');
+    const mitKey = 'raidlead_mitigation_' + STATE.teamId + '_' + zoneId + '_' + (STATE.scoreDifficulty || GAME.defaultDifficulty);
     try { localStorage.setItem(mitKey, JSON.stringify({ mitigationMap, bossNames, savedAt: Date.now() })); } catch(e) {}
     renderScoresTable('all');
     showToast('Mitigation data loaded', 'success');
@@ -3954,11 +4043,11 @@ async function fetchMitigationData(reset) {
 
 function loadCachedMitigation() {
   const zoneId = STATE.zoneId;
-  const diff   = STATE.scoreDifficulty || 'mythic';
-  const diffId = {'lfr':1,'normal':3,'heroic':4,'mythic':5}[diff] || 5;
+  const diff   = STATE.scoreDifficulty || GAME.defaultDifficulty;
+  const { wcl: diffId, size } = difficultyInfo(diff);
   const key    = 'raidlead_mitigation_' + STATE.teamId + '_' + zoneId + '_' + diff;
   if (STATE.teamId) {
-    fetch('/api/roster?action=getMitigationCache&teamId=' + STATE.teamId + '&zoneId=' + (STATE.zoneId||'') + '&diffId=' + diffId)
+    fetch('/api/roster?action=getMitigationCache&teamId=' + STATE.teamId + '&zoneId=' + (STATE.zoneId||'') + '&diffId=' + diffId + (size ? '&size=' + size : ''))
       .then(r => r.json()).then(data => {
         // The difficulty tab may have changed while this request was in flight --
         // don't clobber whatever the user is looking at now with a stale response.
@@ -4023,7 +4112,7 @@ async function fetchSurvivalData(reset) {
       console.log('[Survival] fetched bossIds:', STATE.bossIds);
     } catch(e) { console.warn('[Survival] fetchZoneBosses failed:', e.message); }
   }
-  const diffId     = DIFF_MAP[STATE.scoreDifficulty] || 5;
+  const { wcl: diffId, size } = difficultyInfo(STATE.scoreDifficulty);
   const guildName  = STATE.config?.guild;
   const serverSlug = (STATE.config?.server || '').toLowerCase().replace(/\s+/g, '-');
   const region     = toWclRegion((STATE.config?.region || 'us').toLowerCase());
@@ -4042,7 +4131,7 @@ async function fetchSurvivalData(reset) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-      guildName, serverSlug, region, zoneId, diffId,
+      guildName, serverSlug, region, zoneId, diffId, size,
       guildTagID:   STATE.config?.wclTeamId || null,
       memberNames:  STATE.players.map(p => p.name),
       validBossIds: STATE.bossIds || [],
@@ -4090,7 +4179,7 @@ async function fetchSurvivalData(reset) {
         scores:     [{ name: '_survival_cache_', survivorMap, bossNames }],
         bossNames:  bossNames,
         fetchedAt:  Date.now(),
-        difficulty: 'surv_' + (STATE.scoreDifficulty || 'mythic'),
+        difficulty: 'surv_' + (STATE.scoreDifficulty || GAME.defaultDifficulty),
       }),
     }).catch(() => {});
 
@@ -4108,13 +4197,13 @@ async function fetchSurvivalData(reset) {
 
 function loadCachedSurvival() {
   const zoneId = STATE.zoneId;
-  const diff   = STATE.scoreDifficulty || 'mythic';
-  const diffId = {'lfr':1,'normal':3,'heroic':4,'mythic':5}[diff] || 5;
+  const diff   = STATE.scoreDifficulty || GAME.defaultDifficulty;
+  const { wcl: diffId, size } = difficultyInfo(diff);
   const key    = 'raidlead_survival_' + STATE.teamId + '_' + zoneId + '_' + diff;
 
   // Always check Supabase for latest (cross-device sync)
   if (STATE.teamId) {
-    fetch(`/api/roster?action=getSurvivalCache&teamId=${STATE.teamId}&zoneId=${STATE.zoneId || ''}&diffId=${diffId}`)
+    fetch(`/api/roster?action=getSurvivalCache&teamId=${STATE.teamId}&zoneId=${STATE.zoneId || ''}&diffId=${diffId}${size ? `&size=${size}` : ''}`)
       .then(r => r.json()).then(data => {
         // The difficulty tab may have changed while this request was in flight --
         // don't clobber whatever the user is looking at now with a stale response.
@@ -4349,7 +4438,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function loadCachedScores() {
   // Capture the difficulty this call is loading for -- STATE.scoreDifficulty could
   // change before the async Supabase fetch below resolves.
-  const requestedDifficulty = STATE.scoreDifficulty || 'mythic';
+  const requestedDifficulty = STATE.scoreDifficulty || GAME.defaultDifficulty;
   const localFetchedAt = (() => {
     try {
       const cached = localStorage.getItem(scoresKey());
@@ -5145,31 +5234,38 @@ function renderPlannerRoster() {
   document.getElementById('plan-healers').textContent = healers.length;
   document.getElementById('plan-dps').textContent     = (melee2.length + ranged2.length);
 
-  // Raid buffs for tonight
-  const presentClasses = new Set(selected.map(p => p.class));
+  // Raid buffs for tonight, then raid utility
   const buffsEl = document.getElementById('plan-buffs');
   buffsEl.innerHTML = '';
-  RAID_BUFFS.forEach(b => {
-    const covered = presentClasses.has(b.class);
-    const color   = CLASS_COLORS[b.class] || '#888';
-    const card    = document.createElement('div');
+  const planPill = b => {
+    const pill = buffPill(b, selected);
+    const card = document.createElement('div');
+    card.title = b.providers.map(providerLabel).join(', ');
     card.style.cssText = `
       background: var(--bg2);
-      border: 1px solid ${covered ? color + '66' : 'var(--border)'};
+      border: 1px solid ${pill.covered ? pill.color + '66' : 'var(--border)'};
       border-radius: 6px;
       padding: 8px 10px;
       display: flex; align-items: center; gap: 8px;
       min-width: 130px;
     `;
     card.innerHTML = `
-      <div class="buff-indicator ${covered ? 'covered' : 'missing'}"></div>
+      <div class="buff-indicator ${pill.covered ? 'covered' : 'missing'}"></div>
       <div>
-        <div style="font-size:12px; font-weight:700; color:${covered ? color : 'var(--text-mute)'};">${covered ? b.buff : b.class.toUpperCase()}</div>
-        ${covered ? `<div style="font-size:10px; color:${color}; letter-spacing:1px;">${b.class.toUpperCase()}</div>` : ''}
+        <div style="font-size:12px; font-weight:700; color:${pill.covered ? pill.color : 'var(--text-mute)'};">${escapeHtml(pill.title)}</div>
+        ${pill.sub ? `<div style="font-size:10px; color:${pill.covered ? pill.color : 'var(--text-mute)'}; letter-spacing:1px;">${escapeHtml(pill.sub)}</div>` : ''}
       </div>
     `;
     buffsEl.appendChild(card);
-  });
+  };
+  GAME.raidBuffs.forEach(planPill);
+  if (GAME.raidUtility.length) {
+    const label = document.createElement('div');
+    label.className = 'plan-utility-label';
+    label.textContent = 'Utility';
+    buffsEl.appendChild(label);
+    GAME.raidUtility.forEach(planPill);
+  }
 
   // Roster columns
   const colsEl = document.getElementById('plan-roster-cols');
@@ -5457,6 +5553,11 @@ function showLoginScreen() {
 
 function showGuildSetup() {
   hideBootLoader();
+  const gameSel = document.getElementById('gs-game');
+  if (gameSel && !gameSel.options.length) {
+    gameSel.innerHTML = GAMES_API.GAME_ORDER.map(id => GAMES_API.GAMES[id])
+      .map(g => `<option value="${g.id}">${escapeHtml(g.label)}${g.beta ? ' (launches Nov 4)' : ''}</option>`).join('');
+  }
   document.getElementById('login-screen').style.display       = 'none';
   document.getElementById('setup-screen').style.display       = 'none';
   document.getElementById('guild-setup-screen').style.display = 'flex';
@@ -5487,6 +5588,12 @@ function showLandingChoice() {
   if (_shareBtnSetup) _shareBtnSetup.style.display = 'none';
   document.getElementById('account-menu').style.display       = 'flex';
   document.getElementById('landing-choice-screen').style.display = 'flex';
+  // Already on a team (came here to start or join another guild): a way back.
+  const back = document.getElementById('landing-back-btn');
+  if (back) {
+    back.style.display = isOnTeam() ? '' : 'none';
+    back.textContent = isOnTeam() ? `← Back to ${currentTeamLabel()}` : '';
+  }
   if (AUTH.session && AUTH.session.battletag) {
     document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
     document.getElementById('dropdown-battletag').textContent = AUTH.session.battletag;
@@ -5520,6 +5627,12 @@ async function completeGuildJoin(joinCode) {
   });
   const joinData = await joinResp.json();
   if (!joinResp.ok) throw new Error(joinData.error || 'Failed to join guild');
+
+  if (isOnTeam() && joinData.teamId && joinData.teamId !== STATE.teamId) {
+    await switchActiveTeam(joinData.teamId);
+    showToast(joinWelcomeMessage(), 'success');
+    return;
+  }
 
   const freshData = await fetchGuildFromDB(joinData.teamId);
   if (!freshData || !freshData.team) throw new Error('Joined, but could not load team data. Try refreshing the page.');
@@ -5579,10 +5692,10 @@ function toggleTeamName(radio) {
 }
 
 async function createGuild(confirmNewTeam) {
+  const game       = document.getElementById('gs-game')?.value || 'retail';
   const guild      = document.getElementById('gs-guild').value.trim();
   const server     = document.getElementById('gs-server').value.trim();
   const region     = document.getElementById('gs-region').value;
-  const difficulty = 'mythic'; // difficulty is now set per-fetch in WCL Scores tab
   const multiTeam = document.querySelector('input[name="multi-team"]:checked')?.value === 'yes';
   const teamNameEl = document.getElementById('gs-team');
   const teamName   = multiTeam && teamNameEl ? teamNameEl.value.trim() || 'Main Team' : 'Main Team';
@@ -5604,7 +5717,7 @@ async function createGuild(confirmNewTeam) {
       headers: {
         'Content-Type':  'application/json',
         },
-      body: JSON.stringify({ guild, server, region, difficulty, teamName, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
+      body: JSON.stringify({ guild, server, region, game, difficulty: GAMES_API.gameFor(game).defaultDifficulty, teamName, wclTeamId, raidDays, confirmNewTeam: !!confirmNewTeam }),
     });
 
     let data = {};
@@ -5625,6 +5738,11 @@ async function createGuild(confirmNewTeam) {
     }
 
     if (!resp.ok) throw new Error(data.error || 'Failed to create guild');
+
+    if (isOnTeam() && data.team?.id && data.team.id !== STATE.teamId) {
+      await switchActiveTeam(data.team.id);
+      return;
+    }
 
     // Populate full STATE (including the teams list) now that the team row exists
     const freshGuildData = await fetchGuildFromDB(data.team?.id);
@@ -6321,17 +6439,20 @@ function applyGuildData(guildData) {
   const t = guildData?.team;
   if (!t) return false;
 
+  const game = GAMES_API.gameFor(t.guilds?.game);
   const config = {
     guild:       t.guilds?.name || null,
     server:      t.guilds?.server || null,
     region:      t.guilds?.region || 'us',
-    difficulty:  t.difficulty || 'mythic',
+    game:        game.id,
+    difficulty:  t.difficulty || game.defaultDifficulty,
     wclUrl:      t.wcl_url || '',
     wclTeamId:   t.wcl_team_id || null,
     zoneId:      t.zone_id || null,
     zoneName:    t.zone_name || '',
     raidDays:    t.raid_days || [],
-    hasWclCredentials: t.hasWclCredentials || false,
+    // A version with no Warcraft Logs site yet (Forever, until launch) counts as not connected.
+    hasWclCredentials: !!(t.hasWclCredentials && game.sources.wclHost),
     wclClientId: t.wcl_client_id || null,
     hasWowauditKey: t.hasWowauditKey || false,
   };
@@ -6357,9 +6478,46 @@ function applyGuildData(guildData) {
     localStorage.setItem('raidlead_guild_id', t.guild_id);
     localStorage.setItem('raidlead_active_team_id', t.id);
   } catch(e) {}
+  applyGameRules(game.id);
   applyRolePermissions(STATE.myRole);
   renderTeamSwitcher();
   return true;
+}
+
+// Switches the page to a WoW version's rules (public/games.js): classes and
+// specs, raid buffs, difficulties, and what's shown. Difficulty choices carry
+// over when the version has them, otherwise its default.
+function applyGameRules(gameId) {
+  GAME = GAMES_API.gameFor(gameId);
+  CLASS_SPECS = GAME.specs;
+  const has = key => GAME.difficulties.some(d => d.key === key);
+  if (!has(STATE.scoreDifficulty)) STATE.scoreDifficulty = GAME.defaultDifficulty;
+  if (!has(TEAM_MGMT.scoreDifficulty)) TEAM_MGMT.scoreDifficulty = GAME.defaultDifficulty;
+  renderDifficultyFilters();
+  if (document.body?.dataset) document.body.dataset.game = GAME.id; // CSS hides .retail-only elsewhere
+  renderGameBadge();
+}
+
+// The WCL Scores and Recruits difficulty buttons, from the version's list.
+function renderDifficultyFilters() {
+  const buttons = (current, handler) => GAME.difficulties.map(d =>
+    `<button class="filter-btn${d.key === current ? ' active' : ''}" onclick="${handler}(${jsAttr(d.key)}, this)">${escapeHtml(d.label)}</button>`).join('');
+  const scores = document.getElementById('difficulty-filter');
+  if (scores) scores.innerHTML = buttons(STATE.scoreDifficulty, 'setScoreDifficulty');
+  const recruits = document.getElementById('recruit-difficulty-filter');
+  if (recruits) recruits.innerHTML = buttons(TEAM_MGMT.scoreDifficulty, 'setRecruitScoreDifficulty');
+}
+
+// A small version tag in the header ("Classic", "TBC", ...) -- shown for
+// every version but Retail, and for Retail too once you're on teams in more
+// than one version.
+function renderGameBadge() {
+  const el = document.getElementById('badge-game');
+  if (!el) return;
+  const mixed = new Set((STATE.teams || []).map(t => t.game || 'retail')).size > 1;
+  const show = GAME.id !== 'retail' || mixed;
+  el.textContent = show ? GAME.badge : '';
+  el.style.display = show ? '' : 'none';
 }
 
 // Loads whichever team should be active: the one remembered from last time if
@@ -6413,7 +6571,7 @@ function renderTeamSwitcher() {
   if (!menu) return;
   if (!multi) { menu.innerHTML = ''; menu.classList.remove('open'); return; }
   const current = teams.find(t => t.teamId === STATE.teamId);
-  menu.innerHTML = teams.map(t => {
+  const item = t => {
     const otherGuild = current && t.guildId !== current.guildId;
     const isCurrent = t.teamId === STATE.teamId;
     return `<button class="dropdown-item team-menu-item${isCurrent ? ' active' : ''}" onclick="chooseTeam(${jsAttr(t.teamId)})">
@@ -6421,7 +6579,34 @@ function renderTeamSwitcher() {
       <span class="team-menu-name">${escapeHtml(t.teamName || 'Team')}${otherGuild
         ? `<span class="team-menu-guild">${escapeHtml(t.guildName || '')}${t.guildServer ? ' – ' + escapeHtml(titleCaseServer(t.guildServer)) : ''}</span>` : ''}</span>
     </button>`;
-  }).join('');
+  };
+  // Teams in more than one WoW version are grouped by version -- switching
+  // to a Classic team switches the whole site to Classic.
+  const games = GAMES_API.GAME_ORDER.filter(id => teams.some(t => (t.game || 'retail') === id));
+  const body = games.length > 1
+    ? games.map(id => `<div class="team-menu-group">${escapeHtml(GAMES_API.GAMES[id].label)}</div>` +
+        teams.filter(t => (t.game || 'retail') === id).map(item).join('')).join('')
+    : teams.map(item).join('');
+  menu.innerHTML = body +
+    `<button class="dropdown-item team-menu-item team-menu-another" onclick="startAnotherGuild()"><span class="team-menu-check">＋</span><span class="team-menu-name">Start or join another guild</span></button>`;
+  renderGameBadge();
+}
+
+// From the team menu or account menu: create a new guild (any WoW version) or
+// join one with a code, without leaving the teams you're already on.
+function startAnotherGuild() {
+  document.getElementById('team-menu')?.classList.remove('open');
+  showLandingChoice();
+}
+
+// Back from the Create/Join screens to the team you were on.
+function returnToTeam() {
+  if (isOnTeam()) showDashboard();
+}
+
+// True once a team you're a member of has loaded (not just a cached id).
+function isOnTeam() {
+  return !!STATE.teamId && (STATE.teams || []).some(t => t.teamId === STATE.teamId);
 }
 
 function toggleTeamMenu() {
@@ -6573,7 +6758,7 @@ function applyRolePermissions(role) {
 function updateWowauditImportBtn() {
   const btn = document.getElementById('wowaudit-import-btn');
   if (!btn) return;
-  btn.style.display = ['owner', 'officer'].includes(STATE.myRole) ? 'inline-flex' : 'none';
+  btn.style.display = ['owner', 'officer'].includes(STATE.myRole) && GAME.id === 'retail' ? 'inline-flex' : 'none'; // WowAudit covers Retail
 }
 
 // ─────────────────────────────────────────────
@@ -6673,23 +6858,6 @@ const RECRUIT_STATUSES = [
 ];
 // Outcome settled -> shown under History instead of Active (Rejected has its own filter).
 const RECRUIT_CLOSED_STATUSES = ['no_response', 'not_interested', 'joined', 'rejected'];
-// Every class's specs and the role each fills -- must match CLASS_SPECS in
-// lib/wowSpecs.js (the server derives a recruit's role from the same table).
-const CLASS_SPECS = {
-  'death knight': [['Blood', 'tank'], ['Frost', 'melee'], ['Unholy', 'melee']],
-  'demon hunter': [['Havoc', 'melee'], ['Vengeance', 'tank'], ['Devourer', 'ranged']],
-  'druid':        [['Balance', 'ranged'], ['Feral', 'melee'], ['Guardian', 'tank'], ['Restoration', 'heal']],
-  'evoker':       [['Augmentation', 'ranged'], ['Devastation', 'ranged'], ['Preservation', 'heal']],
-  'hunter':       [['Beast Mastery', 'ranged'], ['Marksmanship', 'ranged'], ['Survival', 'melee']],
-  'mage':         [['Arcane', 'ranged'], ['Fire', 'ranged'], ['Frost', 'ranged']],
-  'monk':         [['Brewmaster', 'tank'], ['Mistweaver', 'heal'], ['Windwalker', 'melee']],
-  'paladin':      [['Holy', 'heal'], ['Protection', 'tank'], ['Retribution', 'melee']],
-  'priest':       [['Discipline', 'heal'], ['Holy', 'heal'], ['Shadow', 'ranged']],
-  'rogue':        [['Assassination', 'melee'], ['Outlaw', 'melee'], ['Subtlety', 'melee']],
-  'shaman':       [['Elemental', 'ranged'], ['Enhancement', 'melee'], ['Restoration', 'heal']],
-  'warlock':      [['Affliction', 'ranged'], ['Demonology', 'ranged'], ['Destruction', 'ranged']],
-  'warrior':      [['Arms', 'melee'], ['Fury', 'melee'], ['Protection', 'tank']],
-};
 // "Beast Mastery" / "BeastMastery" (WCL's spelling) -> "beastmastery"
 const specKey = s => String(s || '').toLowerCase().replace(/[^a-z]/g, '');
 // The class's own spelling of a spec, or null if it isn't one of theirs.
@@ -6848,14 +7016,22 @@ function sortRecruits() {
 }
 
 function recruitLinks(r) {
+  return characterLinks(r.name, r.realm_slug, r.lookup?.profileUrl);
+}
+
+// Raider.io, Warcraft Logs, and Armory links for a character in the team's
+// WoW version -- each only where that version has one (null otherwise).
+function characterLinks(name, realmSlug, rioProfileUrl) {
+  if (!name || !realmSlug) return { raiderio: null, wcl: null, armory: null };
   const region = toWclRegion(STATE.config?.region || 'us');
-  const name   = encodeURIComponent(r.name);
-  const lower  = encodeURIComponent(r.name.toLowerCase());
-  const rioUrl = r.lookup?.profileUrl;
+  const enc    = encodeURIComponent(name);
+  const lower  = encodeURIComponent(name.toLowerCase());
+  const rio    = GAME.sources.raiderio;
+  const wcl    = GAME.sources.wclHost;
   return {
-    raiderio: rioUrl && rioUrl.startsWith('https://raider.io/') ? rioUrl : `https://raider.io/characters/${region}/${r.realm_slug}/${name}`,
-    wcl:      `https://www.warcraftlogs.com/character/${region}/${r.realm_slug}/${lower}`,
-    armory:   `https://worldofwarcraft.blizzard.com/en-us/character/${region}/${r.realm_slug}/${lower}`,
+    raiderio: rio ? (rioProfileUrl && rioProfileUrl.startsWith(`https://${rio.host}/`) ? rioProfileUrl : `https://${rio.host}/characters/${region}/${realmSlug}/${enc}`) : null,
+    wcl:      wcl ? `https://${wcl}.warcraftlogs.com/character/${region}/${realmSlug}/${lower}` : null,
+    armory:   GAME.sources.armory ? `https://worldofwarcraft.blizzard.com/${GAME.sources.armory}/character/${region}/${realmSlug}/${lower}` : null,
   };
 }
 
@@ -6912,7 +7088,7 @@ function recruitSpecLineHtml(r) {
 // pick while editing), or is unknown.
 function recruitLoggedSpec(r) {
   const current = (TEAM_MGMT.specEditing && TEAM_MGMT.specDrafts[r.id]) || r.spec;
-  const order = [TEAM_MGMT.scoreDifficulty, 'mythic', 'heroic', 'normal', 'lfr'];
+  const order = [TEAM_MGMT.scoreDifficulty, ...GAME.difficulties.map(d => d.key).reverse()];
   for (const diff of order) {
     const logged = canonicalSpecFor(r.class, r.wcl_scores?.[diff]?.result?.loggedSpec);
     if (logged) return specKey(logged) === specKey(current) ? null : logged;
@@ -7041,7 +7217,7 @@ function renderRecruits() {
 
   if (TEAM_MGMT.recruits.length === 0) {
     wrap.innerHTML = `<div class="empty-state"><div class="empty-state-icon">✉</div><h3>Track your first recruit</h3>
-      <p>Add someone you've mailed or whispered above. RaidLead pulls their class, item level, and M+ score from Raider.io.</p></div>`;
+      <p>Add someone you've mailed or whispered above. RaidLead pulls their class, item level${GAME.sources.raiderio?.mplus ? ', and M+ score' : ''} from ${GAME.sources.raiderio ? 'Raider.io' : 'the Armory'}.</p></div>`;
     return;
   }
   const list = visibleRecruits();
@@ -7461,7 +7637,7 @@ function renderRecruitScores() {
   });
   if (bossNames.length === 0 && STATE.bossIdsZoneId === STATE.zoneId) bossNames = STATE.bossOrder || [];
 
-  const diffLabel    = titleCaseClass(TEAM_MGMT.scoreDifficulty);
+  const diffLabel    = difficultyInfo(TEAM_MGMT.scoreDifficulty).label;
   const unfetched    = list.filter(r => !recruitScoreEntry(r)).length;
   const fetchedTimes = list.map(r => recruitScoreEntry(r)?.fetchedAt).filter(Boolean);
   const note = unfetched > 0
@@ -7501,7 +7677,7 @@ async function fetchRecruitScores(recruits, { silent = false } = {}) {
   TEAM_MGMT.scoresInFlight = true;
   const btn        = document.getElementById('recruit-scores-btn');
   const difficulty = TEAM_MGMT.scoreDifficulty;
-  const diffId     = DIFF_MAP[difficulty] || 5;
+  const { wcl: diffId, size } = difficultyInfo(difficulty);
   const region     = toWclRegion(STATE.config.region);
   let ok = 0;
   try {
@@ -7511,7 +7687,7 @@ async function fetchRecruitScores(recruits, { silent = false } = {}) {
       if (btn) { btn.disabled = true; btn.textContent = `⏳ ${i + 1} / ${recruits.length}...`; }
       const { result } = await fetchCharacterWclScores(
         { name: r.name, server: r.realm_slug, role: r.role || 'dps' },
-        { zoneId, diffId, region, bossIds, bossOrder });
+        { zoneId, diffId, size, region, bossIds, bossOrder });
       try {
         const saved = await recruitingApi('saveRecruitScores', {
           recruitId: r.id, difficulty, entry: { zoneId, bossNames: bossOrder, result },
@@ -7662,11 +7838,11 @@ function renderApplicants() {
     // out), so build them from the current name instead.
     const renamed = summary?.renamedFrom || null;
     const given   = renamed ? {} : (a.links || {});
-    const rioUrl  = summary?.profileUrl && summary.profileUrl.startsWith('https://raider.io/') ? summary.profileUrl : null;
+    const built = characterLinks(name, slug, summary?.profileUrl);
     const links = {
-      raiderio: rioUrl || given.raiderio || (name && slug ? `https://raider.io/characters/${region}/${slug}/${encodeURIComponent(name)}` : null),
-      wcl:      given.wcl    || (name && slug ? `https://www.warcraftlogs.com/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
-      armory:   given.armory || (name && slug ? `https://worldofwarcraft.blizzard.com/en-us/character/${region}/${slug}/${encodeURIComponent(name.toLowerCase())}` : null),
+      raiderio: built.raiderio || given.raiderio || null,
+      wcl:      given.wcl    || built.wcl,
+      armory:   given.armory || built.armory,
     };
     const linkHtml = [['Raider.io', links.raiderio], ['WCL', links.wcl], ['Armory', links.armory]]
       .filter(([, url]) => url && /^https?:\/\//.test(url))
@@ -8179,8 +8355,8 @@ const SURVEY_FIXED_DEFAULTS = {
   flex:     { enabled: true, prompt: 'Can you flex into another role?' },
   comments: { enabled: true, prompt: 'Any other feedback or comments?' },
 };
-// A 20-player Mythic group -- what the projected roster is measured against.
-const MYTHIC_COMP_TARGET = { tank: 2, heal: 4, dps: 14 };
+// What the projected roster is measured against: the version's full raid
+// (GAME.compTarget -- Retail's 20-player Mythic group, Classic's 25, ...).
 
 const SURVEY = {
   mine:           null,  // { survey, response } for the signed-in raider, or null
@@ -8635,12 +8811,14 @@ function surveyGaps(projection) {
   const { byRole, counted } = projection;
   const gaps = [];
   const dps = byRole.melee.length + byRole.ranged.length;
-  if (byRole.tank.length < MYTHIC_COMP_TARGET.tank) gaps.push(`Tanks: ${byRole.tank.length} of ${MYTHIC_COMP_TARGET.tank}`);
-  if (byRole.heal.length < MYTHIC_COMP_TARGET.heal) gaps.push(`Healers: ${byRole.heal.length} of ${MYTHIC_COMP_TARGET.heal}`);
-  if (dps < MYTHIC_COMP_TARGET.dps) gaps.push(`DPS: ${dps} of ${MYTHIC_COMP_TARGET.dps}`);
-  const classes = new Set(counted.map(r => r.spec_choices?.[0]?.class).filter(Boolean));
-  const missingBuffs = RAID_BUFFS.filter(b => !classes.has(b.class));
-  if (missingBuffs.length) gaps.push('No ' + missingBuffs.map(b => `${titleCaseClass(b.class)} (${b.buff})`).join(', '));
+  if (byRole.tank.length < GAME.compTarget.tank) gaps.push(`Tanks: ${byRole.tank.length} of ${GAME.compTarget.tank}`);
+  if (byRole.heal.length < GAME.compTarget.heal) gaps.push(`Healers: ${byRole.heal.length} of ${GAME.compTarget.heal}`);
+  if (dps < GAME.compTarget.dps) gaps.push(`DPS: ${dps} of ${GAME.compTarget.dps}`);
+  const projected = counted.map(r => r.spec_choices?.[0]).filter(c => c?.class).map(c => ({ class: c.class, spec: c.spec, role: c.role }));
+  const missingBuffs = GAME.raidBuffs.filter(b => !buffCovered(b, projected));
+  if (missingBuffs.length) gaps.push('No ' + missingBuffs.map(b => (b.providers.length === 1 && !b.providers[0].spec
+    ? `${titleCaseClass(b.providers[0].class)} (${b.name})`
+    : `${b.name} (${b.providers.map(providerLabel).join(' / ')})`)).join(', '));
   return gaps;
 }
 
@@ -8704,7 +8882,7 @@ function renderSeasonTab() {
   // Projected roster by role
   const roleCards = SURVEY_ROLES.map(([role, label]) => {
     const people = projection.byRole[role];
-    const target = role === 'tank' ? MYTHIC_COMP_TARGET.tank : role === 'heal' ? MYTHIC_COMP_TARGET.heal : null;
+    const target = role === 'tank' ? GAME.compTarget.tank : role === 'heal' ? GAME.compTarget.heal : null;
     const short = target != null && people.length < target;
     return `<div class="season-role-card${short ? ' short' : ''}">
       <div class="stat-label">${label}</div>
@@ -8770,7 +8948,7 @@ function renderSeasonTab() {
 
     <div class="season-section">
       <div class="season-section-head">
-        <div class="season-section-title">Projected roster <span class="recruit-sub">· first choices · ${projection.counted.length} raiders, ${dpsCount} DPS (a Mythic group needs ${MYTHIC_COMP_TARGET.tank} tanks, ${MYTHIC_COMP_TARGET.heal} healers, ${MYTHIC_COMP_TARGET.dps} DPS)</span></div>
+        <div class="season-section-title">Projected roster <span class="recruit-sub">· first choices · ${projection.counted.length} raiders, ${dpsCount} DPS (${GAME.compLabel} needs ${GAME.compTarget.tank} tanks, ${GAME.compTarget.heal} healers, ${GAME.compTarget.dps} DPS)</span></div>
         <label class="season-toggle"><input type="checkbox" ${SURVEY.includeUnsure ? 'checked' : ''} onchange="setSurveyIncludeUnsure(this.checked)" /> Count "not sure yet"</label>
       </div>
       ${gaps.length
@@ -9264,7 +9442,6 @@ function surveyEditorRemoveOption(index, optionIndex) {
 // by officers. Raid Night can show each raider's number on their pill
 // (officers only).
 
-const HEROIC_RAID_CAP = 30;
 const JOIN_SOURCE_LABELS = { roster: 'Added to the roster', recruit: 'Added from Recruits', manual: 'Added by an officer' };
 
 const JOIN = {
@@ -9338,8 +9515,8 @@ function renderJoinOrderTab() {
 
   if (!JOIN.list) {
     panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🔢</div><h3>Track the order raiders joined</h3>
-      <p>Join Order numbers your raiders by when they joined this season. When more than ${HEROIC_RAID_CAP} want to raid (Heroic's cap),
-      #${HEROIC_RAID_CAP + 1} is next in if someone in the first ${HEROIC_RAID_CAP} is missing.</p>
+      <p>Join Order numbers your raiders by when they joined this season. When more than ${GAME.raidCap} want to raid (${escapeHtml(GAME.raidCapLabel)}),
+      #${GAME.raidCap + 1} is next in if someone in the first ${GAME.raidCap} is missing.</p>
       <p>Opening a Next Season survey starts a new order automatically, in the order raiders finish it. You can also start one now from your current roster and arrange it by hand.</p>
       <button class="btn-primary" style="margin-top:14px;" onclick="startJoinOrderFromRoster()">Start from current roster</button></div>`;
     return;
@@ -9367,13 +9544,13 @@ function renderJoinOrderTab() {
           onchange="joinMoveTo(${jsAttr(e.id)}, this.value)" />
         <button class="survey-editor-icon" title="Take out of the order" onclick="joinRemove(${jsAttr(e.id)})">✕</button>
       </div>` : '';
-    const row = `<div class="join-row${i >= HEROIC_RAID_CAP ? ' over-cap' : ''}">
+    const row = `<div class="join-row${i >= GAME.raidCap ? ' over-cap' : ''}">
       <div class="join-num">${i + 1}</div>
       <div class="join-main">${nameHtml(e)}<span class="recruit-sub">${escapeHtml(joinEntrySource(e))} · ${surveyDate(e.joined_at)}</span></div>
       ${tools}
     </div>`;
-    const capLine = i === HEROIC_RAID_CAP - 1 && active.length > HEROIC_RAID_CAP
-      ? `<div class="join-cap">Heroic raid cap (${HEROIC_RAID_CAP}). Everyone below is next in line, in order.</div>` : '';
+    const capLine = i === GAME.raidCap - 1 && active.length > GAME.raidCap
+      ? `<div class="join-cap">${escapeHtml(GAME.raidCapLabel)} (${GAME.raidCap}). Everyone below is next in line, in order.</div>` : '';
     return row + capLine;
   }).join('');
 
@@ -9544,7 +9721,7 @@ function joinOrderBadge(player) {
     const main = (STATE.players || []).find(p => p.account_id === player.account_id && maps.byChar.has(p.id));
     n = main ? maps.byChar.get(main.id) : maps.byAccount.get(player.account_id);
   }
-  return n ? `<span class="join-order-badge${n > HEROIC_RAID_CAP ? ' over-cap' : ''}" title="Joined #${n} this season">#${n}</span>` : '';
+  return n ? `<span class="join-order-badge${n > GAME.raidCap ? ' over-cap' : ''}" title="Joined #${n} this season">#${n}</span>` : '';
 }
 
 async function toggleShowOrderJoined(force, { quiet = false } = {}) {

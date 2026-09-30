@@ -33,7 +33,7 @@ const { FIELDS: APPLICATION_FIELDS, detectColumnMap, mergeColumnMap, normalizeAp
 const STATUSES     = ['contacted', 'no_response', 'not_interested', 'interested', 'joined', 'rejected']; // must match RECRUIT_STATUSES in app.js
 const CHANNELS     = ['mail', 'whisper', 'discord', 'form', 'other'];
 const ROLES        = ['tank', 'heal', 'melee', 'ranged'];
-const DIFFICULTIES = ['lfr', 'normal', 'heroic', 'mythic'];
+const { gameFor } = require('../lib/games');
 
 const SURVEY_FIELDS          = 'id, title, intro, questions, opened_at, closed_at, created_at, updated_at';
 const SURVEY_RESPONSE_FIELDS = `id, character_id, character_name, status, spec_choices, flex_roles, availability,
@@ -122,10 +122,14 @@ module.exports = async (req, res) => {
   // What a raider sees of a survey (no bookkeeping fields).
   const publicSurvey = s => ({ id: s.id, title: s.title, intro: s.intro, questions: s.questions, openedAt: s.opened_at });
 
-  async function teamRegion() {
-    const { data } = await supabase.from('teams').select('guilds ( region )').eq('id', teamId).single();
-    return data?.guilds?.region || 'us';
+  // This team's region and WoW version (its guild's) -- looked up once per request.
+  let teamInfoPromise = null;
+  function teamInfo() {
+    teamInfoPromise ||= supabase.from('teams').select('guilds ( server, region, game )').eq('id', teamId).single()
+      .then(({ data }) => ({ region: data?.guilds?.region || 'us', server: data?.guilds?.server || '', game: gameFor(data?.guilds?.game) }));
+    return teamInfoPromise;
   }
+  const teamRegion = async () => (await teamInfo()).region;
 
   // Raider.io only knows a character by its current name and realm, so
   // anyone who renamed or transferred since applying comes back empty.
@@ -136,9 +140,10 @@ module.exports = async (req, res) => {
   // link (wclUrl) or a saved wclId when known: an id link resolves even if
   // the name they typed is stale.
   async function lookup(name, realm, { wclUrl, wclId } = {}) {
-    const region   = await teamRegion();
-    const raidSlug = await currentRaidSlug(region);
-    const direct   = await fetchCharacterSummary(region, realm, name, raidSlug);
+    const { region, game } = await teamInfo();
+    // Raider.io's raid calendar is Retail's; Classic's progress just lists what it has.
+    const raidSlug = game.sources.raiderio?.calendar ? await currentRaidSlug(region) : null;
+    const direct   = await fetchCharacterSummary(region, realm, name, raidSlug, game);
     if (direct) return direct;
 
     const current = await resolveCurrentCharacter(supabase, teamId, {
@@ -150,7 +155,7 @@ module.exports = async (req, res) => {
       || slugifyServer(current.realmName) !== slugifyServer(realm);
     if (!moved) return null; // same character -- Raider.io just doesn't have it
 
-    const summary = await fetchCharacterSummary(region, current.realmName, current.name, raidSlug);
+    const summary = await fetchCharacterSummary(region, current.realmName, current.name, raidSlug, game);
     return {
       ...(summary || {
         name: current.name, realmName: current.realmName, class: null, spec: null, role: null,
@@ -258,8 +263,8 @@ module.exports = async (req, res) => {
     if (action === 'searchCharacters') {
       const term = String(req.query.term || req.body?.term || '').trim();
       if (term.length < 2 || term.length > 24) return res.status(200).json({ results: [] });
-      const { data: team } = await supabase.from('teams').select('guilds ( server, region )').eq('id', teamId).single();
-      const results = await searchCharacters(term, team?.guilds?.region || 'us', slugifyServer(team?.guilds?.server || ''));
+      const { region, server, game } = await teamInfo();
+      const results = await searchCharacters(term, region, slugifyServer(server), game);
       return res.status(200).json({ results });
     }
 
@@ -351,8 +356,9 @@ module.exports = async (req, res) => {
         const cls = updates.class !== undefined ? updates.class : current.class;
         if (b.spec !== undefined) {
           // A known spec also sets the role, unless one was sent explicitly.
-          updates.spec = b.spec ? (canonicalSpec(cls, b.spec) || String(b.spec).trim().slice(0, 40)) : null;
-          const specRole = roleForSpec(cls, updates.spec);
+          const { game } = await teamInfo();
+          updates.spec = b.spec ? (canonicalSpec(cls, b.spec, game) || String(b.spec).trim().slice(0, 40)) : null;
+          const specRole = roleForSpec(cls, updates.spec, game);
           if (b.role === undefined && specRole) updates.role = specRole;
         }
         // WCL scores are fetched by role -- healers by HPS, everyone else by
@@ -426,7 +432,8 @@ module.exports = async (req, res) => {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
       const { recruitId, difficulty, entry } = req.body || {};
       if (!recruitId || !entry) return res.status(400).json({ error: 'recruitId and entry required' });
-      if (!DIFFICULTIES.includes(difficulty)) return res.status(400).json({ error: 'Invalid difficulty' });
+      // This version's difficulties (Retail LFR..Mythic, Classic 10/25, Era 20/40, ...).
+      if (!(await teamInfo()).game.difficulties.some(d => d.key === difficulty)) return res.status(400).json({ error: 'Invalid difficulty' });
       if (JSON.stringify(entry).length > 50000) return res.status(400).json({ error: 'Score data too large' });
 
       const { data: current, error: readErr } = await supabase
@@ -614,7 +621,8 @@ module.exports = async (req, res) => {
         // The spec they applied as beats Raider.io's, which is just whatever
         // spec they last logged out in.
         const cls         = summary?.class || app.class || null;
-        const appliedSpec = parseSpec(app.classSpec, cls);
+        const { game } = await teamInfo();
+        const appliedSpec = parseSpec(app.classSpec, cls, game);
 
         let recruit = null, linked = false;
         const existing = await findExisting(name, realmSlug)
@@ -632,7 +640,7 @@ module.exports = async (req, res) => {
               realm_slug:      realmSlug,
               class:           cls,
               spec:            appliedSpec || summary?.spec || null,
-              role:            (appliedSpec && roleForSpec(cls, appliedSpec)) || summary?.role || null,
+              role:            (appliedSpec && roleForSpec(cls, appliedSpec, game)) || summary?.role || null,
               source:          'application',
               application_key: responseKey,
               contacted_at:    app.submittedDate || new Date().toISOString().slice(0, 10),
@@ -738,7 +746,7 @@ module.exports = async (req, res) => {
         character = data;
       }
 
-      const fields = normalizeSurveyResponse(b, survey, character);
+      const fields = normalizeSurveyResponse(b, survey, character, (await teamInfo()).game);
       const now = new Date().toISOString();
       const { data: existing } = await supabase
         .from('season_survey_responses').select('id')
@@ -763,7 +771,10 @@ module.exports = async (req, res) => {
     // unless this team has already opened a survey in that stretch. ──
     if (action === 'getSurveyPrompt') {
       const now = Date.now();
-      const prompt = surveyPromptFor(seasonTransitionFrom(await fetchRaidCalendar(await teamRegion()), now), now);
+      const { region, game } = await teamInfo();
+      const prompt = game.sources.raiderio?.calendar
+        ? surveyPromptFor(seasonTransitionFrom(await fetchRaidCalendar(region), now), now)
+        : null;
       if (!prompt) return res.status(200).json({ prompt: null });
       const { data: latest, error } = await supabase
         .from('season_surveys').select('opened_at, closed_at')

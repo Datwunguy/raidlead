@@ -205,6 +205,15 @@
   .team-menu-check { width: 12px; flex-shrink: 0; color: var(--gold); }
   .team-menu-name { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
   .team-menu-guild { font-size: 11px; font-weight: 500; color: var(--text-mute); }
+  /* Teams in more than one WoW version: a heading per version. */
+  .team-menu-group { padding: 8px 14px 4px; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-mute); }
+  .team-menu-group:not(:first-child) { border-top: 1px solid var(--border); margin-top: 4px; }
+  .team-menu .team-menu-another { color: var(--text-dim); border-top: 1px solid var(--border); }
+  .guild-badge-game { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--gold); border: 1px solid var(--gold-dim); border-radius: 3px; padding: 1px 5px; white-space: nowrap; }
+  .btn-link { background: none; border: none; color: var(--text-dim); font-size: 14px; cursor: pointer; padding: 6px; }
+  .btn-link:hover { color: var(--gold); }
+  /* A WoW version without the feature (M+, world rankings, WowAudit) hides it. */
+  body[data-game]:not([data-game="retail"]) .retail-only { display: none !important; }
 
   .header-pill-btn {
     display: flex; align-items: center; gap: 6px;
@@ -634,6 +643,20 @@
     font-size: 10px;
     font-family: 'Rajdhani', sans-serif; font-weight: 600;
   }
+
+  .plan-utility-label { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-mute); margin-top: 6px; }
+
+  /* ── PROGRESS: boss kills (every version but Retail) ── */
+  .progress-kills-raid { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 12px; }
+  .progress-kills-name { font-family: 'Rajdhani', sans-serif; font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 10px; }
+  .progress-kills-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+  .progress-kills-cell { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; }
+  .progress-kills-cell.has-kills { border-color: var(--gold-dim); }
+  .progress-kills-label { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .progress-kills-count { font-family: 'Rajdhani', sans-serif; font-size: 22px; font-weight: 700; color: var(--text); }
+  .progress-kills-cell.has-kills .progress-kills-count { color: var(--gold); }
+  .progress-kills-bar { height: 4px; background: var(--bg4); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+  .progress-kills-bar > div { height: 100%; background: linear-gradient(90deg, var(--gold-dim), var(--gold)); }
 
   /* ── WCL SCORES TABLE ── */
   .scores-container {

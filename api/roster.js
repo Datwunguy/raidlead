@@ -20,25 +20,27 @@ const { appendToJoinOrder, markLeftJoinOrder } = require('../lib/joinOrder');
 const { linkRosterCharacters } = require('../lib/characterClaims');
 const { detectCurrentWclZone, lookupWclZoneIdByName } = require('../lib/wclZone');
 const { teamWclCredentials, wclRequest } = require('../lib/wclClient');
-const { CLASS_SPECS, canonicalSpec, roleForSpec } = require('../lib/wowSpecs');
+const { specsFor, canonicalSpec, roleForSpec } = require('../lib/wowSpecs');
+const { teamGame, gameFor } = require('../lib/games');
 
 // A roster character's role comes from its spec -- a Death Knight is never
 // Ranged. With no spec (an older page), the role must still be one the class
-// can fill. Returns { spec, role } or { error }.
-function specAndRole(cls, spec, role) {
+// can fill. Specs and classes are the team's WoW version's (a Death Knight
+// isn't a class in Classic Era). Returns { spec, role } or { error }.
+function specAndRole(cls, spec, role, game) {
   const c = String(cls || '').toLowerCase().trim();
-  const specs = CLASS_SPECS[c];
-  if (!specs) return { error: 'Pick a class' };
+  const specs = specsFor(c, game);
+  if (!specs.length) return { error: c ? `There are no ${c}s in ${gameFor(game?.id).label}` : 'Pick a class' };
   if (spec) {
-    const name = canonicalSpec(c, spec);
+    const name = canonicalSpec(c, spec, game);
     if (!name) return { error: `${spec} isn't a ${c} spec` };
-    return { spec: name, role: roleForSpec(c, name) };
+    return { spec: name, role: roleForSpec(c, name, game) };
   }
   const r = String(role || '').toLowerCase().trim();
   if (!specs.some(([, specRole]) => specRole === r)) return { error: `A ${c} can't be ${r || 'that role'}` };
   return { spec: null, role: r };
 }
-const { fetchGuildRoster, fetchCharacterSpec } = require('../lib/battleNet');
+const { fetchGuildRoster, fetchCharacterSpec, fetchCharacterProfile } = require('../lib/battleNet');
 
 // Cache listIlvl's live Raider.io results per team briefly, so several
 // people opening the Roster tab around the same time don't each trigger a
@@ -70,6 +72,10 @@ class WclNotConfiguredError extends Error {
     this.wclNotConfigured = true;
   }
 }
+
+// Survival/Mitigation cache rows are per difficulty -- and per raid size for
+// Classic ("5" for Retail Mythic, "4_25" for Classic 25-player Heroic).
+const diffCacheSuffix = (diffId, size) => `${diffId || 5}${size ? '_' + size : ''}`;
 
 // "Oceanic" is a RaidLead-only region choice (it only changes which Raider.io
 // rankings pool the Progress tab compares against) -- Oceanic realms are
@@ -106,7 +112,7 @@ async function fetchAllZoneReports({ guildName, serverSlug, region, zoneId, tagP
       reportData { reports(
         guildName: ${JSON.stringify(String(guildName))} guildServerSlug: ${JSON.stringify(String(serverSlug))}
         guildServerRegion: ${JSON.stringify(String(region))} zoneID: ${Number(zoneId) || 0} limit: 50 page: ${page} ${tagParam}
-      ) { data { code startTime fights(killType: All) { id encounterID name difficulty startTime endTime kill } } has_more_pages } }
+      ) { data { code startTime fights(killType: All) { id encounterID name difficulty size startTime endTime kill } } has_more_pages } }
     }`, creds);
     if (resp?.errors) { console.error('[fetchAllZoneReports] page', page, 'error:', resp.errors[0]?.message); break; }
     const pageInfo    = resp?.data?.reportData?.reports;
@@ -230,17 +236,21 @@ module.exports = async (req, res) => {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
       const { data: team } = await supabase
-        .from('teams').select('zone_name, zone_id, guilds ( region )').eq('id', teamId).single();
+        .from('teams').select('zone_name, zone_id, guilds ( region, game )').eq('id', teamId).single();
       if (!team) return res.status(404).json({ error: 'Team not found' });
 
       const region = team.guilds?.region || 'us';
-      let detected = await resolveCurrentRaidByDate(region);
+      // Raider.io's raid calendar covers Retail only; other versions go by the
+      // newest raid on their own Warcraft Logs site (needs WCL credentials).
+      const hasCalendar = !!gameFor(team.guilds?.game).sources.raiderio?.calendar;
+      const repairDates = () => (hasCalendar ? repairSeasonDates(teamId, region) : null);
+      let detected = hasCalendar ? await resolveCurrentRaidByDate(region) : null;
       if (!detected) detected = await detectCurrentWclZone(supabase, teamId);
       if (!detected) return res.status(200).json({ success: true, changed: false, reason: 'no_source_available' });
 
       const zoneName = detected.zoneName;
       if (zoneName === team.zone_name) {
-        await repairSeasonDates(teamId, region);
+        await repairDates();
         // Same raid, but no WCL zone ID on file yet (e.g. no WCL credentials
         // when it started): fill it in now -- no new season.
         if (!team.zone_id) {
@@ -296,7 +306,7 @@ module.exports = async (req, res) => {
       if (insertErr && insertErr.code !== '23505') throw insertErr; // 23505 = unique_violation (lost the race, fine)
 
       await supabase.from('teams').update({ zone_id: zoneId, zone_name: zoneName }).eq('id', teamId);
-      await repairSeasonDates(teamId, region);
+      await repairDates();
 
       return res.status(200).json({ success: true, changed: true, zoneId, zoneName, startedAt: transitionDate });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
@@ -353,13 +363,14 @@ module.exports = async (req, res) => {
     const teamId = req.query.teamId || req.body?.teamId;
     const zoneId = req.query.zoneId || req.body?.zoneId;
     const diffId = req.query.diffId || req.body?.diffId || 5;
+    const size   = parseInt(req.query.size || req.body?.size) || null;
     if (!teamId) return res.status(200).json({ mitigationMap: {}, bossNames: [] });
     try {
       await assertTeamOwnership(teamId);
       const { data } = await supabase
         .from('wcl_scores').select('boss_scores, fetched_at')
         .eq('team_id', teamId).eq('zone_id', zoneId)
-        .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffId}`)
+        .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffCacheSuffix(diffId, size)}`)
         .single();
       if (!data?.boss_scores) return res.status(200).json({ mitigationMap: {}, bossNames: [] });
       const parsed = JSON.parse(data.boss_scores);
@@ -371,6 +382,7 @@ module.exports = async (req, res) => {
   if (action === 'getMitigation') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const { guildName, serverSlug, region: rawRegion, zoneId, diffId, guildTagID, memberNames, validBossIds, teamId } = req.body || {};
+    const size = parseInt(req.body?.size) || null; // Classic raid size (10/25, 20/40); Retail sends none
     if (!guildName || !serverSlug || !rawRegion || !zoneId) return res.status(400).json({ error: 'missing params' });
     const region = toWclRegion(rawRegion);
 
@@ -406,13 +418,13 @@ module.exports = async (req, res) => {
         try {
           await supabase.from('wcl_scores').delete()
             .eq('team_id', teamId).eq('zone_id', zoneId)
-            .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffId || 5}`);
+            .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffCacheSuffix(diffId, size)}`);
         } catch(e) {}
       } else if (teamId) {
         try {
           const { data: cr } = await supabase.from('wcl_scores').select('boss_scores')
             .eq('team_id', teamId).eq('zone_id', zoneId)
-            .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffId || 5}`).single();
+            .eq('character_name', '_mitig_cache_').eq('server', `mitig_${diffCacheSuffix(diffId, size)}`).single();
           if (cr?.boss_scores) { existingCache = JSON.parse(cr.boss_scores); lastReportTime = existingCache.lastReportTime || 0; }
         } catch(e) {}
       }
@@ -453,6 +465,7 @@ module.exports = async (req, res) => {
           const fightDiff = fight.difficulty ? parseInt(fight.difficulty) : null;
           const reqDiff   = diffId ? parseInt(diffId) : null;
           if (fightDiff && reqDiff && fightDiff !== reqDiff) continue;
+          if (size && fight.size && parseInt(fight.size) !== size) continue; // Classic: 10 vs 25, 20 vs 40
           if (!fight.encounterID || fight.encounterID === 0) continue;
           if (!fightsByEncounter[fight.encounterID]) fightsByEncounter[fight.encounterID] = { name: fight.name, fights: [], firstKillTime: null };
           const enc = fightsByEncounter[fight.encounterID];
@@ -537,7 +550,7 @@ module.exports = async (req, res) => {
       // regress it -- see the identical comment in getSurvival for the full rationale.
       let finalMitigationMap = mitigationMap;
       let finalBossNames     = bossNames;
-      const mitigCacheKey = `mitig_${diffId || 5}`;
+      const mitigCacheKey = `mitig_${diffCacheSuffix(diffId, size)}`;
       if (teamId && Object.keys(mitigData).length > 0) {
         try {
           const finalMitigData    = { ...mitigData };
@@ -592,10 +605,11 @@ module.exports = async (req, res) => {
     const teamId = req.query.teamId || req.body?.teamId;
     const zoneId = req.query.zoneId || req.body?.zoneId;
     const diffId = req.query.diffId || req.body?.diffId || 5;
+    const size   = parseInt(req.query.size || req.body?.size) || null;
     if (!teamId) return res.status(200).json({ survivorMap: {}, bossNames: [] });
     try {
       await assertTeamOwnership(teamId);
-      const survCacheKey = `surv_${diffId}`;
+      const survCacheKey = `surv_${diffCacheSuffix(diffId, size)}`;
       const { data } = await supabase
         .from('wcl_scores')
         .select('boss_scores, fetched_at')
@@ -620,6 +634,7 @@ module.exports = async (req, res) => {
   if (action === 'getSurvival') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     const { guildName, serverSlug, region: rawRegion, zoneId, diffId, guildTagID, memberNames, validBossIds } = req.body || {};
+    const size = parseInt(req.body?.size) || null;
     const region = toWclRegion(rawRegion);
     const validBossSet = new Set((validBossIds || []).map(id => parseInt(id)));
     if (!guildName || !serverSlug || !rawRegion || !zoneId) {
@@ -656,7 +671,7 @@ module.exports = async (req, res) => {
       // request discards it and reprocesses every report from scratch -- used to
       // recover from a stale/corrupted cache (e.g. a boss that got marked "killed"
       // before a fix without any data recorded).
-      const survCacheKey = `surv_${diffId || 5}`;
+      const survCacheKey = `surv_${diffCacheSuffix(diffId, size)}`;
       let existingCache  = null;
       let lastReportTime = 0;
       if (req.body?.teamId && req.body?.reset) {
@@ -726,6 +741,7 @@ module.exports = async (req, res) => {
           const fightDiff = fight.difficulty ? parseInt(fight.difficulty) : null;
           const reqDiff   = diffId ? parseInt(diffId) : null;
           if (fightDiff && reqDiff && fightDiff !== reqDiff) continue;
+          if (size && fight.size && parseInt(fight.size) !== size) continue; // Classic: 10 vs 25, 20 vs 40
           if (!fight.encounterID || fight.encounterID === 0) continue;
           // Skip non-zone bosses (M+ dungeons etc)
           if (validBossSet.size > 0 && !validBossSet.has(fight.encounterID)) continue;
@@ -981,8 +997,23 @@ module.exports = async (req, res) => {
       await assertTeamOwnership(teamId);
 
       const { data: team } = await supabase
-        .from('teams').select('id, guilds ( region )').eq('id', teamId).single();
+        .from('teams').select('id, guilds ( region, game )').eq('id', teamId).single();
       const region = team?.guilds?.region === 'oceanic' ? 'us' : (team?.guilds?.region || 'us');
+      const game = gameFor(team?.guilds?.game);
+      const rio = game.sources.raiderio;
+      // Raider.io where it covers the version (Retail, Classic Progression),
+      // Blizzard's profile API otherwise, nothing for a version neither covers yet.
+      const lookupIlvl = rio
+        ? async c => {
+            const resp = await fetch(
+              `https://${rio.host}/api/v1/characters/profile?region=${encodeURIComponent(region)}` +
+              `&realm=${encodeURIComponent(c.server)}&name=${encodeURIComponent(c.name)}&fields=gear`
+            );
+            return { ilvl: resp.ok ? (await resp.json())?.gear?.item_level_equipped || 0 : 0, status: resp.status };
+          }
+        : game.sources.blizzardNs !== null
+          ? async c => ({ ilvl: (await fetchCharacterProfile(region, c.server, c.name, game))?.ilvl || 0, status: 'blizzard' })
+          : null;
 
       const { data: chars, error } = await supabase
         .from('characters').select('name, server').eq('team_id', teamId).eq('active', true);
@@ -991,19 +1022,15 @@ module.exports = async (req, res) => {
       const cache = ilvlCache.get(teamId) || new Map();
       ilvlCache.set(teamId, cache);
       const key = c => `${c.name}|${c.server}`;
-      const stale = (chars || []).filter(c => force || !(Date.now() - (cache.get(key(c))?.at || 0) < ILVL_CACHE_MS));
+      const stale = !lookupIlvl ? [] : (chars || []).filter(c => force || !(Date.now() - (cache.get(key(c))?.at || 0) < ILVL_CACHE_MS));
 
       // A few at a time, not the whole roster at once.
       for (let i = 0; i < stale.length; i += ILVL_LOOKUPS_AT_ONCE) {
         await Promise.all(stale.slice(i, i + ILVL_LOOKUPS_AT_ONCE).map(async c => {
           try {
-            const resp = await fetch(
-              `https://raider.io/api/v1/characters/profile?region=${encodeURIComponent(region)}` +
-              `&realm=${encodeURIComponent(c.server)}&name=${encodeURIComponent(c.name)}&fields=gear`
-            );
-            const ilvl = resp.ok ? (await resp.json())?.gear?.item_level_equipped || 0 : 0;
+            const { ilvl, status } = await lookupIlvl(c);
             if (ilvl) cache.set(key(c), { ilvl, at: Date.now() });
-            else console.warn('[listIlvl] no item level for', c.name, c.server, 'status', resp.status);
+            else console.warn('[listIlvl] no item level for', c.name, c.server, 'status', status);
           } catch (e) { console.warn('[listIlvl] lookup failed for', c.name, e.message); }
         }));
       }
@@ -1031,13 +1058,13 @@ module.exports = async (req, res) => {
       }
 
       const { data: team } = await supabase
-        .from('teams').select('id, guilds ( name, server, region )').eq('id', teamId).single();
+        .from('teams').select('id, guilds ( name, server, region, game )').eq('id', teamId).single();
       const guild = team?.guilds;
       if (!guild?.name || !guild?.server) {
         return res.status(200).json({ members: [], error: "This team's guild name/server isn't set yet -- check Guild Settings." });
       }
 
-      const members = await fetchGuildRoster(guild.region || 'us', guild.server, guild.name);
+      const members = await fetchGuildRoster(guild.region || 'us', guild.server, guild.name, guild.game);
       if (members === null) {
         return res.status(200).json({ members: [], error: "Couldn't reach Blizzard's guild roster for this guild/server -- check the guild name/server in Guild Settings." });
       }
@@ -1067,12 +1094,12 @@ module.exports = async (req, res) => {
       await assertTeamOwnership(teamId, { requireOfficer: true });
 
       const { data: team } = await supabase
-        .from('teams').select('id, guilds ( server, region )').eq('id', teamId).single();
+        .from('teams').select('id, guilds ( server, region, game )').eq('id', teamId).single();
       const guild = team?.guilds;
       const realmSlug = realmSlugParam || guild?.server;
       if (!realmSlug) return res.status(200).json({ spec: null });
 
-      const spec = await fetchCharacterSpec(guild?.region || 'us', realmSlug, characterName);
+      const spec = await fetchCharacterSpec(guild?.region || 'us', realmSlug, characterName, guild?.game);
       return res.status(200).json({ spec });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
@@ -1083,11 +1110,11 @@ module.exports = async (req, res) => {
     if (!teamId || !name || !charClass || !server || !(spec || role)) {
       return res.status(400).json({ error: 'name, class, server, and spec are required' });
     }
-    const specRole = specAndRole(charClass, spec, role);
-    if (specRole.error) return res.status(400).json({ error: specRole.error });
     if (name.trim().length > 24 || server.trim().length > 64) return res.status(400).json({ error: 'That name or realm is too long' });
     try {
       await assertTeamOwnership(teamId, { requireOfficer: true });
+      const specRole = specAndRole(charClass, spec, role, await teamGame(supabase, teamId));
+      if (specRole.error) return res.status(400).json({ error: specRole.error });
 
       // `characters` has a plain unique(team_id, name) with no carve-out for
       // inactive rows, so someone who left and is being re-added under their
@@ -1180,7 +1207,7 @@ module.exports = async (req, res) => {
           cls = current?.class;
         }
         if (spec || role) {
-          const specRole = specAndRole(cls, spec, role);
+          const specRole = specAndRole(cls, spec, role, await teamGame(supabase, teamId));
           if (specRole.error) return res.status(400).json({ error: specRole.error });
           updates.primary_role = specRole.role;
           updates.spec = specRole.spec;

@@ -14,11 +14,12 @@ const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
+const { isGame, gameFor, teamDifficulty } = require('../lib/games');
 
 const TEAM_FIELDS = `id, name, guild_id, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
   wowaudit_api_key_enc, wowaudit_api_key_hash,
-  guilds ( id, name, server, region )`;
+  guilds ( id, name, server, region, game )`;
 
 // Strips encrypted secrets before a team row is ever sent to the client.
 function sanitizeTeam(team) {
@@ -165,6 +166,10 @@ module.exports = async (req, res) => {
   // sibling team under a guild that already exists by name+server ──
   if (action === 'create') {
     const { guild, server, region, difficulty, teamName, wclTeamId, raidDays, confirmNewTeam } = req.body;
+    // Which WoW version the guild plays -- a Retail and a Classic guild with the
+    // same name and server are different guilds.
+    const game = req.body.game || 'retail';
+    if (!isGame(game)) return res.status(400).json({ error: 'Unknown game version' });
     if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
     if (tooLong(guild, server, teamName)) return res.status(400).json({ error: 'Names must be 64 characters or fewer' });
 
@@ -173,9 +178,10 @@ module.exports = async (req, res) => {
 
       const { data: existingGuild } = await supabase
         .from('guilds')
-        .select('id, name, server, region')
-        .ilike('name', guild.trim())
+        .select('id, name, server, region, game')
+        .ilike('name', guild.trim().replace(/[\\%_]/g, '\\$&'))
         .ilike('server', normServer)
+        .eq('game', game)
         .maybeSingle();
 
       if (existingGuild && !confirmNewTeam) {
@@ -193,7 +199,7 @@ module.exports = async (req, res) => {
         ? existingGuild.id
         : (await (async () => {
             const { data: g, error: ge } = await supabase.from('guilds')
-              .insert({ name: guild.trim(), server: normServer, region: region || 'us', created_by: session.id })
+              .insert({ name: guild.trim(), server: normServer, region: region || 'us', game, created_by: session.id })
               .select('id').single();
             if (ge) throw new Error(ge.message);
             return g.id;
@@ -205,7 +211,7 @@ module.exports = async (req, res) => {
           guild_id:     guildId,
           name:         teamName || 'Main Team',
           wcl_team_id:  wclTeamId || null,
-          difficulty:   difficulty || 'mythic',
+          difficulty:   teamDifficulty(gameFor(game), difficulty),
           raid_days:    cleanRaidDays(raidDays),
           join_code:    await generateUniqueJoinCode(supabase),
         })
@@ -235,7 +241,7 @@ module.exports = async (req, res) => {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
       const { data: anchorTeam, error: anchorErr } = await supabase
-        .from('teams').select('guild_id').eq('id', teamId).single();
+        .from('teams').select('guild_id, guilds ( game )').eq('id', teamId).single();
       if (anchorErr || !anchorTeam) throw new Error('Could not find the guild for that team');
 
       const { data: teamData, error: te } = await supabase
@@ -244,7 +250,7 @@ module.exports = async (req, res) => {
           guild_id:     anchorTeam.guild_id,
           name:         teamName,
           wcl_team_id:  wclTeamId || null,
-          difficulty:   difficulty || 'mythic',
+          difficulty:   teamDifficulty(gameFor(anchorTeam.guilds?.game), difficulty),
           raid_days:    cleanRaidDays(raidDays),
           join_code:    await generateUniqueJoinCode(supabase),
         })

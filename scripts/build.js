@@ -2,7 +2,8 @@
 //  scripts/build.js — Vercel's build step (vercel.json buildCommand).
 //
 //  Copies public/ to dist/ (what Vercel serves), minifies dist/app.js, and
-//  stamps index.html's ?v= cache busters with each file's content hash. The
+//  stamps index.html's ?v= cache busters (app.js, styles.css, games.js) with
+//  each file's content hash. The
 //  repo keeps the readable source, and the cache busters change exactly when
 //  a file does -- no bumping them by hand. Run it locally with `npm run build`
 //  to see the output; dist/ is never committed.
@@ -30,7 +31,7 @@ const contentHash = buf => crypto.createHash('sha256').update(buf).digest('hex')
   fs.writeFileSync(path.join(OUT, 'app.js'), code);
 
   let html = fs.readFileSync(path.join(OUT, 'index.html'), 'utf8');
-  for (const file of ['app.js', 'styles.css']) {
+  for (const file of ['app.js', 'styles.css', 'games.js']) {
     const pattern = new RegExp(`${file.replace('.', '\\.')}\\?v=[\\w-]+`, 'g');
     const found = (html.match(pattern) || []).length;
     if (found !== 1) throw new Error(`expected one ${file}?v= in index.html, found ${found}`);

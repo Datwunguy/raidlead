@@ -31,3 +31,6 @@ hash of each file's contents. So:
   and one `styles.css?v=`.
 - Top-level function names survive minification on purpose: `onclick="..."`
   attributes and string-named handlers call them.
+- `public/games.js` (each WoW version's classes, specs, buffs, sizes and data
+  sources) is a third file with its own `?v=`, stamped the same way. The
+  server `require()`s the same file through `lib/games.js`.

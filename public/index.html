@@ -88,6 +88,7 @@
         <div class="guild-badge" id="guild-badge" style="display:none;" onclick="toggleTeamMenu()">
           <span>⚔</span>
           <span class="guild-badge-name"><strong id="badge-guild">—</strong> — <span id="badge-server">—</span></span>
+          <span class="guild-badge-game" id="badge-game" style="display:none;"></span>
           <i class="guild-badge-caret" id="guild-badge-caret" style="display:none;">▼</i>
         </div>
         <div class="account-dropdown team-menu" id="team-menu"></div>
@@ -107,6 +108,7 @@
           <button class="dropdown-item" onclick="showMembersModal(); toggleAccountMenu()">My Profile</button>
           <button class="dropdown-item" id="dropdown-survey-btn" style="display:none;" onclick="openSurveyModal(); toggleAccountMenu()">Next Season Survey</button>
           <button class="dropdown-item" id="dropdown-settings-btn" onclick="showSetup(); toggleAccountMenu()">Guild Settings</button>
+          <button class="dropdown-item" onclick="startAnotherGuild(); toggleAccountMenu()">Start or Join Another Guild</button>
           <button class="dropdown-item" id="dropdown-invite-btn" onclick="copyShareUrl(); toggleAccountMenu()">Invite</button>
           <button class="dropdown-item danger" onclick="signOut()">⬡ Sign Out</button>
         </div>
@@ -168,7 +170,8 @@
             </select>
           </div>
         </div>
-        <div class="form-row">
+        <div id="settings-game-note" style="font-size:13px; color:var(--text-dim); margin:-6px 0 14px;"></div>
+        <div class="form-row retail-only">
           <div class="form-group full">
             <label>WowAudit API Key <span style="color:var(--text-mute);font-weight:400;">(optional — powers the "Import from WowAudit" button on the Roster tab. Your roster is managed directly on RaidLead either way; this just saves typing everyone in by hand)</span></label>
 
@@ -199,7 +202,7 @@
             <details style="margin-bottom:14px;">
               <summary style="cursor:pointer; font-size:16px; color:var(--gold); text-transform:none; letter-spacing:0; font-weight:700;">How do I get these?</summary>
               <ol style="font-size:12px; color:var(--text-mute); margin-top:10px; padding-left:18px; line-height:1.8;">
-                <li>Log into <a href="https://www.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer" style="color:var(--gold-dim);">warcraftlogs.com/api/clients</a> with your Warcraft Logs account.</li>
+                <li>Log into <a id="wcl-clients-link" href="https://www.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer" style="color:var(--gold-dim);">warcraftlogs.com/api/clients</a> with your Warcraft Logs account.</li>
                 <li>Click "Create Client".</li>
                 <li>Name it anything (e.g. "RaidLead") — the Redirect URL can be left blank, it isn't used.</li>
                 <li>Copy the Client ID and Client Secret it gives you and paste them in below.</li>
@@ -323,6 +326,10 @@
         </div>
         <div class="form-row">
           <div class="form-group">
+            <label>Game</label>
+            <select id="gs-game"></select>
+          </div>
+          <div class="form-group">
             <label>Region</label>
             <select id="gs-region">
               <option value="us">US</option>
@@ -390,6 +397,7 @@
       <div class="setup-body" style="display:flex; flex-direction:column; gap:12px;">
         <button class="btn-primary" style="padding:16px; font-size:16px;" onclick="showGuildSetup()">Create Guild</button>
         <button class="btn-secondary" style="padding:16px; font-size:16px;" onclick="showJoinGuildScreen()">Join Guild</button>
+        <button class="btn-link" id="landing-back-btn" style="display:none;" onclick="returnToTeam()"></button>
       </div>
     </div>
   </div>
@@ -485,7 +493,7 @@
           <div class="stat-card">
             <div class="stat-label">Raid Buffs</div>
             <div class="stat-value" id="stat-buffs">—</div>
-            <div class="stat-sub">of 11 covered</div>
+            <div class="stat-sub" id="stat-buffs-total">of 11 covered</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Avg iLvl</div>
@@ -510,6 +518,14 @@
         </div>
         <div class="raid-buffs-grid" id="raid-buffs-grid">
           <div class="loading-overlay" style="padding:24px;"><div class="spinner"></div></div>
+        </div>
+
+        <!-- Raid Utility (not counted in Raid Buffs) -->
+        <div id="raid-utility-section" style="display:none;">
+          <div class="section-header">
+            <div class="section-title" style="font-size:14px;">Raid Utility</div>
+          </div>
+          <div class="raid-buffs-grid" id="raid-utility-grid"></div>
         </div>
 
         <!-- Roster by role -->
@@ -686,8 +702,8 @@
         <div class="section-header" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
           <div class="section-title">Progress<span id="progress-raid-name" style="font-size:16px; font-family:'Rajdhani',sans-serif; color:var(--text-dim); font-weight:600; letter-spacing:1px; margin-left:6px;"></span></div>
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <select id="progress-raid-select" class="themed-select" onchange="setProgressRaid(this.value)" style="display:none;"></select>
-            <div class="role-filter" id="progress-difficulty-filter">
+            <select id="progress-raid-select" class="themed-select retail-only" onchange="setProgressRaid(this.value)" style="display:none;"></select>
+            <div class="role-filter retail-only" id="progress-difficulty-filter">
               <button class="filter-btn" onclick="setProgressDifficulty('normal', this)">Normal</button>
               <button class="filter-btn" onclick="setProgressDifficulty('heroic', this)">Heroic</button>
               <button class="filter-btn active" onclick="setProgressDifficulty('mythic', this)">Mythic</button>
@@ -1324,6 +1340,7 @@
      value works -- today's date is the convention) every time you edit
      app.js, or a deployed fix/feature silently won't reach anyone with a
      warm cache. See CLAUDE.md ("Deploying changes to styles.css / app.js"). -->
+<script src="games.js?v=1"></script>
 <script src="app.js?v=20260929c"></script>
 </body>
 </html>

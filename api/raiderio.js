@@ -52,6 +52,9 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
 const { CURRENT_EXPANSION_ID_FALLBACK } = require('../lib/raiderioRaids');
+const { gameFor } = require('../lib/games');
+const { teamWclCredentials, wclRequest } = require('../lib/wclClient');
+const { slugifyServer } = require('../lib/serverSlug');
 
 const VALID_DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 
@@ -98,6 +101,11 @@ const COMPOSITION_CACHE_MS = 30 * 60 * 1000; // 30 min -- the top guilds' comps 
 // always come from the same bucket, so one can't exceed the other.
 function toRaiderioRegion(region) {
   return region === 'oceanic' ? 'us' : region;
+}
+
+// "siege-of-orgrimmar" -> "Siege of Orgrimmar"
+function raidTitle(slug) {
+  return String(slug || '').split('-').map((w, i) => (i && ['of', 'the', 'and'].includes(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
 }
 
 // "The Venomous Abyss" -> "the-venomous-abyss" -- matches how Raider.io
@@ -630,5 +638,81 @@ module.exports = async (req, res) => {
     }
   }
 
+  // ── PROGRESS KILLS (every version but Retail): bosses killed per raid and
+  // difficulty/size. Raider.io's Classic site has Classic Progression guilds;
+  // TBC Anniversary and Classic Era come from the team's own Warcraft Logs
+  // reports (their credentials). No world rankings -- those are Retail's. ──
+  if (action === 'progressKills') {
+    const teamId = req.query.teamId || req.body?.teamId;
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
+    try {
+      await assertTeamMembership(supabase, session.id, teamId);
+      const { data: team } = await supabase
+        .from('teams').select('id, zone_id, zone_name, guilds ( name, server, region, game )').eq('id', teamId).single();
+      const guild = team?.guilds || {};
+      const game = gameFor(guild.game);
+      const region = toRaiderioRegion(guild.region || 'us');
+      const realmSlug = slugifyServer(guild.server || '');
+
+      const rio = game.sources.raiderio;
+      if (rio?.guildProgress) {
+        const url = `https://${rio.host}/api/v1/guilds/profile?region=${encodeURIComponent(region)}` +
+          `&realm=${encodeURIComponent(realmSlug)}&name=${encodeURIComponent(guild.name || '')}&fields=raid_progression`;
+        const resp = await fetch(url);
+        if (!resp.ok) return res.status(200).json({ source: 'raiderio', raids: [], message: `Raider.io doesn't have ${guild.name || 'this guild'} yet -- it picks guilds up once members are crawled.` });
+        const data = await resp.json();
+        const raids = Object.entries(data.raid_progression || {}).map(([slug, p]) => ({
+          slug, name: raidTitle(slug), totalBosses: p.total_bosses || 0, summary: p.summary || '',
+          kills: game.difficulties
+            .map(d => ({ label: d.label, killed: p[`${d.key}_bosses_killed`] }))
+            .filter(k => typeof k.killed === 'number'),
+        }));
+        // The team's current raid first.
+        const current = slugifyRaidName(team.zone_name || '');
+        raids.sort((a, b) => (b.slug === current) - (a.slug === current));
+        return res.status(200).json({ source: 'raiderio', profileUrl: data.profile_url || null, raids });
+      }
+
+      if (!game.sources.wclHost) {
+        return res.status(200).json({ source: 'none', raids: [], message: `Boss kills for ${game.label} arrive once its data sources are live.` });
+      }
+      const creds = await teamWclCredentials(supabase, teamId);
+      if (!creds) return res.status(200).json({ source: 'wcl', raids: [], wclNotConfigured: true });
+      if (!team.zone_id) return res.status(200).json({ source: 'wcl', raids: [], message: 'No current raid on file yet -- open WCL Scores once so RaidLead can find it.' });
+
+      const zoneResp = await wclRequest(creds, `query { worldData { zone(id: ${Number(team.zone_id)}) { name encounters { id name } } } }`);
+      const zone = zoneResp?.data?.worldData?.zone;
+      const bossIds = new Set((zone?.encounters || []).map(e => e.id));
+      // Kills in the guild's logs for this raid, by difficulty + size.
+      const killed = new Map(); // "difficulty|size" -> Set(encounterID)
+      for (let page = 1; page <= 10; page++) {
+        const r = await wclRequest(creds, `query { reportData { reports(
+          guildName: ${JSON.stringify(guild.name || '')} guildServerSlug: ${JSON.stringify(realmSlug)}
+          guildServerRegion: ${JSON.stringify(region)} zoneID: ${Number(team.zone_id)} limit: 50 page: ${page}
+        ) { data { fights(killType: Kills) { encounterID difficulty size } } has_more_pages } } }`);
+        const reports = r?.data?.reportData?.reports;
+        for (const report of reports?.data || []) {
+          for (const f of report.fights || []) {
+            if (!bossIds.has(f.encounterID)) continue;
+            const k = `${f.difficulty}|${f.size}`;
+            if (!killed.has(k)) killed.set(k, new Set());
+            killed.get(k).add(f.encounterID);
+          }
+        }
+        if (!reports?.has_more_pages) break;
+      }
+      // Versions whose raids differ only by size (TBC, Era) count by size alone.
+      const sizeOnly = new Set(game.difficulties.map(d => d.wcl)).size === 1;
+      const kills = game.difficulties.map(d => {
+        const hit = new Set();
+        for (const [k, ids] of killed) {
+          const [diff, size] = k.split('|').map(Number);
+          if ((sizeOnly || diff === d.wcl) && (!d.size || size === d.size)) ids.forEach(id => hit.add(id));
+        }
+        return { label: d.label, killed: hit.size };
+      });
+      return res.status(200).json({ source: 'wcl', raids: [{ slug: slugifyRaidName(zone?.name || team.zone_name || ''), name: zone?.name || team.zone_name, totalBosses: bossIds.size, kills }] });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+  }
   res.status(400).json({ error: 'Invalid action' });
 };
