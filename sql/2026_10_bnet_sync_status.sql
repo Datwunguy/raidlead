@@ -1,0 +1,16 @@
+-- ============================================================
+-- How each account's last Battle.net character sync went. Sign-in now
+-- reads the character list after the sign-in itself has gone through (it
+-- never waits on Blizzard), and records the outcome here for the page to
+-- show -- and for looking up why one failed, long after the logs are gone:
+--
+--   { "status": "ok" | "partial" | "failed" | "no_permission" | "syncing",
+--     "startedAt": ..., "finishedAt": ..., "characters": 42,
+--     "connected": ["Datwunguy"], "failed": ["kr/era: timeout"] }
+--
+-- no_permission: Battle.net didn't give RaidLead permission to read WoW
+-- characters (an approval from before RaidLead asked for them).
+--
+-- Run once, by hand, in the Supabase SQL editor. Safe to re-run.
+-- ============================================================
+alter table accounts add column if not exists wow_sync jsonb;

@@ -4,7 +4,13 @@
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { encodeSession, getSession, setCommonHeaders } = require('../lib/session');
-const { fetchAccountCharacters, saveAccountCharacters, syncAccountClaims } = require('../lib/characterClaims');
+const { waitUntil } = require('@vercel/functions');
+const { recordSync, syncAccountCharacters, syncAccountClaims } = require('../lib/characterClaims');
+
+// A sign-in that goes back through Battle.net asking it to show the approval
+// screen again (prompt=consent) carries this on the end of its OAuth state.
+const CONSENT_MARK = '.consent';
+const BNET_PERMISSION_HELP = '/?bnet_sync=no_permission';
 
 // Join codes are 6 characters, so they're guessable with enough tries: an
 // account gets 5 wrong ones an hour (sql/2026_09_join_code_failures.sql).
@@ -29,7 +35,10 @@ module.exports = async (req, res) => {
 
     // Generate a cryptographically random state value (CSRF protection)
     const { randomBytes } = require('crypto');
-    const state  = randomBytes(16).toString('hex');
+    // consent=1: ask Battle.net to show the approval screen even if this
+    // account approved RaidLead before -- see the callback's permission check.
+    const consent = req.query.consent === '1';
+    const state  = randomBytes(16).toString('hex') + (consent ? CONSENT_MARK : '');
     const params = new URLSearchParams({
       client_id:     clientId,
       // wow.profile: the WoW characters on the player's own Battle.net account,
@@ -40,6 +49,7 @@ module.exports = async (req, res) => {
       redirect_uri:  redirectUri,
       response_type: 'code',
     });
+    if (consent) params.set('prompt', 'consent');
 
     res.setHeader('Set-Cookie', `bnet_state=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`);
     return res.redirect(302, `https://oauth.battle.net/authorize?${params.toString()}`);
@@ -48,7 +58,18 @@ module.exports = async (req, res) => {
   // ── CALLBACK: handle Battle.net redirect ──
   if (action === 'callback') {
     const { code, state, error } = req.query;
-    if (error) return res.redirect(302, `/?auth_error=${encodeURIComponent(error)}`);
+    const consentRetry = String(state || '').endsWith(CONSENT_MARK);
+    if (error) {
+      // Battle.net turned down asking for approval again (not just "Cancel"):
+      // someone still signed in gets the steps to fix it at account.battle.net.
+      const session = consentRetry && error !== 'access_denied' && getSession(req);
+      if (session) {
+        await recordSync(createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY), session.id,
+          { status: 'no_permission', reason: `Battle.net: ${error}`, finishedAt: new Date().toISOString() });
+        return res.redirect(302, BNET_PERMISSION_HELP);
+      }
+      return res.redirect(302, `/?auth_error=${encodeURIComponent(error)}`);
+    }
     if (!code)  return res.redirect(302, '/?auth_error=no_code');
 
     // ── Validate OAuth state to prevent CSRF ──
@@ -58,9 +79,6 @@ module.exports = async (req, res) => {
     if (!expectedState || state !== expectedState) {
       return res.redirect(302, '/?auth_error=state_mismatch');
     }
-    // Clear the state cookie now that it has been consumed
-    res.setHeader('Set-Cookie', 'bnet_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
-
     try {
       const tokenRes = await fetch('https://oauth.battle.net/token', {
         method:  'POST',
@@ -76,7 +94,14 @@ module.exports = async (req, res) => {
       });
       if (!tokenRes.ok) return res.redirect(302, '/?auth_error=token_failed');
 
-      const { access_token } = await tokenRes.json();
+      const tokenData = await tokenRes.json();
+      const { access_token } = tokenData;
+      // The permissions Battle.net actually gave ("openid wow.profile"). An
+      // account that approved RaidLead before it asked for WoW characters can
+      // keep that older approval: sign-in works, characters are off-limits.
+      const granted = typeof tokenData.scope === 'string' ? tokenData.scope.split(/[\s,]+/) : null; // null: not said
+      const canReadCharacters = !granted || granted.includes('wow.profile');
+
       const userRes = await fetch('https://oauth.battle.net/userinfo', {
         headers: { 'Authorization': `Bearer ${access_token}` },
       });
@@ -102,17 +127,6 @@ module.exports = async (req, res) => {
         .single();
       if (dbError) { console.error('DB error:', dbError); return res.redirect(302, '/?auth_error=db_failed'); }
 
-      // Their WoW characters, straight from Blizzard, and any roster characters
-      // on their teams that match -- connected now. Never blocks signing in.
-      let connected = [];
-      try {
-        const characters = await fetchAccountCharacters(access_token);
-        if (characters) {
-          await saveAccountCharacters(supabase, account.id, characters);
-          connected = await syncAccountClaims(supabase, account.id);
-        }
-      } catch (e) { console.error('Battle.net characters:', e.message); }
-
       // ── Build a HMAC-signed session token ──
       const sessionToken = encodeSession({
         id:       account.id,
@@ -121,12 +135,30 @@ module.exports = async (req, res) => {
         exp:      Date.now() + (30 * 24 * 60 * 60 * 1000),
       });
 
-      // Deliver session only via HttpOnly cookie — never in the URL
-      res.setHeader(
-        'Set-Cookie',
-        `raidlead_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${30 * 24 * 60 * 60}`
-      );
-      return res.redirect(302, connected.length ? `/?bnet_connected=${connected.length}` : '/');
+      // Deliver session only via HttpOnly cookie — never in the URL -- and
+      // clear the state cookie now that it has been consumed.
+      res.setHeader('Set-Cookie', [
+        'bnet_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0',
+        `raidlead_session=${encodeURIComponent(sessionToken)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${30 * 24 * 60 * 60}`,
+      ]);
+
+      if (!canReadCharacters) {
+        // Once: back through Battle.net, asking it to show the approval screen.
+        // Still no permission after that? The page shows how to fix it.
+        if (!consentRetry) return res.redirect(302, '/api/auth?action=login&consent=1');
+        const now = new Date().toISOString();
+        await recordSync(supabase, account.id, { status: 'no_permission', reason: `granted: ${tokenData.scope}`, startedAt: now, finishedAt: now });
+        return res.redirect(302, BNET_PERMISSION_HELP);
+      }
+
+      // Their WoW characters, straight from Blizzard, and any roster characters
+      // on their teams that match -- read after the sign-in goes through, so
+      // it never waits on Blizzard. The page watches accounts.wow_sync for
+      // the result. (The access token stays in this function's memory only.)
+      const startedAt = new Date().toISOString();
+      await recordSync(supabase, account.id, { status: 'syncing', startedAt });
+      waitUntil(syncAccountCharacters(supabase, account.id, access_token, startedAt));
+      return res.redirect(302, '/?bnet_sync=started');
     } catch (err) {
       console.error('Callback error:', err);
       return res.redirect(302, '/?auth_error=server_error');
@@ -142,7 +174,7 @@ module.exports = async (req, res) => {
       const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
       const { data: account, error } = await supabase
         .from('accounts')
-        .select('id, battletag, display_name, discord_id, wow_characters_synced_at')
+        .select('id, battletag, display_name, discord_id, wow_characters_synced_at, wow_sync')
         .eq('id', session.id)
         .single();
       if (error || !account) return res.status(404).json({ error: 'Account not found' });

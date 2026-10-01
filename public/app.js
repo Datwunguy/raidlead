@@ -184,8 +184,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Build the mobile hamburger nav from the real .nav-btn tabs
   initMobileNav();
 
-  // Sign-in connected roster characters from Battle.net (?bnet_connected=N)
-  checkBnetConnectedParam();
+  // Back from Battle.net sign-in (?bnet_sync=started|no_permission)
+  readBnetSyncParam();
 
   // Handle a Next Season survey link (?survey=<teamId>) -- before the
   // invite handler, which resets the URL
@@ -250,7 +250,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     clearBnetSyncPending();
     setTimeout(() => showToast(authError === 'access_denied' ? 'Battle.net connection cancelled' : "Couldn't sync with Battle.net. Try again later.", 'error'), 300);
   }
-  AUTH.session = { id: sessionAccount.id, battletag: sessionAccount.battletag, bnetSynced: !!sessionAccount.wow_characters_synced_at };
+  AUTH.session = { id: sessionAccount.id, battletag: sessionAccount.battletag, bnetSynced: !!sessionAccount.wow_characters_synced_at, bnetSync: sessionAccount.wow_sync || null };
 
   // Show battletag in header immediately
   if (sessionAccount.battletag) {
@@ -8381,16 +8381,17 @@ function surveySpecLabel(choice) {
 
 // ── Raider side ──
 
-// Sign-in connected roster characters from Battle.net (?bnet_connected=N): say so.
-function checkBnetConnectedParam() {
+// Back from Battle.net sign-in: ?bnet_sync=started (the character list is
+// being read -- checkBnetPrompt waits for it) or no_permission (Battle.net
+// didn't share characters). Read once, and taken off the address bar.
+let BNET_SYNC_PARAM = null;
+function readBnetSyncParam() {
   const params = new URLSearchParams(window.location.search);
-  const n = parseInt(params.get('bnet_connected'), 10);
-  if (!n) return;
-  clearBnetSyncPending(); // this toast is the answer to Connect / Sync
-  params.delete('bnet_connected');
+  BNET_SYNC_PARAM = params.get('bnet_sync');
+  if (!BNET_SYNC_PARAM) return;
+  params.delete('bnet_sync');
   const rest = params.toString();
   window.history.replaceState({}, '', '/' + (rest ? '?' + rest : ''));
-  setTimeout(() => showToast('Connected with Battle.net', 'success'), 1500);
 }
 
 // ── Connect prompt: anyone still signed in from before sign-in asked Battle.net
@@ -8400,12 +8401,15 @@ function checkBnetConnectedParam() {
 const BNET_SYNC_PENDING_KEY = 'raidlead_bnet_sync_pending';
 const bnetPromptSnoozeKey  = () => `raidlead_bnet_prompt_snoozed_until_${AUTH.session?.id}`;
 let BNET_PROMPT_CHECKED = false;
+const BNET_SYNC_WAIT_MS = 45000; // longest the page waits for a sign-in's character sync
+const BNET_SYNC_POLL_MS = 1500;
 
 // Re-runs Battle.net sign-in to read this player's character list (the first
-// time, new characters, renames). Instant once they've allowed it.
-function syncFromBattleNet() {
+// time, new characters, renames). Instant once they've allowed it. consent:
+// ask Battle.net to show its approval screen again (see api/auth.js).
+function syncFromBattleNet(consent) {
   try { sessionStorage.setItem(BNET_SYNC_PENDING_KEY, '1'); } catch (e) {}
-  window.location.href = '/api/auth?action=login';
+  window.location.href = '/api/auth?action=login' + (consent ? '&consent=1' : '');
 }
 
 function clearBnetSyncPending() {
@@ -8415,10 +8419,16 @@ function clearBnetSyncPending() {
 // Once per page load, after the dashboard has this team's data.
 function checkBnetPrompt() {
   if (BNET_PROMPT_CHECKED || !AUTH.session) return;
-  let pending = false;
-  try { pending = sessionStorage.getItem(BNET_SYNC_PENDING_KEY) === '1'; } catch (e) {}
-  if (pending) {
-    // Back from Connect / Sync with nothing newly connected (that says "Connected").
+  let asked = false; // they clicked Connect / Sync (rather than just signing in)
+  try { asked = sessionStorage.getItem(BNET_SYNC_PENDING_KEY) === '1'; } catch (e) {}
+  if (BNET_SYNC_PARAM) {
+    BNET_PROMPT_CHECKED = true;
+    clearBnetSyncPending();
+    if (BNET_SYNC_PARAM === 'no_permission') return openBnetPermissionHelp();
+    return watchBnetSync(asked);
+  }
+  if (asked) {
+    // Back from Connect / Sync without a sync result (Battle.net sent them back early).
     BNET_PROMPT_CHECKED = true;
     clearBnetSyncPending();
     if (AUTH.session.bnetSynced) {
@@ -8436,10 +8446,81 @@ function checkBnetPrompt() {
   // Another pop-up is up (a survey link, Companion login): ask on the next dashboard load.
   if (document.querySelector('.modal-overlay.open')) return;
   BNET_PROMPT_CHECKED = true;
-  const note = document.getElementById('bnet-connect-viewer-note');
-  note.textContent = STATE.myRole === 'viewer' ? `You're a Viewer on ${currentTeamLabel()} until one of your characters is connected.` : '';
-  note.style.display = STATE.myRole === 'viewer' ? '' : 'none';
+  // Battle.net already turned them down once: the steps that fix it, not another Connect.
+  if (AUTH.session.bnetSync?.status === 'no_permission') return openBnetPermissionHelp();
+  setViewerNote('bnet-connect-viewer-note');
   document.getElementById('bnet-connect-modal').classList.add('open');
+}
+
+// "You're a Viewer on <team> until..." -- only for Viewers.
+function setViewerNote(id) {
+  const note = document.getElementById(id);
+  if (!note) return;
+  const viewer = STATE.myRole === 'viewer';
+  note.textContent = viewer ? `You're a Viewer on ${currentTeamLabel()} until one of your characters is connected.` : '';
+  note.style.display = viewer ? '' : 'none';
+}
+
+// Sign-in has gone through; its character sync finishes on the server
+// (accounts.wow_sync). Wait for it, then say how it went -- quietly on an
+// ordinary sign-in unless characters got connected.
+async function watchBnetSync(asked) {
+  if (asked) showToast('Syncing your characters with Battle.net…');
+  const until = Date.now() + BNET_SYNC_WAIT_MS;
+  while (Date.now() < until) {
+    await new Promise(r => setTimeout(r, BNET_SYNC_POLL_MS));
+    let sync = null;
+    try {
+      const resp = await fetch('/api/auth?action=session');
+      if (resp.ok) sync = (await resp.json()).account?.wow_sync || null;
+    } catch (e) { /* try again next tick */ }
+    if (sync && sync.status !== 'syncing') return finishBnetSync(sync, asked);
+  }
+  return finishBnetSync({ status: 'failed' }, asked); // took too long
+}
+
+async function finishBnetSync(sync, asked) {
+  AUTH.session.bnetSync = sync;
+  if (sync.status === 'no_permission') return openBnetPermissionHelp();
+  if (sync.status === 'failed') {
+    if (asked) {
+      snoozeBnetPrompt(1);
+      showToast("Couldn't reach Battle.net just now. Your characters are unchanged -- try Sync again later.", 'error');
+    }
+    return;
+  }
+  AUTH.session.bnetSynced = true;
+  if (sync.connected?.length) {
+    showToast('Connected with Battle.net', 'success');
+    await refreshTeamAfterConnect();
+  } else if (asked) {
+    showToast('Synced with Battle.net', 'success');
+  }
+}
+
+// Characters were just connected (a Viewer may be a Member now): this team's
+// role and roster again.
+async function refreshTeamAfterConnect() {
+  if (!STATE.teamId) return;
+  const data = await fetchGuildFromDB(STATE.teamId);
+  if (!data?.team) return;
+  applyGuildData(data);
+  try { await loadRosterFromDB(); } catch (e) { return; }
+  renderRoster();
+  updateRosterTitle();
+}
+
+// Battle.net didn't share WoW characters: it keeps an approval from before
+// RaidLead asked for them. The fix is on their Battle.net account.
+function openBnetPermissionHelp() {
+  setViewerNote('bnet-permission-viewer-note');
+  document.getElementById('bnet-permission-modal').classList.add('open');
+}
+
+function closeBnetPermissionHelp(connect) {
+  document.getElementById('bnet-permission-modal').classList.remove('open');
+  if (connect) return syncFromBattleNet(true);
+  snoozeBnetPrompt(3);
 }
 
 function snoozeBnetPrompt(days) {

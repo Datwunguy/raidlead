@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
+    "@vercel/functions": "^3.9.9",
     "tweetnacl": "^1.0.3"
   }
 }

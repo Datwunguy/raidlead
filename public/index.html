@@ -1033,6 +1033,32 @@
         </div>
       </div>
 
+      <!-- Battle.net signed them in but didn't share their WoW characters -->
+      <div class="modal-overlay" id="bnet-permission-modal">
+        <div class="modal" style="max-width:480px;">
+          <div class="modal-header">
+            <div class="modal-player-name" style="font-size:18px;">Battle.net didn't share your characters</div>
+            <button class="modal-close" onclick="closeBnetPermissionHelp(false)">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:14px; line-height:1.6;">
+              You're signed in, but Battle.net is still using the permission you gave RaidLead before it asked for your WoW characters, so it won't share them.
+            </p>
+            <p id="bnet-permission-viewer-note" style="font-size:14px; color:var(--gold); line-height:1.6; margin-top:10px; display:none;"></p>
+            <p style="font-size:14px; line-height:1.6; margin-top:10px;">To fix it (just once):</p>
+            <ol style="font-size:14px; line-height:1.8; margin:6px 0 0 20px;">
+              <li>Open <a href="https://account.battle.net/connections" target="_blank" rel="noopener noreferrer" style="color:var(--gold);">account.battle.net/connections</a></li>
+              <li>Under <strong>Authorized Applications</strong>, remove <strong>RaidLead</strong></li>
+              <li>Come back and click <strong>Connect again</strong>. Battle.net will ask you to approve it.</li>
+            </ol>
+            <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; margin-top:20px;">
+              <button class="btn-secondary" onclick="closeBnetPermissionHelp(false)">Not now</button>
+              <button class="btn-primary" onclick="closeBnetPermissionHelp(true)">Connect again</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="modal-overlay" id="companion-pair-modal">
         <div class="modal" style="max-width:420px;">
           <div class="modal-header">
