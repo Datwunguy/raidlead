@@ -199,11 +199,12 @@
   .guild-badge.switchable { cursor: pointer; }
   .guild-badge.switchable:hover { border-color: var(--gold-dim); }
   .guild-badge-caret { font-style: normal; font-size: 9px; color: var(--text-mute); }
-  .team-menu { left: 0; right: auto; min-width: 100%; }
+  /* As wide as its longest line (at least the badge), never wider than the screen. */
+  .account-dropdown.team-menu { left: 0; right: auto; min-width: 100%; width: max-content; max-width: calc(100vw - 24px); }
   .team-menu .team-menu-item { display: flex; align-items: flex-start; gap: 8px; } /* beats .dropdown-item's display: block */
   .team-menu .team-menu-item.active { color: var(--gold); background: rgba(200,168,75,0.06); }
   .team-menu-check { width: 12px; flex-shrink: 0; color: var(--gold); }
-  .team-menu-name { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+  .team-menu-name { display: flex; flex-direction: column; gap: 2px; } /* wraps only past the screen-width cap */
   .team-menu-guild { font-size: 11px; font-weight: 500; color: var(--text-mute); }
   /* Teams in more than one WoW version: a heading per version. */
   .team-menu-group { padding: 8px 14px 4px; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-mute); }
@@ -1527,6 +1528,8 @@
     .scores-table th,
     .scores-table td    { padding: 8px 10px; font-size: 12px; }
     .guild-badge { max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    /* The badge sits near the right edge here: open the team menu leftward. */
+    .account-dropdown.team-menu { left: auto; right: 0; }
   }
 
   /* Mobile: up to 600px */
@@ -1562,6 +1565,8 @@
 
     .header-right { gap: 6px; }
     .guild-badge  { font-size: 11px; padding: 4px 8px; }
+    /* The header wraps here and the badge starts its own row at the left edge. */
+    .account-dropdown.team-menu { left: 0; right: auto; }
 
     /* Main layout */
     main { padding: 12px; }
