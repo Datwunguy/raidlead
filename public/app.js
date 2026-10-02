@@ -2366,6 +2366,7 @@ const RESOURCES = {
     { name: 'Wowhead',    url: 'https://www.wowhead.com/',           description: 'Spec specific guides: BiS gear, rotations, consumables, stats, etc.' },
     { name: 'Icy Veins',  url: 'https://www.icy-veins.com/wow/',     description: 'Spec specific guides: BiS gear, rotations, consumables, stats, etc.' },
     { name: 'Bloodmallet', url: 'https://bloodmallet.com/',          description: 'Spec specific trinket lists & PI charts.' },
+    { name: 'Raidbots',   url: 'https://www.raidbots.com/simbot',    description: 'Sim your character to determine the best gear, gems, and enchants.' },
     { name: 'Lorrgs',     url: 'https://lorrgs.io/',                 description: 'Spec specific CD timings per boss fights.' },
     { name: 'Murlok',     url: 'https://murlok.io/',                 description: 'Spec specific talents for pvp and pve.' },
     { name: 'Archon',     url: 'https://www.archon.gg/wow',          description: 'Spec specific talents for raid & m+ (similar to murlok.io).' },
