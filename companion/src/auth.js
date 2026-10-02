@@ -26,7 +26,18 @@ async function startPairing() {
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data.error || 'Could not start login');
-  return data; // { pairingCode, approveUrl }
+  // main.js opens approveUrl in the browser -- only ever a RaidLead page.
+  // Whatever the server says, never another site, a file, or another
+  // program's link (shell.openExternal will open any of those).
+  return { pairingCode: data.pairingCode, approveUrl: raidLeadPage(data.approveUrl) };
+}
+
+/** The URL, if it's an https page on RaidLead's own site; throws otherwise. */
+function raidLeadPage(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { parsed = null; }
+  if (!parsed || parsed.origin !== SITE_ORIGIN) throw new Error('Login failed: unexpected approval link -- please try again or update RaidLead Companion.');
+  return parsed.href;
 }
 
 // Polls until the pairing resolves to a token, or times out. `onStatus`
