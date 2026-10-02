@@ -2630,9 +2630,9 @@ function renderTierTracker(drops) {
 }
 
 // Manual "one tier token per member" checklist, split into Cloth/Leather/Mail/
-// Plate columns -- separate from renderTierTracker's addon-recorded list above
-// since officers need to be able to hand-confirm this regardless of what the
-// addon saw (see the schema note on tier_token_checks for why).
+// Plate columns -- shown above renderTierTracker's addon-recorded list, and
+// separate from it since officers need to be able to hand-confirm this
+// regardless of what the addon saw (see the schema note on tier_token_checks).
 function renderTierRoster() {
   const el = document.getElementById('loot-tier-roster');
   if (!el) return;
