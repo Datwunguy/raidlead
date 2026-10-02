@@ -101,15 +101,32 @@ function UI.BuildLootContent(frame, lootContent, contentTop)
   local footer = lootContent:CreateFontString(nil, 'OVERLAY', 'GameFontDisableSmall')
   footer:SetPoint('BOTTOM', 0, 14)
   lootContent.footer = footer
+
+  -- Loot recording on/off for this copy of the addon (same as /raidlead loot).
+  local record = CreateFrame('CheckButton', nil, lootContent, 'UICheckButtonTemplate')
+  record:SetSize(22, 22)
+  record:SetPoint('BOTTOMLEFT', 12, 8)
+  record:SetScript('OnClick', function(self) RaidLead.SetRecordingLoot(self:GetChecked()) end)
+  local recordLabel = lootContent:CreateFontString(nil, 'OVERLAY', 'GameFontHighlightSmall')
+  recordLabel:SetPoint('LEFT', record, 'RIGHT', 2, 0)
+  recordLabel:SetText('Record loot')
+  lootContent.recordToggle = record
 end
 
--- Every recorded loot item for the *current* session only, newest first.
+-- Every recorded loot item for the *current* session only, newest first --
+-- drops in the same second (a whole kill's loot) by boss, item, then
+-- recipient, so the list doesn't reshuffle between raiders or refreshes.
 local function currentSessionRecords()
   local records = {}
   for _, record in pairs(RaidLeadDB.lootRecords or {}) do
     if record.sessionId == RaidLead.sessionId then table.insert(records, record) end
   end
-  table.sort(records, function(a, b) return (a.capturedAt or 0) > (b.capturedAt or 0) end)
+  table.sort(records, function(a, b)
+    if (a.capturedAt or 0) ~= (b.capturedAt or 0) then return (a.capturedAt or 0) > (b.capturedAt or 0) end
+    if (a.bossName or '') ~= (b.bossName or '') then return (a.bossName or '') < (b.bossName or '') end
+    if (a.itemName or '') ~= (b.itemName or '') then return (a.itemName or '') < (b.itemName or '') end
+    return (a.recipientName or '') < (b.recipientName or '')
+  end)
   return records
 end
 
@@ -119,7 +136,11 @@ function UI.RefreshLoot()
   releaseAllRows()
 
   local records = currentSessionRecords()
-  content.header:SetText(string.format('THIS SESSION (%d item%s)', #records, #records == 1 and '' or 's'))
+  local recording = RaidLead.IsRecordingLoot()
+  content.recordToggle:SetChecked(recording)
+  content.header:SetText(recording
+    and string.format('THIS SESSION (%d item%s)', #records, #records == 1 and '' or 's')
+    or 'LOOT RECORDING OFF')
 
   local prevAnchor, prevRelPoint = content.list, 'TOPLEFT'
   for i, record in ipairs(records) do

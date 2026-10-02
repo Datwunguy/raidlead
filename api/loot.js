@@ -44,6 +44,8 @@ module.exports = async (req, res) => {
         .from('loot_drops')
         .select('*')
         .eq('team_id', teamId)
+        // When it dropped (rows from before that was saved: when it was uploaded).
+        .order('captured_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false });
       if (error) throw error;
 

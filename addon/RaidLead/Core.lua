@@ -16,6 +16,7 @@ RaidLead.PUG_MATCH_THRESHOLD = 0.6 -- below this fraction of matched names, a se
 local DEFAULT_DB = {
   settings = {
     minTrackedItemLevel = 636, -- bump this at the start of each new raid tier (Champion track floor)
+    recordLoot = true,         -- off: this copy of the addon doesn't record loot (roster features keep working)
   },
   lootRecords = {}, -- addon_record_id -> record, pruned on load; uploaded wholesale each sync
   minimap = { angle = 225, hidden = false }, -- minimap button position/visibility, see UI/MinimapButton.lua
@@ -58,6 +59,20 @@ end
 -- loot-upload direction. Recomputed on load and after every new record.
 function RaidLead.RefreshExport()
   RaidLeadExportDB = RaidLead.Json.encode(RaidLeadDB.lootRecords)
+end
+
+-- Loot recording can be switched off per player (/raidlead loot, or the
+-- Loot pane's checkbox) -- e.g. leave it to the loot officer. The website
+-- merges copies of a drop that several raiders' addons report, so leaving
+-- it on everywhere is fine too.
+function RaidLead.IsRecordingLoot()
+  return not (RaidLeadDB and RaidLeadDB.settings and RaidLeadDB.settings.recordLoot == false)
+end
+
+function RaidLead.SetRecordingLoot(on)
+  RaidLeadDB.settings.recordLoot = on and true or false
+  print('|cff33ff99RaidLead|r: loot recording ' .. (on and 'on' or 'off -- this addon won\'t record loot until you turn it back on (/raidlead loot)'))
+  if RaidLead.UI and RaidLead.UI.RefreshLoot then RaidLead.UI.RefreshLoot() end
 end
 
 -- Multiple modules (Roster.lua, UI/MinimapButton.lua) need a "player has
@@ -147,10 +162,15 @@ SlashCmdList['RAIDLEAD'] = function(msg)
   if cmd == 'ilvl' and tonumber(rest) then
     RaidLeadDB.settings.minTrackedItemLevel = tonumber(rest)
     print('|cff33ff99RaidLead|r: tracking BoEs at item level ' .. rest .. '+')
+  elseif cmd == 'loot' then
+    -- /raidlead loot (toggle), /raidlead loot on, /raidlead loot off
+    local want = rest:lower()
+    RaidLead.SetRecordingLoot(want == 'on' or (want ~= 'off' and not RaidLead.IsRecordingLoot()))
   elseif cmd == 'status' then
     local synced = RaidLeadCompanionDB and RaidLeadCompanionDB.syncedAt
     print('|cff33ff99RaidLead|r: session ' .. (RaidLead.sessionId or '?')
-      .. ', roster last synced ' .. (synced and date('%Y-%m-%d %H:%M', synced) or 'never'))
+      .. ', roster last synced ' .. (synced and date('%Y-%m-%d %H:%M', synced) or 'never')
+      .. ', loot recording ' .. (RaidLead.IsRecordingLoot() and 'on' or 'off'))
   elseif cmd == 'minimap' then
     local newShown = RaidLeadDB.minimap.hidden -- toggle: currently hidden -> show, currently shown -> hide
     if RaidLead.UI.SetMinimapButtonShown then RaidLead.UI.SetMinimapButtonShown(newShown) end

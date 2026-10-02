@@ -186,10 +186,11 @@ module.exports = async (req, res) => {
       const teamId = req.body?.teamId;
       try {
         await assertTeamMembership(supabase, companionSession.id, teamId);
-        const { imported } = await importLootRecords(supabase, {
+        const { imported, merged } = await importLootRecords(supabase, {
           teamId, records: req.body?.records, reportedByAccountId: companionSession.id,
         });
-        return res.status(200).json({ success: true, imported });
+        // merged: drops another raider's addon had already reported.
+        return res.status(200).json({ success: true, imported, merged });
       } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
     }
 

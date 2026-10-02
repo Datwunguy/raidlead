@@ -52,10 +52,10 @@ local _, RaidLead = ...
 -- Blizzard's stable raid difficulty IDs (used by DBM/Details/etc. for years).
 local DIFFICULTY_NAMES = { [14] = 'normal', [15] = 'heroic', [16] = 'mythic', [17] = 'lfr' }
 
--- Populate with this tier's tier-token item IDs before relying on tier-token
--- tracking -- these are a small, fixed set per raid (source: Wowhead at the
--- start of the tier) and need updating every new raid tier, same cadence as
--- minTrackedItemLevel in Core.lua.
+-- Tier tokens are recognized from the item itself (see isTierTokenItem
+-- below) -- this list was meant to be filled in by hand every tier, never
+-- was, and real token drops were thrown out as "not gear". It's still
+-- honored: add an item ID here if one is ever missed.
 RaidLead.TIER_TOKEN_ITEM_IDS = {
   -- [123456] = true,
 }
@@ -99,23 +99,48 @@ local BIND_TYPE_NAMES = {
 -- look like real gear" check in every capture path below, while Heroic
 -- ("Hero 1/6") worked fine. This scans every tooltip line for "<Track> N/M"
 -- rather than assuming one exact line layout, so it should keep working
--- even if the surrounding wording changes. Best-effort: returns nils (never
--- errors) if the tooltip API is unavailable or no line matches.
-local function GetUpgradeTrackInfo(itemLink)
-  if not C_TooltipInfo or not C_TooltipInfo.GetHyperlink then return nil, nil, nil end
+-- even if the surrounding wording changes.
+--
+-- The same pass notes a class restriction line ("Classes: Paladin, Priest,
+-- Shaman" -- Blizzard's localized ITEM_CLASSES_ALLOWED), which is how tier
+-- tokens are told apart from other no-track items. Best-effort: returns an
+-- empty table (never errors) if the tooltip API is unavailable.
+local CLASSES_PREFIX = ITEM_CLASSES_ALLOWED and ITEM_CLASSES_ALLOWED:match('^(.-)%%s')
+
+local function ScanItemTooltip(itemLink)
+  local found = {}
+  if not C_TooltipInfo or not C_TooltipInfo.GetHyperlink then return found end
   local ok, data = pcall(C_TooltipInfo.GetHyperlink, itemLink)
-  if not ok or not data or not data.lines then return nil, nil, nil end
+  if not ok or not data or not data.lines then return found end
 
   for _, line in ipairs(data.lines) do
     local text = line.leftText
     if text then
-      for _, track in ipairs(UPGRADE_TRACKS) do
-        local level, maxLevel = text:match(track .. '%s*(%d+)/(%d+)')
-        if level then return track, tonumber(level), tonumber(maxLevel) end
+      if not found.qualityTrack then
+        for _, track in ipairs(UPGRADE_TRACKS) do
+          local level, maxLevel = text:match(track .. '%s*(%d+)/(%d+)')
+          if level then
+            found.qualityTrack, found.upgradeLevel, found.upgradeLevelMax = track, tonumber(level), tonumber(maxLevel)
+            break
+          end
+        end
+      end
+      if CLASSES_PREFIX and CLASSES_PREFIX ~= '' and text:sub(1, #CLASSES_PREFIX) == CLASSES_PREFIX then
+        found.classRestricted = true
       end
     end
   end
-  return nil, nil, nil
+  return found
+end
+
+-- A tier token: on the list above, or an Epic that isn't armor or a weapon,
+-- is limited to certain classes, and has no upgrade track -- what a token
+-- looks like ("Classes: Death Knight, Warlock, Demon Hunter"), and what no
+-- real gear piece does (those always carry a track).
+local function isTierTokenItem(itemId, itemQuality, itemClassID, itemMeta)
+  if RaidLead.TIER_TOKEN_ITEM_IDS[itemId] then return true end
+  return itemQuality == QUALITY_EPIC and itemMeta.classRestricted == true and not itemMeta.qualityTrack
+    and itemClassID ~= ITEM_CLASS_ARMOR and itemClassID ~= ITEM_CLASS_WEAPON
 end
 
 local function globalStringToPattern(fmt)
@@ -243,6 +268,7 @@ end
 -- passing nothing. `rollInfo`, when present, marks this record as won via
 -- a Group Loot roll rather than Personal Loot.
 local function recordLoot(recipientName, itemLink, itemId, itemName, isTierToken, isBoe, itemMeta, rollInfo, encounterOverride)
+  if not RaidLead.IsRecordingLoot() then return end
   itemMeta = itemMeta or {}
   local encounter = encounterOverride or currentEncounter or lastEncounter
   local id = string.format('%s-%d-%d-%s', RaidLead.sessionId, time(), itemId, recipientName)
@@ -310,10 +336,11 @@ local function resolveItemMetaAsync(itemLink, callback)
     -- already relies on for LOOT_ITEM/etc. above.
     local itemSlot = itemEquipLoc and itemEquipLoc ~= '' and (_G[itemEquipLoc] or nil) or nil
     local armorType = (itemClassID == ITEM_CLASS_ARMOR) and itemSubType or nil
-    local qualityTrack, upgradeLevel, upgradeLevelMax = GetUpgradeTrackInfo(itemLink)
+    local tooltip = ScanItemTooltip(itemLink)
     local itemMeta = {
       itemSlot = itemSlot, armorType = armorType,
-      qualityTrack = qualityTrack, upgradeLevel = upgradeLevel, upgradeLevelMax = upgradeLevelMax,
+      qualityTrack = tooltip.qualityTrack, upgradeLevel = tooltip.upgradeLevel, upgradeLevelMax = tooltip.upgradeLevelMax,
+      classRestricted = tooltip.classRestricted,
       bindType = BIND_TYPE_NAMES[bindType],
     }
     callback(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
@@ -333,6 +360,7 @@ end
 
 -- Exposed for the OnEvent handler above.
 function RaidLead.HandleLootMessage(msg)
+  if not RaidLead.IsRecordingLoot() then return end
   local ok, err = pcall(function()
     local recipientName, itemLink, count = matchLootMessage(msg)
     if not recipientName or not itemLink then return end
@@ -349,7 +377,7 @@ function RaidLead.HandleLootMessage(msg)
     resolveItemMetaAsync(itemLink, function(itemName, itemQuality, itemLevel, itemClassID, itemMeta)
       if not meetsQualityFloor(itemQuality) then return end
 
-      local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
+      local isTierToken = isTierTokenItem(itemId, itemQuality, itemClassID, itemMeta)
       local isBossLoot  = (currentEncounter or lastEncounter) ~= nil
 
       if isTierToken or isBossLoot then
@@ -357,8 +385,7 @@ function RaidLead.HandleLootMessage(msg)
         -- Myth) in current content -- quest currency, catalyst fragments,
         -- and similar junk (e.g. "Mask Fragment", "Spark of Tides") don't,
         -- even though they clear the quality floor above. Tier tokens are
-        -- exempt: they're an explicit opt-in via TIER_TOKEN_ITEM_IDS and
-        -- some don't carry a track themselves.
+        -- exempt: they don't carry a track (see isTierTokenItem).
         if not isTierToken and not itemMeta.qualityTrack then
           -- A real raid night reported loot -- including a genuine BoE --
           -- going missing with zero trace. Silently `return`-ing here was
@@ -422,6 +449,7 @@ end
 -- the event fires again afterward (e.g. someone opening the loot history
 -- panel re-triggers a refresh).
 function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
+  if not RaidLead.IsRecordingLoot() then return end
   local ok, err = pcall(function()
     if not encounterID or not lootListID then return end
     local dedupeKey = encounterID .. '-' .. lootListID
@@ -474,10 +502,10 @@ function RaidLead.HandleLootHistoryDrop(encounterID, lootListID)
       encounterName = EJ_GetEncounterInfo(encounterID)
     end
 
-    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, _, itemMeta)
+    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, itemClassID, itemMeta)
       if not meetsQualityFloor(itemQuality) then return end
 
-      local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
+      local isTierToken = isTierTokenItem(itemId, itemQuality, itemClassID, itemMeta)
       -- Same "real gear has a track" reasoning as the Personal Loot path --
       -- see there for why. Tier tokens are exempt.
       if not isTierToken and not itemMeta.qualityTrack then
@@ -514,6 +542,7 @@ end
 -- happens to straddle a second boundary could still produce two. Not
 -- worth solving ahead of confirming it's even a real conflict.
 function RaidLead.HandleBonusRoll(typeIdentifier, itemLink)
+  if not RaidLead.IsRecordingLoot() then return end
   local ok, err = pcall(function()
     if not itemLink then return end -- a currency/gold result, not an item
 
@@ -522,9 +551,9 @@ function RaidLead.HandleBonusRoll(typeIdentifier, itemLink)
 
     local recipientName = UnitName('player')
 
-    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, _, itemMeta)
+    resolveItemMetaAsync(itemLink, function(itemName, itemQuality, _, itemClassID, itemMeta)
       if not meetsQualityFloor(itemQuality) then return end
-      local isTierToken = RaidLead.TIER_TOKEN_ITEM_IDS[itemId] == true
+      local isTierToken = isTierTokenItem(itemId, itemQuality, itemClassID, itemMeta)
       if not isTierToken and not itemMeta.qualityTrack then
         if itemQuality == QUALITY_EPIC then
           print('|cffff8800RaidLead|r: NOT captured -- bonus roll item ' .. (itemName or itemLink) ..

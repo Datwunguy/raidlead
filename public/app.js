@@ -2725,6 +2725,9 @@ async function resetTierChecklist() {
 const QUALITY_TRACK_COLORS = { Veteran: '#1eff00', Champion: '#0070dd', Hero: '#a335ee', Mythic: '#ff8000' };
 const BIND_TYPE_COLORS = { Warbound: 'var(--accent)', 'Warbound Until Equipped': 'var(--accent)', BoE: 'var(--red)' };
 
+// When a drop happened (older records, saved before that was: when it was uploaded).
+const lootTime = d => d.captured_at || d.created_at || '';
+
 function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
   const el = document.getElementById(targetId);
   if (!el) return;
@@ -2737,11 +2740,9 @@ function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
     (sessions[d.session_id] = sessions[d.session_id] || []).push(d);
   });
 
-  const sessionIds = Object.keys(sessions).sort((a, b) => {
-    const aTime = sessions[a][0]?.created_at || '';
-    const bTime = sessions[b][0]?.created_at || '';
-    return bTime.localeCompare(aTime);
-  });
+  // When each run's latest drop happened -- newest run first.
+  const runTime = id => sessions[id].reduce((t, d) => (lootTime(d) > t ? lootTime(d) : t), '');
+  const sessionIds = Object.keys(sessions).sort((a, b) => runTime(b).localeCompare(runTime(a)));
 
   if (sessionIds.length === 0) {
     el.innerHTML = `<div style="font-size:13px; color:var(--text-mute);">${emptyMessage}</div>`;
@@ -2759,21 +2760,22 @@ function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
     const bossCount = new Set(items.map(d => d.boss_name).filter(Boolean)).size;
     const raidDate = items[0]?.raid_date || '?';
 
-    // Group by boss, ordered by each boss's earliest capture within this run
-    // -- raw insertion order (by created_at) scatters real gear across boss
-    // groups whenever a Group Loot roll resolves slowly, since a
-    // late-resolving roll for an earlier boss can land after an
-    // instantly-awarded item from a later one. Items with no boss
-    // attribution ("Trash") sort last as their own group.
-    const bossFirstSeen = {};
-    items.forEach((d, i) => {
-      const key = d.boss_name || '￿';
-      if (!(key in bossFirstSeen)) bossFirstSeen[key] = i;
+    // Grouped by boss, newest kill first (a boss's place is its latest drop,
+    // so a slow Group Loot roll stays with its boss); items with no boss
+    // ("Trash") last. Within a boss: newest drop first, then item and
+    // recipient name -- the same order for everyone who looks.
+    const bossTime = {};
+    items.forEach(d => {
+      const key = d.boss_name || '';
+      if (!(key in bossTime) || lootTime(d) > bossTime[key]) bossTime[key] = lootTime(d);
     });
-    const orderedItems = items.slice().sort((a, b) => {
-      const ka = a.boss_name || '￿', kb = b.boss_name || '￿';
-      return bossFirstSeen[ka] - bossFirstSeen[kb];
-    });
+    const orderedItems = items.slice().sort((a, b) =>
+      (!a.boss_name - !b.boss_name)
+      || bossTime[b.boss_name || ''].localeCompare(bossTime[a.boss_name || ''])
+      || String(a.boss_name || '').localeCompare(String(b.boss_name || ''))
+      || lootTime(b).localeCompare(lootTime(a))
+      || String(a.item_name || '').localeCompare(String(b.item_name || ''))
+      || String(a.recipient_name || '').localeCompare(String(b.recipient_name || '')));
 
     return `
       <div style="background:var(--bg3); border:1px solid ${likelyPug ? 'rgba(196,30,58,0.4)' : 'var(--border)'}; border-radius:6px; padding:14px; margin-bottom:14px;">

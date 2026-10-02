@@ -55,6 +55,12 @@ above. The **Loot** tab shows everything captured *this session* (item ->
 recipient, newest first) so you can see at a glance that it's working
 without tabbing out to the website.
 
+**Several raiders can run the addon.** Each one records every drop (loot
+chat goes to the whole raid), and the website merges the copies: one record
+per drop, one run per raid night. Anyone who'd rather not record loot can
+untick **Record loot** on the Loot tab, or type `/raidlead loot` (also
+`/raidlead loot on` / `off`) — the roster features keep working either way.
+
 Capturing loot needs no folder access at all — the addon collects it live,
 in memory, the whole time you're playing, same as any other addon reading
 game events. WoW only flushes that in-memory data to the SavedVariables file
@@ -75,18 +81,17 @@ no manual step required. If you don't want to wait, the Loot tab's
   the `C_LootHistory` API, added later and flagged in that file's header as
   needing live-client verification — test it in a 5-man with Group Loot set
   as the loot method before trusting it in a real raid.
-- **`RaidLead.TIER_TOKEN_ITEM_IDS`** (top of `Loot.lua`) starts empty. Fill
-  it in with this tier's tier-token item IDs (Wowhead has them at the start
-  of a tier) or tier-token detection won't flag anything.
+- **Tier tokens** are recognized from the item itself: an Epic that's limited
+  to certain classes ("Classes: Paladin, Priest, Shaman" in its tooltip) and
+  has no upgrade track. Not yet seen on a real token drop — if one is ever
+  missed (the addon prints an orange "NOT captured" line in chat), add its
+  item ID to `RaidLead.TIER_TOKEN_ITEM_IDS` at the top of `Loot.lua`.
 - **`minTrackedItemLevel`** (`/raidlead ilvl <number>`, default 636 in
   `Core.lua`) is the floor for capturing non-boss BoEs. Bump it at the start
   of each new raid tier to match the current Champion track.
 - The roster panel's layout math (`UI/RosterFrame.lua`) hasn't been seen
   rendered in a real client yet — expect to nudge spacing once you've
   actually looked at it in-game.
-- Only one person needs this addon (whoever's tracking loot/roster for the
-  raid) and RaidLead Companion running — it's not meant to be installed
-  raid-wide.
 - **Minimap icon** (`UI/MinimapButton.lua`) is a small hand-rolled one, not
   the usual LibDBIcon community library — embedding third-party code we
   couldn't run/verify felt riskier than a plain, well-understood
