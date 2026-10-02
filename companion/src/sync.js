@@ -41,19 +41,38 @@ class SyncManager {
     this.onLog(`[${new Date().toLocaleTimeString()}] ${msg}`);
   }
 
-  isConfigured() {
+  // What's still missing before this can sync, as one sentence -- null when
+  // it's ready. (Logged on start and by Sync Now, so it never just sits there.)
+  setupProblem() {
     const c = this.getConfig();
-    return !!(c.wowRoot && c.authTokenEnc && c.teamId);
+    if (!c.authTokenEnc) return 'Not logged in yet -- click Log In at the top of Settings.';
+    if (!c.teamId) return 'Choose your team at the top of Settings -- your RaidLead account is on more than one.';
+    if (!c.wowRoot) return 'Couldn\'t find World of Warcraft -- pick your WoW folder in Settings.';
+    return null;
+  }
+
+  isConfigured() {
+    return !this.setupProblem();
   }
 
   getToken() {
     return auth.decryptToken(this.getConfig().authTokenEnc);
   }
 
+  // Sync Now (Settings button, tray menu): both directions right away -- or
+  // say what's missing instead of silently doing nothing.
+  syncNow() {
+    const problem = this.setupProblem();
+    if (problem) { this.log(problem); return; }
+    this.exportLoot(true);
+    this.importRoster(true);
+  }
+
   start() {
     this.stop();
-    if (!this.isConfigured()) {
-      this.log('Not configured yet -- log in and set your WoW folder in Settings.');
+    const problem = this.setupProblem();
+    if (problem) {
+      this.log(problem);
       return;
     }
 

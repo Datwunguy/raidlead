@@ -56,7 +56,7 @@ function createTray() {
   tray.setToolTip('RaidLead Companion');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Settings', click: () => createWindow() },
-    { label: 'Sync Now', click: () => { if (sync) { sync.exportLoot(true); sync.importRoster(true); } } },
+    { label: 'Sync Now', click: () => { if (sync) sync.syncNow(); } },
     { label: 'Check for Updates', click: () => checkOnce(sendLog) },
     { type: 'separator' },
     { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
@@ -86,6 +86,24 @@ function wowInstallInfo() {
   return { wowRoot, auto: !!currentConfig.wowRootAuto, addonInstalled: addon?.state === 'installed', addonProblem: wowPaths.describeAddonProblem(addon) };
 }
 
+// Settles which team this PC syncs from the account's current teams (see
+// auth.pickTeam): someone on just one team never has to choose, and a team
+// they've left is cleared so Settings asks again. Network trouble changes
+// nothing. Returns the teams, or null if they couldn't be fetched.
+async function refreshTeamChoice() {
+  const token = auth.decryptToken(currentConfig.authTokenEnc);
+  if (!token) return null;
+  let teams;
+  try { teams = await auth.getMyTeams(token); } catch { return null; }
+  const teamId = auth.pickTeam(teams, currentConfig.teamId);
+  if (teamId !== currentConfig.teamId) {
+    currentConfig = { ...currentConfig, teamId };
+    config.save(currentConfig);
+    sync.start();
+  }
+  return teams;
+}
+
 app.whenReady().then(async () => {
   currentConfig = config.load();
   sync = new SyncManager(() => currentConfig, sendLog);
@@ -107,6 +125,7 @@ app.whenReady().then(async () => {
   // Auto-started-at-login runs stay fully in the tray until clicked.
   if (!app.getLoginItemSettings().wasOpenedAtLogin) createWindow();
   sync.start();
+  refreshTeamChoice(); // not awaited -- a slow network shouldn't hold up the tray
   startUpdateChecks(sendLog);
 
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -158,8 +177,7 @@ ipcMain.handle('raidlead:browseWowFolder', async () => {
 });
 
 ipcMain.handle('raidlead:syncNow', async () => {
-  sync.exportLoot(true);
-  sync.importRoster(true);
+  sync.syncNow();
 });
 
 // ── LOGIN: device-pairing handshake (see auth.js) -- opens the system
@@ -185,7 +203,7 @@ ipcMain.handle('raidlead:login', async () => {
       ...currentConfig,
       authTokenEnc: auth.encryptToken(token),
       deviceLabel: auth.deviceLabel(),
-      teamId: teams.length === 1 ? teams[0].teamId : null,
+      teamId: auth.pickTeam(teams, currentConfig.teamId),
     };
     config.save(currentConfig);
     sync.start();
@@ -210,10 +228,13 @@ ipcMain.handle('raidlead:logout', () => {
 // separately too in case Settings needs to re-show the picker later (e.g.
 // the account was added to a second team since logging in).
 ipcMain.handle('raidlead:getMyTeams', async () => {
-  const token = auth.decryptToken(currentConfig.authTokenEnc);
-  if (!token) return { error: 'Not logged in' };
+  if (!auth.decryptToken(currentConfig.authTokenEnc)) return { error: 'Not logged in' };
   try {
-    return { teams: await auth.getMyTeams(token) };
+    // Settles the team too (only team chosen, a left team cleared) --
+    // teamId is what's actually saved, for the picker to show.
+    const teams = await refreshTeamChoice();
+    if (!teams) throw new Error('Couldn\'t load your teams -- check your connection.');
+    return { teams, teamId: currentConfig.teamId };
   } catch (err) {
     return { error: err.message };
   }

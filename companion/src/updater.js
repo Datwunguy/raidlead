@@ -63,6 +63,8 @@ async function checkOnce(onLog) {
     const data = await fetchJson(VERSION_URL);
     const current = app.getVersion();
     if (!data.version) throw new Error('version.json missing a "version" field');
+    // Only a plain version number -- it's shown in Settings, so nothing else gets through.
+    if (!/^\d{1,4}(\.\d{1,4}){1,3}$/.test(String(data.version))) throw new Error('version.json has an unexpected version');
 
     const available = isNewer(data.version, current);
     latestKnown = { available, version: available ? data.version : null, current };

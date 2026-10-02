@@ -49,6 +49,9 @@
       <div class="row" id="team-picker-row" style="display:none; margin-bottom:8px;">
         <select id="teamPicker" style="flex:1;"></select>
       </div>
+      <div id="team-picker-hint" class="hint" style="display:none; color:#e5a53d; margin:-2px 0 8px;">
+        Your account is on more than one team — choose the one whose roster and loot this PC syncs.
+      </div>
       <button id="logoutBtn">Log Out</button>
     </div>
   </div>
@@ -119,18 +122,27 @@
     if (loggedIn) el('deviceLabelDisplay').textContent = config.deviceLabel || 'this device';
   }
 
+  // On more than one team: which one this PC syncs. Nothing looks chosen
+  // until a team really is saved ("Choose a team..." until then). Options
+  // are built as plain text -- team names are typed by officers.
   async function populateTeamPickerIfNeeded() {
     const row = el('team-picker-row');
-    if (!config.authTokenEnc) { row.style.display = 'none'; return; }
+    const hint = el('team-picker-hint');
+    if (!config.authTokenEnc) { row.style.display = 'none'; hint.style.display = 'none'; return; }
 
     const result = await window.raidlead.getMyTeams();
-    if (result.error || !result.teams || result.teams.length <= 1) { row.style.display = 'none'; return; }
+    if (result.error || !result.teams || result.teams.length <= 1) { row.style.display = 'none'; hint.style.display = 'none'; return; }
 
-    row.style.display = 'flex';
+    const chosen = result.teams.some(t => t.teamId === result.teamId);
     const picker = el('teamPicker');
-    picker.innerHTML = result.teams.map(t =>
-      `<option value="${t.teamId}" ${t.teamId === config.teamId ? 'selected' : ''}>${t.guildName || 'Guild'} — ${t.teamName}</option>`
-    ).join('');
+    picker.replaceChildren();
+    const placeholder = new Option('Choose a team…', '');
+    placeholder.disabled = true;
+    picker.add(placeholder);
+    for (const t of result.teams) picker.add(new Option(`${t.guildName || 'Guild'} — ${t.teamName}`, t.teamId));
+    picker.value = chosen ? result.teamId : '';
+    row.style.display = 'flex';
+    hint.style.display = chosen ? 'none' : 'block';
   }
 
   // Where WoW is, how it was found, and whether the addon's in place.
@@ -215,7 +227,9 @@
   });
 
   el('teamPicker').addEventListener('change', async () => {
+    if (!el('teamPicker').value) return;
     config = await window.raidlead.setTeam(el('teamPicker').value);
+    el('team-picker-hint').style.display = 'none';
   });
 
   init();

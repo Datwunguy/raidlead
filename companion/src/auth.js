@@ -32,6 +32,17 @@ async function startPairing() {
   return { pairingCode: data.pairingCode, approveUrl: raidLeadPage(data.approveUrl) };
 }
 
+/**
+ * Which team this PC syncs, given the account's teams: the saved one while
+ * the account's still on it; the only one when there's just one; otherwise
+ * none yet -- the person chooses in Settings.
+ */
+function pickTeam(teams, currentTeamId) {
+  const list = Array.isArray(teams) ? teams : [];
+  if (currentTeamId && list.some(t => t.teamId === currentTeamId)) return currentTeamId;
+  return list.length === 1 ? list[0].teamId : null;
+}
+
 /** The URL, if it's an https page on RaidLead's own site; throws otherwise. */
 function raidLeadPage(url) {
   let parsed;
@@ -91,4 +102,4 @@ async function getMyTeams(token) {
   return data.teams || [];
 }
 
-module.exports = { SITE_ORIGIN, deviceLabel, startPairing, pollPairing, encryptToken, decryptToken, getMyTeams };
+module.exports = { SITE_ORIGIN, deviceLabel, startPairing, pollPairing, encryptToken, decryptToken, getMyTeams, pickTeam };
