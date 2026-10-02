@@ -57,6 +57,9 @@ class SyncManager {
       return;
     }
 
+    const addonProblem = wowPaths.describeAddonProblem(wowPaths.addonStatus(this.getConfig().wowRoot));
+    if (addonProblem) this.log(addonProblem);
+
     const account = wowPaths.resolveAccount(this.getConfig().wowRoot);
     if (account) {
       const lootPath = wowPaths.accountSavedVariablesPath(account.fullPath);
@@ -65,7 +68,7 @@ class SyncManager {
       this.lootWatcher.on('change', () => this.exportLoot());
       this.lootWatcher.on('add', () => this.exportLoot());
     } else {
-      this.log('No single WoW account resolved yet -- log into WoW with RaidLead installed at least once.');
+      this.log('No WoW account has played with RaidLead yet -- log into WoW with the addon installed and /reload once.');
     }
 
     this.checkWowStatus();
@@ -101,7 +104,7 @@ class SyncManager {
   async exportLoot(force = false) {
     if (!this.isConfigured()) return;
     const account = wowPaths.resolveAccount(this.getConfig().wowRoot);
-    if (!account) { if (force) this.log('No single WoW account resolved -- log into WoW with RaidLead installed at least once.'); return; }
+    if (!account) { if (force) this.log('No WoW account has played with RaidLead yet -- log into WoW with the addon installed and /reload once.'); return; }
 
     const lootPath = wowPaths.accountSavedVariablesPath(account.fullPath);
     if (!fs.existsSync(lootPath)) {
@@ -148,7 +151,7 @@ class SyncManager {
     if (!token) { if (force) this.log('Not logged in -- open Settings and log in again.'); return; }
 
     const account = wowPaths.resolveAccount(this.getConfig().wowRoot);
-    if (!account) { if (force) this.log('No single WoW account resolved -- log into WoW with RaidLead installed at least once.'); return; }
+    if (!account) { if (force) this.log('No WoW account has played with RaidLead yet -- log into WoW with the addon installed and /reload once.'); return; }
 
     let payload;
     try {

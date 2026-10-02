@@ -7,13 +7,14 @@
 // addon's .toc comment for why it's a separate file from the one above):
 //   <WowRoot>/_retail_/WTF/Account/<ACCOUNT>/<Realm>/<Character>/SavedVariables/RaidLead.lua
 //
-// Install location varies too much to rely on auto-detect alone (custom
-// drives, non-default Battle.net install dirs), so this only offers a best-
-// effort guess -- the settings UI always lets the user browse manually.
+// Finding the install: Battle.net's entry in Windows' installed-programs
+// list says where WoW is, on any drive; failing that, common folders on
+// every drive are checked. Settings shows what was found and lets the
+// person pick a different folder -- any folder in or above the install.
 // ============================================================
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 
 /** True if a WoW client process is currently running. */
 function isWowRunning() {
@@ -24,41 +25,111 @@ function isWowRunning() {
   });
 }
 
-const COMMON_ROOTS = [
-  'C:\\Program Files (x86)\\World of Warcraft',
-  'C:\\Program Files\\World of Warcraft',
-  'D:\\World of Warcraft',
-  'D:\\Games\\World of Warcraft',
+/** A WoW install: the folder holding _retail_. */
+const isWowRoot = dir => !!dir && fs.existsSync(path.join(dir, '_retail_'));
+const trimSep = p => path.normalize(p).replace(/[\\/]+$/, '');
+
+// Battle.net lists each game it installs in Windows' installed-programs list
+// (Settings -> Apps) with its folder -- the reliable record of where WoW is.
+// (Not Blizzard's own "InstallPath" registry value: other WoW launchers
+// overwrite it -- seen on a real PC, pointing at a private-server client.)
+const UNINSTALL_KEYS = [
+  'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\World of Warcraft',
+  'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\World of Warcraft',
 ];
 
-const ADDONS_SUFFIX = path.join('_retail_', 'Interface', 'AddOns');
+// One value out of `reg query` output ("    InstallLocation    REG_SZ    C:\...").
+function parseRegValue(stdout, name) {
+  const line = String(stdout || '').split(/\r?\n/).find(l => l.trim().toLowerCase().startsWith(name.toLowerCase() + ' '));
+  const m = line && line.match(/REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/);
+  return m ? m[1] : null;
+}
 
-function guessWowRoot() {
-  for (const root of COMMON_ROOTS) {
-    if (fs.existsSync(path.join(root, '_retail_', 'WTF'))) return root;
+function readInstallLocation(key) {
+  return new Promise((resolve) => {
+    execFile('reg', ['query', key, '/v', 'InstallLocation'], { windowsHide: true, timeout: 5000 }, (err, stdout) => {
+      resolve(err ? null : parseRegValue(stdout, 'InstallLocation'));
+    });
+  });
+}
+
+// Where else people put it, checked on every drive.
+const DRIVE_FOLDERS = [
+  'World of Warcraft',
+  'Games\\World of Warcraft',
+  'Program Files (x86)\\World of Warcraft',
+  'Program Files\\World of Warcraft',
+  'Blizzard\\World of Warcraft',
+  'Games\\Blizzard\\World of Warcraft',
+  'Battle.net\\World of Warcraft',
+];
+const ALL_DRIVES = [...'CDEFGHIJKLMNOPQRSTUVWXYZ'].map(l => `${l}:\\`);
+
+/**
+ * Finds the WoW install on its own: { root, source: 'installed-programs' |
+ * 'drive-scan' }, or null. Reads only Battle.net's installed-programs entry
+ * and whether those folders exist -- nothing else on the PC.
+ */
+async function findWowInstall({ readLocation = readInstallLocation, drives = ALL_DRIVES } = {}) {
+  for (const key of UNINSTALL_KEYS) {
+    const location = await readLocation(key);
+    if (location && isWowRoot(location)) return { root: trimSep(location), source: 'installed-programs' };
+  }
+  for (const drive of drives) {
+    if (!fs.existsSync(drive)) continue;
+    for (const folder of DRIVE_FOLDERS) {
+      const root = path.join(drive, folder);
+      if (isWowRoot(root)) return { root, source: 'drive-scan' };
+    }
   }
   return null;
 }
 
 /**
- * Derives the WoW root (the folder containing _retail_) from an AddOns
- * folder path -- the settings UI asks the user to browse to their AddOns
- * folder specifically, since that's the same folder they already had to
- * navigate to for the manual "copy the addon in" install step, rather than
- * introducing a second, less obviously-relevant "WoW folder" concept.
- * Returns null if the picked folder doesn't actually end in
- * _retail_/Interface/AddOns, so the caller can ask again with a clear error.
+ * The WoW install from any folder someone picks in or above it -- the WoW
+ * folder, _retail_, Interface, AddOns, the RaidLead folder, or the drive or
+ * folder holding "World of Warcraft". null if there's no install there.
  */
-function deriveWowRootFromAddonsFolder(addonsPath) {
-  const normalized = path.normalize(addonsPath);
-  const suffix = path.normalize(ADDONS_SUFFIX);
-  if (!normalized.toLowerCase().endsWith(suffix.toLowerCase())) return null;
-  return normalized.slice(0, normalized.length - suffix.length).replace(/[\\/]+$/, '');
+function wowRootFrom(picked) {
+  if (!picked) return null;
+  const dir = trimSep(picked);
+  const parts = dir.split(/[\\/]/);
+  const retail = parts.map(p => p.toLowerCase()).lastIndexOf('_retail_');
+  if (retail > 0) {
+    let root = parts.slice(0, retail).join(path.sep);
+    if (/^[a-z]:$/i.test(root)) root += path.sep; // WoW at the top of a drive
+    if (isWowRoot(root)) return root;
+  }
+  if (isWowRoot(dir)) return dir;
+  const inside = path.join(dir, 'World of Warcraft');
+  return isWowRoot(inside) ? inside : null;
 }
 
-/** True if the RaidLead addon folder is actually present in this AddOns folder. */
-function addonIsInstalled(addonsPath) {
-  return fs.existsSync(path.join(addonsPath, 'RaidLead', 'RaidLead.toc'));
+/**
+ * Where the RaidLead addon is: 'installed' (AddOns\RaidLead), 'nested' (a
+ * folder too deep, e.g. AddOns\RaidLead-Download\RaidLead from "Extract All"
+ * -- WoW never loads it), or 'missing'.
+ */
+function addonStatus(wowRoot) {
+  const addonsPath = path.join(wowRoot, '_retail_', 'Interface', 'AddOns');
+  const target = path.join(addonsPath, 'RaidLead');
+  if (fs.existsSync(path.join(target, 'RaidLead.toc'))) return { state: 'installed', addonsPath, target };
+  for (const dir of listDirs(addonsPath)) {
+    const found = path.join(addonsPath, dir, 'RaidLead');
+    if (fs.existsSync(path.join(found, 'RaidLead.toc'))) return { state: 'nested', addonsPath, target, found };
+  }
+  return { state: 'missing', addonsPath, target };
+}
+
+/** What to do about the addon, in a sentence -- null when it's installed. */
+function describeAddonProblem(status) {
+  if (!status || status.state === 'installed') return null;
+  if (status.state === 'nested') {
+    return path.dirname(status.found) === status.target
+      ? `RaidLead is one folder too deep, so WoW won't load it -- move everything inside ${status.found} up into ${status.target}.`
+      : `RaidLead is one folder too deep, so WoW won't load it -- move ${status.found} into ${status.addonsPath}.`;
+  }
+  return `The RaidLead addon isn't installed yet -- copy the "RaidLead" folder into ${status.addonsPath}.`;
 }
 
 function listDirs(dir) {
@@ -117,23 +188,25 @@ function characterSavedVariablesPath(accountPath, characterFolder) {
  * Auto-picks which WoW account is "yours" -- same policy as the PowerShell
  * bridge script's Resolve-Account, so switching to this app doesn't bring
  * back the account-picker step that was deliberately removed earlier: if
- * there's only one account, use it; if several, prefer whichever already has
- * this addon's save file (a strong signal -- that only happens where someone
- * actually logged in with RaidLead installed); otherwise it's genuinely
- * ambiguous and the caller should just skip this cycle rather than guess.
+ * there's only one account, use it; if several, the one with this addon's
+ * save file (that only happens where someone actually logged in with
+ * RaidLead installed) -- and if several have one (two WoW licenses, both
+ * played with RaidLead), whichever saved most recently: the one being
+ * played. null only when no account has played with RaidLead yet.
  */
 function resolveAccount(wowRoot) {
   const accounts = listAccounts(wowRoot);
   if (accounts.length === 0) return null;
   if (accounts.length === 1) return accounts[0];
 
-  const withAddonData = accounts.filter(a => fs.existsSync(accountSavedVariablesPath(a.fullPath)));
-  if (withAddonData.length === 1) return withAddonData[0];
-
-  return null; // ambiguous -- caller logs and skips rather than guessing
+  const saved = accounts
+    .map(a => { try { return { a, at: fs.statSync(accountSavedVariablesPath(a.fullPath)).mtimeMs }; } catch { return null; } })
+    .filter(Boolean)
+    .sort((x, y) => y.at - x.at);
+  return saved.length ? saved[0].a : null;
 }
 
 module.exports = {
-  guessWowRoot, deriveWowRootFromAddonsFolder, addonIsInstalled, listAccounts, listCharacters,
-  accountSavedVariablesPath, characterSavedVariablesPath, resolveAccount, isWowRunning,
+  findWowInstall, wowRootFrom, isWowRoot, addonStatus, describeAddonProblem, parseRegValue, readInstallLocation,
+  listAccounts, listCharacters, accountSavedVariablesPath, characterSavedVariablesPath, resolveAccount, isWowRunning,
 };

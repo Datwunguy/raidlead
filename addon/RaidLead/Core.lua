@@ -19,6 +19,7 @@ local DEFAULT_DB = {
     recordLoot = true,         -- off: this copy of the addon doesn't record loot (roster features keep working)
   },
   lootRecords = {}, -- addon_record_id -> record, pruned on load; uploaded wholesale each sync
+  skippedLoot = {}, -- drops the loot filters passed over, newest first (/raidlead skipped)
   minimap = { angle = 225, hidden = false }, -- minimap button position/visibility, see UI/MinimapButton.lua
 }
 
@@ -166,6 +167,15 @@ SlashCmdList['RAIDLEAD'] = function(msg)
     -- /raidlead loot (toggle), /raidlead loot on, /raidlead loot off
     local want = rest:lower()
     RaidLead.SetRecordingLoot(want == 'on' or (want ~= 'off' and not RaidLead.IsRecordingLoot()))
+  elseif cmd == 'skipped' then
+    -- What the loot filters passed over lately (kept out of chat while raiding).
+    local list = RaidLeadDB.skippedLoot or {}
+    if #list == 0 then print('|cff33ff99RaidLead|r: no drops skipped lately.') return end
+    print('|cff33ff99RaidLead|r: drops not recorded lately (newest first):')
+    for i = 1, math.min(#list, 10) do
+      local s = list[i]
+      print(string.format('  %s %s -- %s', date('%m/%d %H:%M', s.at), tostring(s.item), s.reason))
+    end
   elseif cmd == 'status' then
     local synced = RaidLeadCompanionDB and RaidLeadCompanionDB.syncedAt
     print('|cff33ff99RaidLead|r: session ' .. (RaidLead.sessionId or '?')

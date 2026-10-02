@@ -3,6 +3,7 @@
 // only place fs/network access happens (the renderer talks to this via
 // preload.js's IPC bridge, never directly).
 // ============================================================
+const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell } = require('electron');
 
@@ -63,9 +64,32 @@ function createTray() {
   tray.on('click', () => createWindow());
 }
 
-app.whenReady().then(() => {
+// Finds WoW on its own the first time (or if the saved folder is gone -- a
+// moved install), so most people never pick a folder at all. Settings
+// shows what was found and can change it.
+async function ensureWowRoot() {
+  if (wowPaths.isWowRoot(currentConfig.wowRoot)) return;
+  const found = await wowPaths.findWowInstall();
+  if (!found) {
+    sendLog('Couldn\'t find World of Warcraft automatically -- open Settings and pick your WoW folder.');
+    return;
+  }
+  currentConfig = { ...currentConfig, wowRoot: found.root, wowRootAuto: true };
+  config.save(currentConfig);
+  sendLog(`Found World of Warcraft at ${found.root}.`);
+}
+
+// What Settings shows about the install: where it is, how it was found, and the addon's state.
+function wowInstallInfo() {
+  const wowRoot = wowPaths.isWowRoot(currentConfig.wowRoot) ? currentConfig.wowRoot : null;
+  const addon = wowRoot ? wowPaths.addonStatus(wowRoot) : null;
+  return { wowRoot, auto: !!currentConfig.wowRootAuto, addonInstalled: addon?.state === 'installed', addonProblem: wowPaths.describeAddonProblem(addon) };
+}
+
+app.whenReady().then(async () => {
   currentConfig = config.load();
   sync = new SyncManager(() => currentConfig, sendLog);
+  await ensureWowRoot();
 
   // Opt-out, not opt-in -- launching this app is the whole point of it
   // (replacing a scheduled task + hidden-window script with a normal
@@ -111,27 +135,26 @@ ipcMain.handle('raidlead:getUpdateStatus', () => ({ ...getUpdateStatus(), downlo
 
 ipcMain.handle('raidlead:openDownloadLink', () => shell.openExternal(DOWNLOAD_URL));
 
+ipcMain.handle('raidlead:getWowInstall', () => wowInstallInfo());
+
+// Picking the folder by hand (when it wasn't found, or to use a different
+// install): any folder in or above the install works.
 ipcMain.handle('raidlead:browseWowFolder', async () => {
-  // Ask for the AddOns folder specifically -- it's the same folder the user
-  // already had to open to copy the RaidLead addon in, so there's only one
-  // "which folder do I need" concept for them to hold onto instead of two.
-  const guessedRoot = wowPaths.guessWowRoot();
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select your WoW AddOns folder (...\\_retail_\\Interface\\AddOns -- the one you just copied RaidLead into)',
-    defaultPath: guessedRoot ? path.join(guessedRoot, '_retail_', 'Interface', 'AddOns') : undefined,
+    title: 'Select your World of Warcraft folder (or any folder inside it)',
+    defaultPath: currentConfig.wowRoot || undefined,
     properties: ['openDirectory'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
 
-  const addonsPath = result.filePaths[0];
-  const wowRoot = wowPaths.deriveWowRootFromAddonsFolder(addonsPath);
+  const wowRoot = wowPaths.wowRootFrom(result.filePaths[0]);
   if (!wowRoot) {
-    return { error: 'That doesn\'t look like a WoW AddOns folder -- it should end in _retail_\\Interface\\AddOns.' };
+    return { error: 'Couldn\'t find World of Warcraft there -- pick your World of Warcraft folder (the one with _retail_ inside it).' };
   }
-  return {
-    wowRoot,
-    addonInstalled: wowPaths.addonIsInstalled(addonsPath),
-  };
+  currentConfig = { ...currentConfig, wowRoot, wowRootAuto: false };
+  config.save(currentConfig);
+  sync.start();
+  return wowInstallInfo();
 });
 
 ipcMain.handle('raidlead:syncNow', async () => {

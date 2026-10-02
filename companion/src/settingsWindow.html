@@ -54,15 +54,13 @@
   </div>
 
   <div class="section">
-    <label>WoW AddOns Folder</label>
-    <div class="hint" style="margin-top:0; margin-bottom:6px;">
-      Browse to <code>...\_retail_\Interface\AddOns\</code> (the same folder you copied the <code>RaidLead</code> addon into) — this app works out your WoW install from it. Which account is yours is re-detected automatically every time, so there's nothing to pick.
-    </div>
+    <label>World of Warcraft</label>
+    <div id="wow-found-hint" class="hint" style="margin-top:0; margin-bottom:6px;">Looking for World of Warcraft...</div>
     <div class="row">
-      <input type="text" id="wowRoot" readonly placeholder="Not set" />
+      <input type="text" id="wowRoot" readonly placeholder="Not found" />
       <button id="browseWow">Browse...</button>
     </div>
-    <div id="addon-check-warning" class="hint" style="display:none; color:#e5a53d;"></div>
+    <div id="addon-status" class="hint" style="display:none;"></div>
   </div>
 
   <div class="section">
@@ -135,9 +133,29 @@
     ).join('');
   }
 
+  // Where WoW is, how it was found, and whether the addon's in place.
+  function renderWowInstall(info) {
+    if (!info) return;
+    el('wowRoot').value = info.wowRoot || '';
+    el('browseWow').textContent = info.wowRoot ? 'Change...' : 'Browse...';
+    el('wow-found-hint').textContent = !info.wowRoot
+      ? 'Couldn\'t find World of Warcraft automatically. Click Browse and pick your World of Warcraft folder (or any folder inside it).'
+      : info.auto
+        ? 'Found automatically, from where Battle.net installed it. Which account is yours is worked out every time, so there\'s nothing to pick.'
+        : 'The folder you picked. Which account is yours is worked out every time, so there\'s nothing to pick.';
+    const status = el('addon-status');
+    status.style.display = info.wowRoot ? 'block' : 'none';
+    status.style.color = info.addonInstalled ? '#4ade80' : '#e5a53d';
+    status.textContent = info.addonInstalled ? '✓ RaidLead addon installed' : (info.addonProblem || '');
+  }
+
+  async function refreshWowInstall() {
+    renderWowInstall(await window.raidlead.getWowInstall());
+  }
+
   async function init() {
     config = await window.raidlead.getConfig();
-    el('wowRoot').value = config.wowRoot || '';
+    refreshWowInstall();
     el('autoStart').checked = config.autoStart !== false;
     renderAccountSection();
     populateTeamPickerIfNeeded();
@@ -150,28 +168,21 @@
     refreshUpdateStatus();
     setInterval(refreshWowStatus, 10000);
     setInterval(refreshUpdateStatus, 10000);
+    setInterval(refreshWowInstall, 10000); // notices the addon being copied in
   }
 
   el('browseWow').addEventListener('click', async () => {
     const result = await window.raidlead.browseWowFolder();
-    const warning = el('addon-check-warning');
     if (!result) return;
-
     if (result.error) {
-      warning.textContent = result.error;
-      warning.style.display = 'block';
+      const status = el('addon-status');
+      status.textContent = result.error;
+      status.style.color = '#e5a53d';
+      status.style.display = 'block';
       return;
     }
-
-    config = await window.raidlead.setConfig({ wowRoot: result.wowRoot });
-    el('wowRoot').value = result.wowRoot;
-
-    if (!result.addonInstalled) {
-      warning.textContent = 'Found your WoW folder, but the RaidLead addon isn\'t in there yet -- copy the "RaidLead" folder into this AddOns directory first.';
-      warning.style.display = 'block';
-    } else {
-      warning.style.display = 'none';
-    }
+    config = await window.raidlead.getConfig();
+    renderWowInstall(result);
   });
 
   el('autoStart').addEventListener('change', async () => {

@@ -12,6 +12,7 @@ const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
 
 const DEFAULTS = {
   wowRoot: null,       // .../World of Warcraft (the folder containing _retail_) -- which account is "yours" is re-resolved fresh every sync, not stored
+  wowRootAuto: false,  // wowRoot was found automatically (vs. picked in Settings) -- Settings says which
   authTokenEnc: null,  // this app's own RaidLead access token, encrypted via auth.js's encryptToken (safeStorage) -- never stored in plaintext
   deviceLabel: null,   // shown on the website's approve screen and Connected Devices list -- captured at login time, not re-derived every run
   teamId: null,         // which RaidLead team to sync -- auto-resolved at login for a single-team account, or chosen via the team picker for multi-team

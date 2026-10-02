@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('raidlead', {
   getWowStatus: () => ipcRenderer.invoke('raidlead:getWowStatus'),
   getUpdateStatus: () => ipcRenderer.invoke('raidlead:getUpdateStatus'),
   openDownloadLink: () => ipcRenderer.invoke('raidlead:openDownloadLink'),
+  getWowInstall: () => ipcRenderer.invoke('raidlead:getWowInstall'),
   browseWowFolder: () => ipcRenderer.invoke('raidlead:browseWowFolder'),
   syncNow: () => ipcRenderer.invoke('raidlead:syncNow'),
   login: () => ipcRenderer.invoke('raidlead:login'),

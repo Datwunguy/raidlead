@@ -31,8 +31,9 @@ no longer needed the browser as a go-between — see the note below.
 2. Download and install **RaidLead Companion** from the site's Loot tab. In
    its Settings, click **Log In** — this opens your browser to approve the
    request (you'll sign in with Battle.net there first if you aren't
-   already). Also point it at your WoW AddOns folder; which WoW account is
-   yours is found automatically from there.
+   already). It finds your WoW install on its own (any drive) and which WoW
+   account is yours -- Settings shows what it found, and says exactly what
+   to fix if the addon is missing or a folder too deep.
 3. That's it. Companion runs quietly in the background from then on (starts
    with Windows by default), uploading loot and pulling your published
    roster on its own — no folder to connect, no button to remember to click.
@@ -84,8 +85,9 @@ no manual step required. If you don't want to wait, the Loot tab's
 - **Tier tokens** are recognized from the item itself: an Epic that's limited
   to certain classes ("Classes: Paladin, Priest, Shaman" in its tooltip) and
   has no upgrade track. Not yet seen on a real token drop — if one is ever
-  missed (the addon prints an orange "NOT captured" line in chat), add its
-  item ID to `RaidLead.TIER_TOKEN_ITEM_IDS` at the top of `Loot.lua`.
+  missed, `/raidlead skipped` lists the drops the loot filters passed over
+  (kept out of chat) -- add a missed token's item ID to
+  `RaidLead.TIER_TOKEN_ITEM_IDS` at the top of `Loot.lua`.
 - **`minTrackedItemLevel`** (`/raidlead ilvl <number>`, default 636 in
   `Core.lua`) is the floor for capturing non-boss BoEs. Bump it at the start
   of each new raid tier to match the current Champion track.

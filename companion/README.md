@@ -100,9 +100,20 @@ npm start
 ```
 
 First run: open Settings (tray icon, or the window that opens
-automatically), click **Log In**, and browse to your WoW AddOns folder (the
-one you copied `RaidLead` into). That's it -- which WoW account is yours is
-re-detected automatically every time, so there's nothing to pick there.
+automatically) and click **Log In**. That's it -- the app finds your WoW
+install on its own, on any drive, and which WoW account is yours is
+re-detected automatically every time, so there's nothing to pick. Settings
+shows the folder it found (and whether the RaidLead addon is in place);
+**Change...** picks a different one -- any folder in or above the install
+works.
+
+**What it looks at to find WoW:** Battle.net's entry for World of Warcraft in
+Windows' installed-programs list (its install folder -- the same thing
+Windows Settings -> Apps shows), and, failing that, whether a
+`World of Warcraft` folder exists in a few usual places on each drive. Then
+only RaidLead's own save files inside WoW's `WTF` folder. Nothing else on
+the PC is read, and the folder path never leaves it -- what goes to
+RaidLead is loot records, the team id, and (at login) the PC's name.
 
 "Start automatically when Windows starts" is on by default -- turn it off in
 Settings if you'd rather launch it manually.
