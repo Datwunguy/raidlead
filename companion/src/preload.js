@@ -20,4 +20,5 @@ contextBridge.exposeInMainWorld('raidlead', {
   getMyTeams: () => ipcRenderer.invoke('raidlead:getMyTeams'),
   setTeam: (teamId) => ipcRenderer.invoke('raidlead:setTeam', teamId),
   onLog: (callback) => ipcRenderer.on('raidlead:log', (_e, line) => callback(line)),
+  onLoginCode: (callback) => ipcRenderer.on('raidlead:loginCode', (_e, code) => callback(code)),
 });

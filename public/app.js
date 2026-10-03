@@ -2465,31 +2465,54 @@ async function checkPendingCompanionPair() {
 function showCompanionPairModal(pairingCode, deviceLabel) {
   const modal = document.getElementById('companion-pair-modal');
   document.getElementById('companion-pair-device').textContent = deviceLabel || 'Unknown device';
+  document.getElementById('companion-pair-code').value = '';
+  showCompanionPairError('');
   modal.dataset.pairingCode = pairingCode;
   modal.classList.add('open');
+  document.getElementById('companion-pair-code').focus();
+}
+
+function showCompanionPairError(message) {
+  const el = document.getElementById('companion-pair-error');
+  el.textContent = message;
+  el.style.display = message ? 'block' : 'none';
+}
+
+function closeCompanionPairModal() {
+  document.getElementById('companion-pair-modal').classList.remove('open');
+  try { localStorage.removeItem(COMPANION_PAIR_STORAGE_KEY); } catch(e) {}
 }
 
 // `approve` false covers both an explicit Deny click and just closing the
 // modal -- either way the pairing is simply left alone to expire on its
 // own (there's no separate "deny" signal the Companion app's poll needs;
 // it just keeps seeing "pending" until the 10-minute window runs out).
+// Approving needs the code the Companion app is showing; a wrong one keeps
+// the modal open to fix it.
 async function respondToCompanionPair(approve) {
   const modal = document.getElementById('companion-pair-modal');
   const pairingCode = modal.dataset.pairingCode;
-  modal.classList.remove('open');
-  try { localStorage.removeItem(COMPANION_PAIR_STORAGE_KEY); } catch(e) {}
-  if (!approve || !pairingCode) return;
+  if (!approve || !pairingCode) { closeCompanionPairModal(); return; }
 
+  const confirmCode = document.getElementById('companion-pair-code').value.trim();
+  if (!confirmCode) { showCompanionPairError('Enter the code shown in RaidLead Companion.'); return; }
+  const btn = document.getElementById('companion-pair-approve');
+  btn.disabled = true;
   try {
     const resp = await fetch('/api/companion?action=approvePairing', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pairingCode }),
+      body: JSON.stringify({ pairingCode, confirmCode }),
     });
     const data = await resp.json();
+    if (resp.status === 403 || resp.status === 400) { showCompanionPairError(data.error || 'Check the code and try again.'); return; }
     if (!resp.ok) throw new Error(data.error || 'Could not approve login');
+    closeCompanionPairModal();
     showToast('RaidLead Companion connected!', 'success');
   } catch (e) {
+    closeCompanionPairModal();
     showToast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
   }
 }
 

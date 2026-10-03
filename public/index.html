@@ -740,7 +740,7 @@
               <br /><br />
               Then <a href="https://github.com/Datwunguy/raidlead/releases/latest/download/RaidLead-Companion-Setup.exe" style="color:var(--gold-dim);">download RaidLead Companion</a> and
               install it — Windows might try to block it, but it's safe to run. Open it and click <strong>Log In</strong>;
-              a page opens here asking you to approve it. Once approved, that's it — no folders to pick, nothing else to configure.
+              a page opens here asking for the code the app shows. Once approved, that's it — no folders to pick, nothing else to configure.
             </div>
             <div style="font-size:13px; color:var(--gold); line-height:1.6; margin-bottom:10px; border-left:3px solid var(--gold-dim); padding-left:10px;">
               Only trust RaidLead downloads that come from the links on this page. Don't install a RaidLead or Companion
@@ -1071,15 +1071,23 @@
           </div>
           <div class="modal-body">
             <p style="font-size:13px; color:var(--text-dim); line-height:1.6;">
-              A RaidLead Companion app on this computer wants to log in as you:
+              A RaidLead Companion app wants to log in as you:
             </p>
             <p style="font-size:16px; font-weight:700; color:var(--gold); text-align:center; margin:10px 0;" id="companion-pair-device"></p>
-            <p style="font-size:13px; color:#ff6b6b; line-height:1.6;">
-              Only approve this if you just clicked Log In in RaidLead Companion yourself.
+            <label for="companion-pair-code" style="display:block; font-size:13px; color:var(--text); margin:14px 0 6px;">Enter the code shown in RaidLead Companion:</label>
+            <input type="text" id="companion-pair-code" maxlength="9" autocomplete="off" spellcheck="false" placeholder="ABC 123"
+              onkeydown="if (event.key === 'Enter') respondToCompanionPair(true)"
+              style="width:100%; box-sizing:border-box; text-align:center; font-size:20px; letter-spacing:4px; text-transform:uppercase; padding:8px; background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text);" />
+            <div id="companion-pair-error" style="display:none; font-size:13px; color:#ff6b6b; margin-top:8px;"></div>
+            <p style="font-size:13px; color:#ff6b6b; line-height:1.6; margin-top:14px;">
+              Only approve a login you started yourself, in RaidLead Companion on your own PC. Never enter a code someone sends you.
+            </p>
+            <p style="font-size:12px; color:var(--text-mute); line-height:1.6;">
+              No code in the app? <a href="https://github.com/Datwunguy/raidlead/releases/latest/download/RaidLead-Companion-Setup.exe" style="color:var(--gold-dim);">Update RaidLead Companion</a>, then click Log In again.
             </p>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
               <button class="btn-secondary" onclick="respondToCompanionPair(false)">Deny</button>
-              <button class="btn-primary" onclick="respondToCompanionPair(true)">Approve</button>
+              <button class="btn-primary" id="companion-pair-approve" onclick="respondToCompanionPair(true)">Approve</button>
             </div>
           </div>
         </div>

@@ -4,7 +4,8 @@
 //  folder" (see sql/2026_09_companion_auth.sql for why/what).
 //
 //  Actions: startPairing, getPairingInfo, approvePairing, checkPairing,
-//           getMyTeams, uploadLoot, getRosterSync, listMyTokens, revokeToken
+//           getMyTeams, uploadLoot, getRosterSync, revokeSelf,
+//           listMyTokens, revokeToken
 //
 //  Two separate credential types are handled in this one file, and they
 //  never cross-validate:
@@ -13,7 +14,7 @@
 //   - approvePairing/listMyTokens/revokeToken: the normal website session
 //     (lib/session.js's getSession/cookie), completely unchanged from every
 //     other api/*.js file.
-//   - getMyTeams/uploadLoot/getRosterSync: the Companion app's own bearer
+//   - getMyTeams/uploadLoot/getRosterSync/revokeSelf: the Companion app's own bearer
 //     token, verified by getCompanionSession() below -- a DB lookup against
 //     companion_tokens, deliberately NOT lib/session.js's decodeSession.
 //     Companion tokens are opaque random strings (not signed JSON), stored
@@ -49,9 +50,27 @@ function generatePairingCode() {
   return crypto.randomBytes(6).toString('hex');
 }
 
+// The code RaidLead Companion shows while it waits, which the website asks
+// for before approving. The approve link carries the pairing code but never
+// this, so a link someone sends you isn't enough to connect their Companion
+// to your account -- you'd also need the code from the app on your own
+// screen. Derived from the pairing code with the server's secret, so there's
+// nothing extra to store. Six characters, none that look alike.
+const CONFIRM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function confirmCodeFor(pairingCode) {
+  const mac = crypto.createHmac('sha256', process.env.SESSION_SECRET).update('companion-confirm:' + pairingCode).digest();
+  return Array.from(mac.subarray(0, 6), b => CONFIRM_ALPHABET[b % CONFIRM_ALPHABET.length]).join('');
+}
+// As typed: any case, spaces or dashes ("k7q-4mz").
+const typedConfirmCode = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+function confirmCodeMatches(pairingCode, typed) {
+  const want = Buffer.from(confirmCodeFor(pairingCode)), got = Buffer.from(typedConfirmCode(typed));
+  return want.length === got.length && crypto.timingSafeEqual(want, got);
+}
+
 // Verifies a Companion app's bearer token against companion_tokens --
 // entirely separate from lib/session.js's getSession/decodeSession (see
-// header comment). Returns { id: accountId } or null.
+// header comment). Returns { id: accountId, tokenId } or null.
 async function getCompanionSession(req, supabase) {
   const auth = req.headers?.authorization || '';
   if (!auth.startsWith('Bearer ')) return null;
@@ -66,7 +85,7 @@ async function getCompanionSession(req, supabase) {
   if (!data || data.revoked_at) return null;
 
   await supabase.from('companion_tokens').update({ last_used_at: new Date().toISOString() }).eq('id', data.id);
-  return { id: data.account_id };
+  return { id: data.account_id, tokenId: data.id };
 }
 
 module.exports = async (req, res) => {
@@ -83,7 +102,8 @@ module.exports = async (req, res) => {
       const pairingCode = generatePairingCode();
       const { error } = await supabase.from('companion_pairings').insert({ pairing_code: pairingCode, device_label: deviceLabel });
       if (error) throw error;
-      return res.status(200).json({ pairingCode, approveUrl: `${SITE_ORIGIN}/?companion-pair=${pairingCode}` });
+      // confirmCode is for the Companion to show -- never part of approveUrl.
+      return res.status(200).json({ pairingCode, approveUrl: `${SITE_ORIGIN}/?companion-pair=${pairingCode}`, confirmCode: confirmCodeFor(pairingCode) });
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
@@ -107,7 +127,8 @@ module.exports = async (req, res) => {
   }
 
   // ── APPROVE PAIRING: the website, already logged in normally, approves a
-  // pairing on the user's behalf. Does NOT mint a token -- see checkPairing
+  // pairing on the user's behalf -- only with the code the Companion app is
+  // showing (confirmCodeFor). Does NOT mint a token -- see checkPairing
   // for why the actual mint happens there instead. ──
   if (action === 'approvePairing') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -115,6 +136,12 @@ module.exports = async (req, res) => {
     if (!session) return res.status(401).json({ error: 'Not authenticated' });
     const pairingCode = req.body?.pairingCode;
     if (!pairingCode) return res.status(400).json({ error: 'pairingCode required' });
+    if (!typedConfirmCode(req.body?.confirmCode)) {
+      return res.status(400).json({ error: 'Enter the code shown in RaidLead Companion.' });
+    }
+    if (!confirmCodeMatches(String(pairingCode), req.body.confirmCode)) {
+      return res.status(403).json({ error: "That code doesn't match the one in RaidLead Companion. Check it and try again." });
+    }
     try {
       const { data, error } = await supabase.from('companion_pairings')
         .update({ status: 'approved', account_id: session.id })
@@ -166,9 +193,21 @@ module.exports = async (req, res) => {
   }
 
   // ── Every action below requires a Companion-app bearer token ──
-  if (['getMyTeams', 'uploadLoot', 'getRosterSync'].includes(action)) {
+  if (['getMyTeams', 'uploadLoot', 'getRosterSync', 'revokeSelf'].includes(action)) {
     const companionSession = await getCompanionSession(req, supabase);
     if (!companionSession) return res.status(401).json({ error: 'Not authenticated' });
+
+    // ── REVOKE SELF: the Companion's Log Out -- its token stops working
+    // right away, the same as revoking it under Connected Devices. ──
+    if (action === 'revokeSelf') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      try {
+        const { error } = await supabase.from('companion_tokens')
+          .update({ revoked_at: new Date().toISOString() }).eq('id', companionSession.tokenId);
+        if (error) throw error;
+        return res.status(200).json({ success: true });
+      } catch (err) { return res.status(500).json({ error: err.message }); }
+    }
 
     // ── GET MY TEAMS: powers the Companion app's team picker for a
     // multi-team account -- single-team accounts don't need to ask. ──

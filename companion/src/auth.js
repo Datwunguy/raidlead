@@ -29,8 +29,14 @@ async function startPairing() {
   // main.js opens approveUrl in the browser -- only ever a RaidLead page.
   // Whatever the server says, never another site, a file, or another
   // program's link (shell.openExternal will open any of those).
-  return { pairingCode: data.pairingCode, approveUrl: raidLeadPage(data.approveUrl) };
+  // confirmCode is shown here and typed on that page: the link alone
+  // can't approve this app, so a link someone else sends can't either.
+  if (!/^[A-Z0-9]{6}$/.test(String(data.confirmCode || ''))) throw new Error('Login failed: no login code came back -- please try again.');
+  return { pairingCode: data.pairingCode, approveUrl: raidLeadPage(data.approveUrl), confirmCode: data.confirmCode };
 }
+
+/** "K7Q4MZ" as "K7Q 4MZ", easier to read across and type. */
+const formatConfirmCode = code => `${code.slice(0, 3)} ${code.slice(3)}`;
 
 /**
  * Which team this PC syncs, given the account's teams: the saved one while
@@ -80,17 +86,30 @@ async function pollPairing(pairingCode, onStatus) {
 // DPAPI) rather than plain JSON like the rest of config.js -- this token
 // can act on the user's RaidLead account indefinitely (until revoked), so
 // it gets the same at-rest protection Chrome/Edge already give your saved
-// website passwords, not plaintext-on-disk treatment.
+// website passwords, not plaintext-on-disk treatment. Never stored as plain
+// text: if Windows can't encrypt it, the login isn't saved at all.
 function encryptToken(token) {
-  if (!safeStorage.isEncryptionAvailable()) return token; // fallback: store as-is rather than fail outright
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("Windows couldn't protect your login on this PC, so it wasn't saved. Restart your PC and try logging in again.");
+  }
   return safeStorage.encryptString(token).toString('base64');
 }
 
 function decryptToken(stored) {
-  if (!stored) return null;
-  if (!safeStorage.isEncryptionAvailable()) return stored;
+  if (!stored || !safeStorage.isEncryptionAvailable()) return null;
   try { return safeStorage.decryptString(Buffer.from(stored, 'base64')); }
   catch { return null; } // encrypted under a different OS key (e.g. moved to another PC) -- treat as logged out
+}
+
+// Log Out: this PC's token stops working on RaidLead's side too, not just
+// here. Best-effort -- true if RaidLead confirmed it.
+async function revokeToken(token) {
+  try {
+    const resp = await fetch(`${SITE_ORIGIN}/api/companion?action=revokeSelf`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000),
+    });
+    return resp.ok || resp.status === 401; // 401: already revoked
+  } catch { return false; }
 }
 
 async function getMyTeams(token) {
@@ -102,4 +121,4 @@ async function getMyTeams(token) {
   return data.teams || [];
 }
 
-module.exports = { SITE_ORIGIN, deviceLabel, startPairing, pollPairing, encryptToken, decryptToken, getMyTeams, pickTeam };
+module.exports = { SITE_ORIGIN, deviceLabel, startPairing, formatConfirmCode, pollPairing, encryptToken, decryptToken, revokeToken, getMyTeams, pickTeam };

@@ -37,6 +37,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
   mainWindow.setMenuBarVisibility(false);
@@ -104,8 +105,29 @@ async function refreshTeamChoice() {
   return teams;
 }
 
+// The settings window only ever shows its own page: it can't be navigated
+// anywhere else or open new windows (links that should open, like the
+// update download, go through main.js to the browser instead).
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-navigate', (e) => e.preventDefault());
+  contents.on('will-redirect', (e) => e.preventDefault());
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
+
+// A login an older version saved as plain text (only ever when Windows
+// couldn't encrypt it): signed out on RaidLead and removed, never used.
+async function dropPlaintextLogin() {
+  const stored = currentConfig.authTokenEnc;
+  if (typeof stored !== 'string' || !stored.startsWith('rlc_')) return; // encrypted ones are base64, never "rlc_"
+  currentConfig = { ...currentConfig, authTokenEnc: null, deviceLabel: null };
+  config.save(currentConfig);
+  await auth.revokeToken(stored);
+  sendLog('Your saved login was stored unprotected by an older version, so it was removed -- click Log In again.');
+}
+
 app.whenReady().then(async () => {
   currentConfig = config.load();
+  await dropPlaintextLogin();
   sync = new SyncManager(() => currentConfig, sendLog);
   await ensureWowRoot();
 
@@ -136,29 +158,44 @@ app.on('window-all-closed', () => {
 });
 
 // ── IPC surface for the renderer (see preload.js) ──────────────────────
-ipcMain.handle('raidlead:getConfig', () => currentConfig);
+// Only the settings window can call these, and it only ever gets what it
+// shows: never the saved login itself (publicConfig), and the one setting
+// it can change directly is Start with Windows.
+function handle(channel, fn) {
+  ipcMain.handle(channel, (e, ...args) => {
+    if (!mainWindow || e.sender !== mainWindow.webContents) throw new Error('Not allowed');
+    return fn(...args);
+  });
+}
 
-ipcMain.handle('raidlead:setConfig', (_e, partial) => {
-  currentConfig = { ...currentConfig, ...partial };
+function publicConfig() {
+  const { deviceLabel, teamId, autoStart, wowRoot } = currentConfig;
+  return { loggedIn: !!currentConfig.authTokenEnc, deviceLabel, teamId, autoStart, wowRoot };
+}
+
+handle('raidlead:getConfig', () => publicConfig());
+
+handle('raidlead:setConfig', (partial) => {
+  if (typeof partial?.autoStart !== 'boolean') return publicConfig();
+  currentConfig = { ...currentConfig, autoStart: partial.autoStart };
   config.save(currentConfig);
-  if ('autoStart' in partial) app.setLoginItemSettings({ openAtLogin: currentConfig.autoStart !== false });
-  sync.start(); // re-evaluate watchers/timers against the new config
-  return currentConfig;
+  app.setLoginItemSettings({ openAtLogin: currentConfig.autoStart });
+  return publicConfig();
 });
 
-ipcMain.handle('raidlead:getLog', () => logBuffer);
+handle('raidlead:getLog', () => logBuffer);
 
-ipcMain.handle('raidlead:getWowStatus', () => sync.wowRunning);
+handle('raidlead:getWowStatus', () => sync.wowRunning);
 
-ipcMain.handle('raidlead:getUpdateStatus', () => ({ ...getUpdateStatus(), downloadUrl: DOWNLOAD_URL }));
+handle('raidlead:getUpdateStatus', () => ({ ...getUpdateStatus(), downloadUrl: DOWNLOAD_URL }));
 
-ipcMain.handle('raidlead:openDownloadLink', () => shell.openExternal(DOWNLOAD_URL));
+handle('raidlead:openDownloadLink', () => shell.openExternal(DOWNLOAD_URL));
 
-ipcMain.handle('raidlead:getWowInstall', () => wowInstallInfo());
+handle('raidlead:getWowInstall', () => wowInstallInfo());
 
 // Picking the folder by hand (when it wasn't found, or to use a different
 // install): any folder in or above the install works.
-ipcMain.handle('raidlead:browseWowFolder', async () => {
+handle('raidlead:browseWowFolder', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     title: 'Select your World of Warcraft folder (or any folder inside it)',
     defaultPath: currentConfig.wowRoot || undefined,
@@ -176,32 +213,44 @@ ipcMain.handle('raidlead:browseWowFolder', async () => {
   return wowInstallInfo();
 });
 
-ipcMain.handle('raidlead:syncNow', async () => {
+handle('raidlead:syncNow', async () => {
   sync.syncNow();
 });
 
 // ── LOGIN: device-pairing handshake (see auth.js) -- opens the system
-// browser to the website's approve screen and polls until this app
-// receives its own access token, then resolves which team to sync (only
-// asks if the account belongs to more than one). Returns { success: true }
-// or { error }, never throws across the IPC boundary. ──
-ipcMain.handle('raidlead:login', async () => {
+// browser to the website's approve screen, shows the code to enter there,
+// and polls until this app receives its own access token, then resolves
+// which team to sync (only asks if the account belongs to more than one).
+// Returns { success: true } or { error }, never throws across the IPC
+// boundary. ──
+function showLoginCode(code) {
+  if (mainWindow) mainWindow.webContents.send('raidlead:loginCode', code);
+}
+
+handle('raidlead:login', async () => {
   try {
-    const { pairingCode, approveUrl } = await auth.startPairing();
+    const { pairingCode, approveUrl, confirmCode } = await auth.startPairing();
+    const code = auth.formatConfirmCode(confirmCode);
+    showLoginCode(code);
     shell.openExternal(approveUrl);
-    sendLog('Waiting for approval in your browser...');
+    sendLog(`Your login code is ${code} -- enter it on the RaidLead page that just opened in your browser.`);
     const token = await auth.pollPairing(pairingCode, (status) => {
-      if (status === 'pending') sendLog('Waiting for you to approve this in your browser...');
+      if (status === 'pending') sendLog(`Waiting for you to enter ${code} and approve this in your browser...`);
     });
 
     const teams = await auth.getMyTeams(token);
     if (teams.length === 0) {
+      await auth.revokeToken(token);
       return { error: 'Logged in, but this account has no RaidLead team yet -- join or create one on the website first.' };
     }
 
+    let authTokenEnc;
+    try { authTokenEnc = auth.encryptToken(token); }
+    catch (err) { await auth.revokeToken(token); throw err; } // not saved, so not left working either
+
     currentConfig = {
       ...currentConfig,
-      authTokenEnc: auth.encryptToken(token),
+      authTokenEnc,
       deviceLabel: auth.deviceLabel(),
       teamId: auth.pickTeam(teams, currentConfig.teamId),
     };
@@ -212,22 +261,29 @@ ipcMain.handle('raidlead:login', async () => {
     return { success: true, teams: teams.length > 1 ? teams : null };
   } catch (err) {
     return { error: err.message };
+  } finally {
+    showLoginCode(null);
   }
 });
 
-ipcMain.handle('raidlead:logout', () => {
+// Logs out here and on RaidLead: this PC's token stops working right away,
+// the same as removing it under Connected Devices on the website.
+handle('raidlead:logout', async () => {
+  const token = auth.decryptToken(currentConfig.authTokenEnc);
   currentConfig = { ...currentConfig, authTokenEnc: null, deviceLabel: null, teamId: null };
   config.save(currentConfig);
   sync.stop();
-  sendLog('Logged out.');
-  return currentConfig;
+  const signedOut = !token || await auth.revokeToken(token);
+  sendLog(signedOut ? 'Logged out.'
+    : 'Logged out on this PC, but RaidLead couldn\'t be reached to sign it out there -- remove it under My Profile > Connected Devices on the website.');
+  return publicConfig();
 });
 
 // For the multi-team picker -- only ever asked for right after login, when
 // raidlead:login's own response already includes the team list, but exposed
 // separately too in case Settings needs to re-show the picker later (e.g.
 // the account was added to a second team since logging in).
-ipcMain.handle('raidlead:getMyTeams', async () => {
+handle('raidlead:getMyTeams', async () => {
   if (!auth.decryptToken(currentConfig.authTokenEnc)) return { error: 'Not logged in' };
   try {
     // Settles the team too (only team chosen, a left team cleared) --
@@ -240,9 +296,10 @@ ipcMain.handle('raidlead:getMyTeams', async () => {
   }
 });
 
-ipcMain.handle('raidlead:setTeam', (_e, teamId) => {
+handle('raidlead:setTeam', (teamId) => {
+  if (typeof teamId !== 'string' || !/^[\w-]{1,64}$/.test(teamId)) return publicConfig();
   currentConfig = { ...currentConfig, teamId };
   config.save(currentConfig);
   sync.start();
-  return currentConfig;
+  return publicConfig();
 });

@@ -81,7 +81,10 @@ function luaSerialize(value, indentLevel = 1) {
 
   if (value === null || value === undefined) return 'nil';
   if (typeof value === 'string') return `"${luaEscapeString(value)}"`;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // Infinity/NaN have no Lua spelling ("-Infinity" would make WoW reject the
+  // whole file), so they're written as nil.
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'nil';
+  if (typeof value === 'boolean') return String(value);
 
   if (Array.isArray(value)) {
     if (value.length === 0) return '{}';

@@ -20,9 +20,13 @@
 ; confirmed the hard way, this shipped once already and still hit
 ; electron-builder's own "cannot be closed" fallback dialog because the
 ; kill attempt never actually ran.
+;
+; taskkill by its full path in Windows' system folder: a bare "taskkill"
+; could run a same-named program sitting next to the installer (e.g. in
+; Downloads) instead of Windows' own.
 ; ============================================================
 !macro customInit
   InitPluginsDir
-  nsExec::Exec 'taskkill /f /im "${APP_EXECUTABLE_FILENAME}"'
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /f /im "${APP_EXECUTABLE_FILENAME}"'
   Sleep 500
 !macroend

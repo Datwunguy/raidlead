@@ -23,10 +23,15 @@ the server side of the login handshake.
 Click **Log In** in Settings. This opens your default browser to a RaidLead
 page asking you to approve the request (you'll go through your normal
 Battle.net login there first if you aren't already signed in on the
-website). Once approved, this app receives its own long-lived access token
-automatically -- no code to type, no folder to pick. That token is encrypted
-at rest via Electron's `safeStorage` (OS-backed, e.g. Windows DPAPI), the
-same protection your browser gives saved website passwords.
+website), and Settings shows a six-character code to type on that page.
+The link alone can't approve anything, so a login link someone else sends
+you can't connect their Companion to your account. Once approved, this app
+receives its own long-lived access token automatically -- no folder to
+pick. That token is encrypted at rest via Electron's `safeStorage`
+(OS-backed, e.g. Windows DPAPI), the same protection your browser gives
+saved website passwords; if Windows can't encrypt it, the login isn't
+saved at all rather than stored as plain text. **Log Out** signs this PC out
+on RaidLead too, the same as removing it under Connected Devices.
 
 If your account belongs to more than one RaidLead team, a picker appears
 after login so you can choose which one to sync -- most accounts only have
