@@ -1,7 +1,7 @@
 // ============================================================
 //  members.js — handles member/attendance actions, all team-scoped
 //  Actions: get, updateRole, updateDisplayName, setMemberDiscordId,
-//           generateDiscordLinkCode, claimCharacter, unclaimCharacter,
+//           generateDiscordLinkCode, assignCharacter, unclaimCharacter,
 //           removeMember, diagKey, getAttendance, markAttendance,
 //           addRaidNight, removeRaidNight
 // ============================================================
@@ -164,62 +164,47 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 
-  // ── CLAIM CHARACTER ──
-  if (action === 'claimCharacter') {
+  // ── ASSIGN CHARACTER: an officer connects a roster character to a member
+  // by hand, for when Battle.net can't (a version Blizzard's API doesn't
+  // cover, an outage, a member who declined the permission). Nobody claims
+  // characters for themselves: theirs connect from Battle.net
+  // (lib/characterClaims.js), which also takes a character back from a wrong
+  // assignment when its real owner signs in. ──
+  if (action === 'assignCharacter') {
     const { characterName, teamId, targetAccountId } = req.body;
-    if (!characterName || !teamId) return res.status(400).json({ error: 'characterName and teamId required' });
+    if (!characterName || !teamId || !targetAccountId) return res.status(400).json({ error: 'characterName, teamId and targetAccountId required' });
 
     try {
-      const myRole = await assertTeamMembership(supabase, session.id, teamId);
-      // Viewers are read-only -- their characters connect from Battle.net, or an officer adds them.
-      if (myRole === 'viewer') return res.status(403).json({ error: "Viewers can't claim characters -- ask an officer to make you a Member." });
-      const isOfficer = isOfficerRole(myRole);
+      await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
+      const { data: target } = await supabase
+        .from('team_members').select('account_id').eq('team_id', teamId).eq('account_id', targetAccountId).maybeSingle();
+      if (!target) return res.status(400).json({ error: 'That account is not a member of this team' });
 
-      // Officers can claim on behalf of another account; regular members can only claim for themselves
-      const accountId = (isOfficer && targetAccountId) ? targetAccountId : session.id;
-      if (accountId !== session.id) {
-        const { data: target } = await supabase
-          .from('team_members').select('account_id').eq('team_id', teamId).eq('account_id', accountId).maybeSingle();
-        if (!target) return res.status(400).json({ error: 'That account is not a member of this team' });
-      }
-
-      // A member can't take a character someone else holds -- that's an
-      // officer's call (or Battle.net's: the real owner's sign-in moves it).
-      if (!isOfficer) {
-        const { data: current } = await supabase
-          .from('characters').select('account_id').eq('team_id', teamId).eq('name', characterName).maybeSingle();
-        if (current?.account_id && current.account_id !== accountId) {
-          return res.status(409).json({ error: 'Another member already has that character. Ask an officer if that looks wrong.' });
-        }
-      }
-
-      // Claims made by hand aren't verified by Blizzard (see lib/characterClaims.js).
-      const { data: updated, error: claimErr } = await supabase
+      // Assigned by hand, so not verified by Blizzard.
+      const { data: updated, error: assignErr } = await supabase
         .from('characters')
-        .update({ account_id: accountId, claim_verified: false })
+        .update({ account_id: targetAccountId, claim_verified: false })
         .eq('name', characterName)
         .eq('team_id', teamId)
         .eq('active', true)
         .select('name');
-      if (claimErr) throw new Error(claimErr.message);
+      if (assignErr) throw new Error(assignErr.message);
 
-      // Only characters already on the roster can be claimed -- adding to the
-      // roster is an officer action (api/roster.js addCharacter). This used to
-      // create the row, which let any member, Viewers included, add characters.
+      // Only characters already on the roster -- adding one is api/roster.js addCharacter.
       if (!updated || updated.length === 0) {
         return res.status(404).json({ error: "That character isn't on this team's roster" });
       }
 
-      return res.status(200).json({ success: true, characterName, accountId });
+      return res.status(200).json({ success: true, characterName, accountId: targetAccountId });
     } catch (err) {
-      console.error('[claimCharacter] error:', err.message, { characterName, teamId });
+      console.error('[assignCharacter] error:', err.message, { characterName, teamId });
       return res.status(err.status || 500).json({ error: err.message });
     }
   }
 
-  // ── UNCLAIM CHARACTER: release a character claim -- self-service for your
-  // own characters (so claiming a Main and Alt(s) doesn't lock you into
-  // never being able to undo one), officers can release anyone's. ──
+  // ── UNCLAIM CHARACTER: disconnect a character -- your own (the page offers
+  // it for ones assigned by hand), or anyone's for officers. One Battle.net
+  // says is yours connects again at your next sync. ──
   if (action === 'unclaimCharacter') {
     const { characterName, teamId } = req.body;
     if (!characterName || !teamId) return res.status(400).json({ error: 'characterName and teamId required' });

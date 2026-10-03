@@ -192,10 +192,10 @@ async function handleAttendanceCommand(supabase, interaction) {
       if (char) matches.push({ team: t, character: char });
     }
     if (matches.length === 0) {
-      return ephemeral("You haven't claimed a character on RaidLead yet -- do that first in the app, or use `character:YourCharacterName` with this command.");
+      return ephemeral("You don't have a character connected on RaidLead yet -- sign in to RaidLead to connect yours from Battle.net, or use `character:YourCharacterName` with this command.");
     }
     if (matches.length > 1) {
-      return ephemeral(`You have a claimed character on more than one team here (${matches.map(m => m.team.name).join(', ')}) -- add \`team:\` to say which one you mean.`);
+      return ephemeral(`You have a connected character on more than one team here (${matches.map(m => m.team.name).join(', ')}) -- add \`team:\` to say which one you mean.`);
     }
     teamRow = matches[0].team;
     character = matches[0].character;

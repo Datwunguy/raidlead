@@ -1481,7 +1481,7 @@ function renderAttendanceCalendar() {
       ? `<div class="attendance-day-remove" title="Remove this raid night" onclick="event.stopPropagation(); removeRaidNightFromCalendar('${dateStr}')">&times;</div>`
       : '';
 
-    cells += `<div class="${classes}" ${clickAttr} title="${raidDay && !myChar ? 'Claim a character to mark attendance' : ''}">
+    cells += `<div class="${classes}" ${clickAttr} title="${raidDay && !myChar ? 'No character connected yet -- use Sync from Battle.net in your profile' : ''}">
       ${removeBtn}
       <div class="attendance-day-num">${day}</div>
       ${tag ? `<div class="attendance-day-tag">${tag}</div>` : ''}
@@ -5965,7 +5965,7 @@ function showMembersModal() {
   const title = document.getElementById('members-modal-title');
   const subtitle = document.getElementById('members-modal-subtitle');
   if (title) title.textContent = isOfficer ? 'Guild Members' : 'My Profile';
-  if (subtitle) subtitle.textContent = isOfficer ? 'Manage roles and character claims' : 'Manage your display name and character claim';
+  if (subtitle) subtitle.textContent = isOfficer ? 'Manage roles and characters' : 'Manage your display name and characters';
 
   // Show/hide officer section based on role
   const officerSection = document.getElementById('officer-members-section');
@@ -6004,10 +6004,9 @@ function showMembersModal() {
   });
 }
 
-// Shows every character this account has claimed on the team (a Main and
-// any Alt(s)) with a release button each, plus a persistent "claim another"
-// button -- claiming is additive (see api/members.js's claimCharacter),
-// not a single replaceable slot.
+// Shows every character connected to this account on the team (a Main and
+// any Alt(s)). They come from Battle.net, or an officer assigns one; there's
+// no claiming them yourself. One assigned by hand can be released.
 // A person's characters: Main first, then Alt(s) by name.
 function mainsFirst(chars) {
   const isMain = c => (c.rank || 'Main') === 'Main';
@@ -6023,7 +6022,7 @@ function renderMemberClaimSection(members) {
   const chars = mainsFirst(Array.isArray(me?.characters) ? me.characters : (me?.characters ? [me.characters] : []));
 
   if (chars.length === 0) {
-    claimedEl.textContent = 'No character connected yet. Your characters connect automatically once they\'re on the roster (Sync from Battle.net if one is missing), or claim one below.';
+    claimedEl.textContent = 'No character connected yet. Your characters connect automatically from your Battle.net account once they\'re on the roster. If one is missing, Sync from Battle.net, or ask an officer to assign it.';
   } else {
     claimedEl.innerHTML = chars.map(c => {
       const color = CLASS_COLORS[c.class] || '#888';
@@ -6032,18 +6031,17 @@ function renderMemberClaimSection(members) {
         <span style="color:${color}; font-weight:700; font-size:16px;">${escapeHtml(c.name)}</span>
         <span style="color:var(--text-mute); font-size:12px;">${escapeHtml(c.class)} · ${escapeHtml(c.primary_role)}</span>
         ${rankBadge}
-        ${c.claim_verified ? '<span class="bnet-verified" title="Confirmed by your Battle.net account">✓ Battle.net</span>' : ''}
-        <button onclick="releaseCharacterClaim(${jsAttr(c.name)})" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>
+        ${c.claim_verified ? '<span class="bnet-verified" title="Confirmed by your Battle.net account">✓ Battle.net</span>'
+          : `<button onclick="releaseCharacterClaim(${jsAttr(c.name)})" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>`}
       </div>`;
     }).join('');
   }
 
-  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" onclick="syncFromBattleNet()">↻ Sync from Battle.net</button>
-    ${STATE.myRole === 'viewer' ? '' : `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter(${jsAttr(AUTH.session?.id)})">+ Claim ${chars.length ? 'Another ' : 'a '}Character</button>`}`;
+  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" onclick="syncFromBattleNet()">↻ Sync from Battle.net</button>`;
 }
 
 async function releaseCharacterClaim(characterName) {
-  if (!confirm(`Release ${characterName}? You can claim it again later if needed.`)) return;
+  if (!confirm(`Release ${characterName}? An officer can assign it to you again if needed.`)) return;
   try {
     const resp = await fetch('/api/members?action=unclaimCharacter', {
       method: 'POST',
@@ -6149,16 +6147,16 @@ function renderMembersListFromDB(members) {
         <div style="font-size:12px; color:var(--text-mute); margin-top:2px;">
           ${charNames.length
             ? `<span style="color:var(--text-dim);">Character${charNames.length > 1 ? 's' : ''}: <strong>${charLabels.join(', ')}</strong></span>`
-            : `<span style="color:#ff6b6b;">No character claimed</span>`
+            : `<span style="color:#ff6b6b;">No character connected</span>`
           }
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
-        ${isSelf ? `<button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;">+ Claim ${charNames.length ? 'Another' : 'Character'}</button>` : ''}
+        ${isSelf ? `<button onclick="showAssignCharacter(${jsAttr(accountId)})" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to yourself">+ Assign</button>` : ''}
         ${isOfficer && !isSelf ? `
           <div style="display:flex; align-items:center; gap:6px;">
             <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — click to change' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
-            <button onclick="showClaimCharacter('${accountId}')" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
+            <button onclick="showAssignCharacter(${jsAttr(accountId)})" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
             ${m.role === 'owner'
               ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Hand the team to someone else from Team Management > Roles">Owner</span>`
               : `<select onchange="updateRoleFromDB('${accountId}', this.value)"
@@ -6186,7 +6184,7 @@ function renderUnclaimedListFromDB(members) {
   const unclaimed = STATE.players.filter(p => !claimedChars.includes(p.name.toLowerCase()));
 
   if (unclaimed.length === 0) {
-    el.innerHTML = '<div style="color:var(--text-mute); font-size:13px;">All characters have been claimed!</div>';
+    el.innerHTML = '<div style="color:var(--text-mute); font-size:13px;">Every roster character is connected to a member.</div>';
     return;
   }
 
@@ -6241,35 +6239,36 @@ async function promptSetMemberDiscordId(accountId, currentDiscordId) {
   }
 }
 
-let claimingAccountId = null;
+// Officers only: connect a roster character to a member by hand (members'
+// own characters connect from Battle.net -- see api/members.js assignCharacter).
+let assigningAccountId = null;
 
-function showClaimCharacter(accountId) {
-  claimingAccountId = accountId;
-  // Show a mini picker of unclaimed characters
-  const claimedChars = CURRENT_MEMBERS
+function showAssignCharacter(accountId) {
+  assigningAccountId = accountId;
+  // A mini picker of characters not connected to anyone
+  const taken = CURRENT_MEMBERS
     .flatMap(m => Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []))
     .map(c => c.name?.toLowerCase())
     .filter(Boolean);
-  const available = STATE.players.filter(p => !claimedChars.includes(p.name.toLowerCase()));
+  const available = STATE.players.filter(p => !taken.includes(p.name.toLowerCase()));
+  const member = CURRENT_MEMBERS.find(m => m.account_id === accountId);
+  const who = accountId === AUTH.session?.id ? 'yourself' : (member ? memberDisplayName(member) : 'this member');
 
   const options = available.map(p => {
     const color = CLASS_COLORS[p.class] || '#888';
-    return `<div onclick="claimCharacter(${jsAttr(p.name)})" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
+    return `<div onclick="assignCharacter(${jsAttr(p.name)})" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
       <div style="width:10px; height:10px; border-radius:50%; background:${color};"></div>
       <span style="color:${color}; font-weight:700; font-size:14px;">${escapeHtml(p.name)}</span>
       <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${escapeHtml(p.class)} · ${escapeHtml(p.serverDisplay || p.server)}</span>
     </div>`;
-  }).join('');
+  }).join('') || '<div style="color:var(--text-mute); font-size:13px;">Every roster character is already connected to someone.</div>';
 
-  // Insert claim picker right after the (always-visible, even for non-officers)
-  // claim section -- NOT anchored to #members-list, which lives inside
-  // officer-members-section and is display:none for regular members, so a
-  // self-claim picker anchored there would render invisibly for them.
+  // Inserted right after the "Your Character" section, near the top of the modal.
   document.getElementById('claim-picker')?.remove();
   const el = document.getElementById('member-claim-section');
   el.insertAdjacentHTML('afterend', `
     <div id="claim-picker" style="background:var(--bg3); border:1px solid var(--gold-dim); border-radius:6px; padding:16px; margin-bottom:16px;">
-      <div style="font-size:13px; font-weight:700; color:var(--gold); margin-bottom:12px;">Select your character:</div>
+      <div style="font-size:13px; font-weight:700; color:var(--gold); margin-bottom:12px;">Assign a character to ${escapeHtml(who)}:</div>
       <div style="max-height:300px; overflow-y:auto;">${options}</div>
       <button onclick="document.getElementById('claim-picker').remove()" class="btn-secondary" style="margin-top:8px; width:100%;">Cancel</button>
     </div>
@@ -6284,31 +6283,25 @@ function showClaimCharacter(accountId) {
   }
 }
 
-async function claimCharacter(characterName) {
+async function assignCharacter(characterName) {
   try {
-    const player = STATE.players.find(p => p.name === characterName);
-    const resp = await fetch('/api/members?action=claimCharacter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-      characterName, teamId: STATE.teamId, targetAccountId: claimingAccountId,
-      characterClass: player?.class, characterServer: player?.server, characterRole: player?.role,
+    const resp = await fetch('/api/members?action=assignCharacter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      characterName, teamId: STATE.teamId, targetAccountId: assigningAccountId,
     }) });
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Claim failed');
+    if (!resp.ok) throw new Error(data.error || 'Could not assign that character');
     document.getElementById('claim-picker')?.remove();
-    showToast('Character claimed: ' + characterName, 'success');
-    // Refresh members list
+    showToast(`${characterName} assigned`, 'success');
     fetchMembersFromDB().then(data => {
       const members = data?.members || [];
       CURRENT_MEMBERS = members;
       renderMemberClaimSection(members);
-      if (['owner','officer'].includes(STATE.myRole)) {
-        renderMembersListFromDB(members);
-        renderUnclaimedListFromDB(members);
-      }
+      renderMembersListFromDB(members);
+      renderUnclaimedListFromDB(members);
     });
-    // Only my own claim (not an officer assigning someone else's) changes
-    // what's mine to act as -- refresh STATE so attendance/the claim gate
-    // reflect a first-ever claim without needing a full page reload.
-    if (!claimingAccountId || claimingAccountId === AUTH.session?.id) {
+    // Assigned to myself: what's mine to act as changed -- refresh STATE so
+    // attendance reflects it without a full page reload.
+    if (assigningAccountId === AUTH.session?.id) {
       const guildData = await fetchGuildFromDB(STATE.teamId);
       if (guildData) {
         STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
@@ -9017,7 +9010,7 @@ function renderSeasonTab() {
       </div>
       <div class="season-chips">${tracker.waitingClaimed.map(surveyChip).join('')}</div>
       ${tracker.waitingUnclaimed.length ? `
-        <div class="recruit-sub" style="margin-top:10px;">Can't answer yet -- nobody has claimed these characters in RaidLead:</div>
+        <div class="recruit-sub" style="margin-top:10px;">Can't answer yet -- these characters aren't connected to anyone in RaidLead:</div>
         <div class="season-chips muted">${tracker.waitingUnclaimed.map(surveyChip).join('')}</div>` : ''}
     </div>` : (tracker.mains.length ? `<div class="season-section"><div class="season-all-in">Everyone on the roster has answered.</div></div>` : '');
 
@@ -9261,7 +9254,7 @@ function renderSurveyEditor() {
 
   const fixedHtml = [
     card('Character', lockedTag, field('Question', input('se-fx-character', f.character.prompt, 300), ' full')
-      + `<div class="survey-editor-note">Raiders pick one of the characters they've claimed.</div>`),
+      + `<div class="survey-editor-note">Raiders pick one of their connected characters.</div>`),
     card('Coming back?', lockedTag, field('Question', input('se-fx-returning', f.returning.prompt, 300), ' full') + `
       <div class="survey-editor-row three">
         ${[['returning', 'Returning answer'], ['unsure', 'Not-sure answer'], ['not_returning', 'Not-returning answer']]
@@ -9909,7 +9902,7 @@ function restoreShowOrderJoined() {
 const ROLE_INFO = [
   ['owner',   'Owner',   'Everything an officer can do, plus handing the team to someone else.'],
   ['officer', 'Officer', 'Runs the team: edits the roster, plans and publishes Raid Night, refreshes WCL scores, invites people, and uses Team Management.'],
-  ['member',  'Member',  'A raider: claims their character, marks their own attendance, and answers the season survey.'],
+  ['member',  'Member',  'A raider: has their characters connected, marks their own attendance, and answers the season survey.'],
   ['viewer',  'Viewer',  'Read-only, without a character of their own.'],
 ];
 const ROLE_LABELS = Object.fromEntries(ROLE_INFO.map(([k, l]) => [k, l]));
@@ -9954,7 +9947,7 @@ function renderRolesTab() {
     const chars = mainsFirst(Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []));
     const charHtml = chars.length
       ? chars.map(c => `<span style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>${c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : ''}${(c.rank || 'Main') !== 'Main' ? '<span class="recruit-sub"> (alt)</span>' : ''}`).join(', ')
-      : '<span class="roles-none">No character claimed</span>';
+      : '<span class="roles-none">No character connected</span>';
     const id = jsAttr(m.account_id);
     let control;
     if (m.role === 'owner' || isSelf) {
@@ -10024,7 +10017,7 @@ function changeMemberRole(accountId, role) {
 
 function removeTeamMember(accountId) {
   const m = (ROLES.members || []).find(x => x.account_id === accountId);
-  if (!m || !confirm(`Remove ${memberDisplayName(m)} from the team? Their claimed characters are released. They can rejoin with an invite link.`)) return;
+  if (!m || !confirm(`Remove ${memberDisplayName(m)} from the team? Their characters are disconnected. They can rejoin with an invite link.`)) return;
   return rolesAction(async () => {
     const resp = await fetch('/api/members?action=removeMember', {
       method: 'POST',

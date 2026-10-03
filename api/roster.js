@@ -1226,8 +1226,8 @@ module.exports = async (req, res) => {
   // ── REMOVE CHARACTER (officer only): soft delete -- loot_drops references
   // characters(id) with no ON DELETE clause, so a hard delete would fail for
   // anyone with loot history; this also keeps past raid plans/attendance
-  // intact and lets a mistaken removal be undone. Clears account_id so that
-  // account is free to claim a different character, same as removeMember. ──
+  // intact and lets a mistaken removal be undone. Clears account_id so the
+  // character isn't left connected to anyone, same as removeMember. ──
   if (action === 'removeCharacter') {
     const { teamId, characterId } = req.body;
     if (!teamId || !characterId) return res.status(400).json({ error: 'teamId and characterId required' });
