@@ -1825,6 +1825,7 @@ function showTab(name) {
   }
 
   if (name === 'team') {
+    openTeamSubTab('recruits'); // always opens on Recruits
     loadTeamTab();
   }
 
@@ -6553,11 +6554,16 @@ async function switchActiveTeam(teamId) {
   STATE.plannerDate = null;
   STATE.attendanceLoaded = false; STATE.attendanceExtraDays = []; STATE.attendanceMarks = [];
   ROLES.members = null; JOIN.list = null; JOIN.entries = []; SURVEY.results = null; SURVEY.surveys = []; SURVEY.selectedId = null;
+  Object.assign(TEAM_MGMT, { recruits: [], templates: [], applications: null, applicantLookups: {}, specEditing: false, specDrafts: {} });
+  TEAM_MGMT.selectedApplicants.clear();
+  const pendingCount = document.getElementById('applicant-pending-count');
+  if (pendingCount) pendingCount.textContent = '';
   showDashboard(guildData);
   updateRosterTitle();
   renderScoresTable('all');
   loadCachedScores();
   checkAndAdvanceSeason();
+  showTab('roster'); // a different team: start from its roster
 }
 
 // The guild badge in the header doubles as the team switcher when the
@@ -6903,8 +6909,10 @@ async function loadTeamTab() {
   if (TEAM_MGMT.recruits.length === 0) {
     listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading recruits...</div></div>';
   }
+  const teamId = STATE.teamId;
   try {
     const [r, t] = await Promise.all([recruitingApi('listRecruits'), recruitingApi('listTemplates')]);
+    if (teamId !== STATE.teamId) return; // switched teams while this loaded
     TEAM_MGMT.recruits  = r.recruits  || [];
     TEAM_MGMT.templates = t.templates || [];
   } catch (e) {
@@ -6964,6 +6972,12 @@ function setTeamSubTab(name, btn) {
   if (name === 'season') return loadSeasonTab();
   if (name === 'join') return loadJoinOrderTab();
   if (name === 'roles') return loadRolesTab();
+}
+
+// Team Management's sub-tab by name (recruits, applicants, season, join, roles).
+function openTeamSubTab(name) {
+  const btn = [...document.querySelectorAll('#team-subtab-filter .filter-btn')].find(b => (b.getAttribute('onclick') || '').includes(`'${name}'`));
+  return btn ? setTeamSubTab(name, btn) : undefined;
 }
 
 function setRecruitView(view, btn) {
@@ -7735,13 +7749,17 @@ async function loadApplications(force) {
   if (!TEAM_MGMT.applications && listEl) {
     listEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading applications...</div></div>';
   }
+  const teamId = STATE.teamId;
+  let applications;
   try {
-    TEAM_MGMT.applications = await recruitingApi('listApplications', { force: !!force });
+    applications = await recruitingApi('listApplications', { force: !!force });
   } catch (e) {
-    TEAM_MGMT.applications = { serverReady: true, configured: true, error: e.message, applications: [] };
+    applications = { serverReady: true, configured: true, error: e.message, applications: [] };
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh'; }
   }
+  if (teamId !== STATE.teamId) return; // switched teams while this loaded
+  TEAM_MGMT.applications = applications;
   renderApplicants();
 }
 
@@ -8628,8 +8646,7 @@ function dismissSeasonPrompt() {
 // Team Management > Next Season, with the survey editor open.
 async function startSurveyFromPrompt() {
   showTab('team');
-  const btn = [...document.querySelectorAll('#team-subtab-filter .filter-btn')].find(b => (b.getAttribute('onclick') || '').includes("'season'"));
-  if (btn) await setTeamSubTab('season', btn);
+  await openTeamSubTab('season');
   if (SURVEY.surveys.some(x => !x.closed_at)) return; // one's already open -- the tab shows it
   openSurveyEditor('new');
 }
@@ -8830,11 +8847,15 @@ async function loadSeasonTab() {
   if (!SURVEY.results && !SURVEY.surveys.length) {
     panel.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading surveys...</div></div>';
   }
+  const teamId = STATE.teamId;
   try {
     const { surveys } = await recruitingApi('listSurveys');
+    if (teamId !== STATE.teamId) return; // switched teams while this loaded
     SURVEY.surveys = surveys || [];
     if (!SURVEY.surveys.some(s => s.id === SURVEY.selectedId)) SURVEY.selectedId = SURVEY.surveys[0]?.id || null;
-    SURVEY.results = SURVEY.selectedId ? await recruitingApi('getSurveyResults', { surveyId: SURVEY.selectedId }) : null;
+    const results = SURVEY.selectedId ? await recruitingApi('getSurveyResults', { surveyId: SURVEY.selectedId }) : null;
+    if (teamId !== STATE.teamId) return;
+    SURVEY.results = results;
   } catch (e) {
     panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠</div><h3>Couldn't load surveys</h3><p>${escapeHtml(e.message)}</p></div>`;
     return;
@@ -10000,8 +10021,7 @@ function transferTeamOwnership(accountId) {
 
 function openRolesTab() {
   showTab('team');
-  const btn = [...document.querySelectorAll('#team-subtab-filter .filter-btn')].find(b => (b.getAttribute('onclick') || '').includes("'roles'"));
-  if (btn) setTeamSubTab('roles', btn);
+  openTeamSubTab('roles');
 }
 
 // ── Owner nudge: a new team's owner, once there's a roster, is asked to
