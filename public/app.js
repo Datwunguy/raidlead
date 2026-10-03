@@ -1830,6 +1830,7 @@ function showTab(name) {
   }
 
   if (name === 'loot') {
+    openLootSubTab('tier'); // always opens on Tier Tokens
     loadLootTab();
   }
 
@@ -2546,6 +2547,15 @@ async function revokeConnectedDevice(tokenId) {
 // ─────────────────────────────────────────────
 async function loadLootTab() {
   if (!STATE.teamId) return;
+  const teamId = STATE.teamId;
+  // Another team's loot is still drawn: clear it while this team's loads.
+  if (STATE.lootLoadedFor !== teamId) {
+    const loading = '<div class="loading-overlay"><div class="spinner"></div><div class="loading-text">Loading loot...</div></div>';
+    ['loot-tier-roster', 'loot-tier-tracker', 'loot-runs', 'loot-boe-runs'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = id === 'loot-tier-roster' ? loading : '';
+    });
+  }
   try {
     const explainer = document.getElementById('wow-sync-explainer');
     const arrow = document.getElementById('wow-sync-toggle-arrow');
@@ -2572,6 +2582,7 @@ async function loadLootTab() {
         body: JSON.stringify({ teamId: STATE.teamId, names: rosterNames }),
       }).then(r => r.json()),
     ]);
+    if (teamId !== STATE.teamId) return; // switched teams while this loaded
     if (lootData.error) throw new Error(lootData.error);
     // Surface these two explicitly rather than silently defaulting to an
     // empty checklist/roster -- that would look exactly like "the checklist
@@ -2580,6 +2591,7 @@ async function loadLootTab() {
     if (checksData.error) throw new Error('Tier checklist: ' + checksData.error);
     if (idsData.error) throw new Error('Roster: ' + idsData.error);
     STATE.lootDrops = lootData.drops || [];
+    STATE.lootLoadedFor = teamId;
     STATE.tierCheckedIds = new Set(checksData.checkedCharacterIds || []);
     STATE.teamRosterChars = (STATE.players || [])
       .map(p => ({ id: idsData.ids?.[p.name], name: p.name, class: p.class }))
@@ -2603,6 +2615,12 @@ function setLootSubTab(name, btn) {
     const el = document.getElementById('loot-subtab-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
+}
+
+// The Loot tab's sub-tab by name (tier, boe, history).
+function openLootSubTab(name) {
+  const btn = [...document.querySelectorAll('#loot-subtab-filter .filter-btn')].find(b => (b.getAttribute('onclick') || '').includes(`'${name}'`));
+  if (btn) setLootSubTab(name, btn);
 }
 
 function renderTierTracker(drops) {
