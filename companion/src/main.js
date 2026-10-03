@@ -115,19 +115,20 @@ app.on('web-contents-created', (_e, contents) => {
 });
 
 // A login an older version saved as plain text (only ever when Windows
-// couldn't encrypt it): signed out on RaidLead and removed, never used.
-async function dropPlaintextLogin() {
+// couldn't encrypt it): removed and never used, and signed out on RaidLead
+// in the background -- an offline start never waits on that.
+function dropPlaintextLogin() {
   const stored = currentConfig.authTokenEnc;
   if (typeof stored !== 'string' || !stored.startsWith('rlc_')) return; // encrypted ones are base64, never "rlc_"
   currentConfig = { ...currentConfig, authTokenEnc: null, deviceLabel: null };
   config.save(currentConfig);
-  await auth.revokeToken(stored);
   sendLog('Your saved login was stored unprotected by an older version, so it was removed -- click Log In again.');
+  auth.revokeToken(stored); // best-effort, not awaited
 }
 
 app.whenReady().then(async () => {
   currentConfig = config.load();
-  await dropPlaintextLogin();
+  dropPlaintextLogin();
   sync = new SyncManager(() => currentConfig, sendLog);
   await ensureWowRoot();
 

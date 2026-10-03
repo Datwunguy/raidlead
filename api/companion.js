@@ -33,6 +33,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership, getMyTeams } = require('../lib/teamAuth');
 const { importLootRecords } = require('../lib/lootImport');
+const { codeFromBytes } = require('../lib/codes');
 
 const SITE_ORIGIN = 'https://raidlead.vercel.app';
 const PAIRING_TTL_MS = 10 * 60 * 1000;
@@ -55,11 +56,9 @@ function generatePairingCode() {
 // this, so a link someone sends you isn't enough to connect their Companion
 // to your account -- you'd also need the code from the app on your own
 // screen. Derived from the pairing code with the server's secret, so there's
-// nothing extra to store. Six characters, none that look alike.
-const CONFIRM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+// nothing extra to store. Same no-look-alikes style as join codes.
 function confirmCodeFor(pairingCode) {
-  const mac = crypto.createHmac('sha256', process.env.SESSION_SECRET).update('companion-confirm:' + pairingCode).digest();
-  return Array.from(mac.subarray(0, 6), b => CONFIRM_ALPHABET[b % CONFIRM_ALPHABET.length]).join('');
+  return codeFromBytes(crypto.createHmac('sha256', process.env.SESSION_SECRET).update('companion-confirm:' + pairingCode).digest());
 }
 // As typed: any case, spaces or dashes ("k7q-4mz").
 const typedConfirmCode = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);

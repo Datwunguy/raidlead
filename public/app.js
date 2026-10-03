@@ -2494,9 +2494,13 @@ async function respondToCompanionPair(approve) {
   const pairingCode = modal.dataset.pairingCode;
   if (!approve || !pairingCode) { closeCompanionPairModal(); return; }
 
+  // One approval at a time: Enter in the code box gets here too, not just the
+  // (disabled while waiting) button -- a second one would come back "already
+  // used" and turn a successful login into an error.
+  const btn = document.getElementById('companion-pair-approve');
+  if (btn.disabled) return;
   const confirmCode = document.getElementById('companion-pair-code').value.trim();
   if (!confirmCode) { showCompanionPairError('Enter the code shown in RaidLead Companion.'); return; }
-  const btn = document.getElementById('companion-pair-approve');
   btn.disabled = true;
   try {
     const resp = await fetch('/api/companion?action=approvePairing', {
@@ -6063,8 +6067,23 @@ function renderMemberClaimSection(members) {
   pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" onclick="syncFromBattleNet()">↻ Sync from Battle.net</button>`;
 }
 
+// My Profile: let go of one of my characters an officer assigned by hand.
 async function releaseCharacterClaim(characterName) {
   if (!confirm(`Release ${characterName}? An officer can assign it to you again if needed.`)) return;
+  await disconnectCharacter(characterName, true);
+}
+
+// Officers (Guild Members list): disconnect a character from whoever has it
+// -- to fix a wrong connection, then assign it to the right person (or it
+// reconnects to its owner when they sign in with Battle.net).
+async function releaseMemberCharacter(characterName, accountId) {
+  const member = CURRENT_MEMBERS.find(m => m.account_id === accountId);
+  const who = accountId === AUTH.session?.id ? 'you' : (member ? memberDisplayName(member) : 'them');
+  if (!confirm(`Disconnect ${characterName} from ${who}? It goes back to Not Connected Yet -- assign it to the right person, or it reconnects to its owner when they sign in with Battle.net.`)) return;
+  await disconnectCharacter(characterName, accountId === AUTH.session?.id);
+}
+
+async function disconnectCharacter(characterName, mine) {
   try {
     const resp = await fetch('/api/members?action=unclaimCharacter', {
       method: 'POST',
@@ -6074,25 +6093,31 @@ async function releaseCharacterClaim(characterName) {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to release character');
     showToast(`${characterName} released.`, 'success');
-    fetchMembersFromDB().then(data => {
-      const members = data?.members || [];
-      CURRENT_MEMBERS = members;
-      renderMemberClaimSection(members);
-      if (['owner','officer'].includes(STATE.myRole)) {
-        renderMembersListFromDB(members);
-        renderUnclaimedListFromDB(members);
-      }
-    });
-    // My own claimed-characters list changed -- refresh STATE so attendance/
-    // the claim gate reflect it without needing a full page reload.
-    const guildData = await fetchGuildFromDB(STATE.teamId);
-    if (guildData) {
-      STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
-      STATE.claimedCharacter  = STATE.claimedCharacters[0]?.name || guildData.claimedCharacter || null;
-      renderAttendanceCharacterPicker();
-    }
+    await refreshCharacterViews(mine);
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
+  }
+}
+
+// After a character is connected or disconnected by hand: the member lists,
+// and -- when it's one of mine -- what I can mark attendance as, without a
+// full page reload.
+async function refreshCharacterViews(mine) {
+  fetchMembersFromDB().then(data => {
+    const members = data?.members || [];
+    CURRENT_MEMBERS = members;
+    renderMemberClaimSection(members);
+    if (['owner','officer'].includes(STATE.myRole)) {
+      renderMembersListFromDB(members);
+      renderUnclaimedListFromDB(members);
+    }
+  });
+  if (!mine) return;
+  const guildData = await fetchGuildFromDB(STATE.teamId);
+  if (guildData) {
+    STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
+    STATE.claimedCharacter  = STATE.claimedCharacters[0]?.name || guildData.claimedCharacter || null;
+    renderAttendanceCharacterPicker();
   }
 }
 
@@ -6155,8 +6180,11 @@ function renderMembersListFromDB(members) {
     // characters may also be array -- a member can claim more than one (Main + Alt(s))
     const chars = mainsFirst(Array.isArray(m.characters) ? m.characters : (m.characters ? [m.characters] : []));
     const charNames = chars.map(c => c.name).filter(Boolean);
-    const charLabels = chars.filter(c => c.name).map(c => escapeHtml(c.name) + (c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : ''));
     const accountId = m.account_id;
+    // Officers can disconnect any of them (a wrong connection), then assign it to the right person.
+    const charLabels = chars.filter(c => c.name).map(c => escapeHtml(c.name)
+      + (c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : '')
+      + (isOfficer ? `<button onclick="releaseMemberCharacter(${jsAttr(c.name)}, ${jsAttr(accountId)})" title="Disconnect ${escapeHtml(c.name)}" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:11px; line-height:1; padding:0 2px;">✕</button>` : ''));
     const isSelf = AUTH.session?.id === accountId;
     const discordId = acct?.discord_id || null;
 
@@ -6178,7 +6206,7 @@ function renderMembersListFromDB(members) {
         ${isSelf ? `<button onclick="showAssignCharacter(${jsAttr(accountId)})" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to yourself">+ Assign</button>` : ''}
         ${isOfficer && !isSelf ? `
           <div style="display:flex; align-items:center; gap:6px;">
-            <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — click to change' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
+            <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — only they can change it (/link in Discord)' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
             <button onclick="showAssignCharacter(${jsAttr(accountId)})" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
             ${m.role === 'owner'
               ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Hand the team to someone else from Team Management > Roles">Owner</span>`
@@ -6241,12 +6269,17 @@ async function updateRoleFromDB(accountId, role) {
   }
 }
 
+// Officers can link a member who hasn't linked Discord yet. A link someone
+// already has is theirs: only they can change it, with /link in Discord.
 async function promptSetMemberDiscordId(accountId, currentDiscordId) {
+  if (currentDiscordId) {
+    showToast('Their Discord is already linked -- only they can change it, with /link in Discord.', 'error');
+    return;
+  }
   const input = prompt(
-    'Paste this member\'s Discord User ID (enable Developer Mode in Discord, right-click their name, "Copy User ID"). Leave blank to unlink.',
-    currentDiscordId || ''
+    'Paste this member\'s Discord User ID (enable Developer Mode in Discord, right-click their name, "Copy User ID").'
   );
-  if (input === null) return; // cancelled
+  if (input === null || !input.trim()) return; // cancelled
   try {
     const resp = await fetch('/api/members?action=setMemberDiscordId', {
       method: 'POST',
@@ -6255,7 +6288,7 @@ async function promptSetMemberDiscordId(accountId, currentDiscordId) {
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Failed to save');
-    showToast(input.trim() ? 'Discord linked!' : 'Discord unlinked', 'success');
+    showToast('Discord linked!', 'success');
     showMembersModal(); // refresh
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
@@ -6314,24 +6347,9 @@ async function assignCharacter(characterName) {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || 'Could not assign that character');
     document.getElementById('claim-picker')?.remove();
-    showToast(`${characterName} assigned`, 'success');
-    fetchMembersFromDB().then(data => {
-      const members = data?.members || [];
-      CURRENT_MEMBERS = members;
-      renderMemberClaimSection(members);
-      renderMembersListFromDB(members);
-      renderUnclaimedListFromDB(members);
-    });
-    // Assigned to myself: what's mine to act as changed -- refresh STATE so
-    // attendance reflects it without a full page reload.
-    if (assigningAccountId === AUTH.session?.id) {
-      const guildData = await fetchGuildFromDB(STATE.teamId);
-      if (guildData) {
-        STATE.claimedCharacters = mainsFirst(guildData.claimedCharacters);
-        STATE.claimedCharacter  = STATE.claimedCharacters[0]?.name || guildData.claimedCharacter || null;
-        renderAttendanceCharacterPicker();
-      }
-    }
+    // A Viewer with a character becomes a Member (api/members.js assignCharacter).
+    showToast(data.promoted ? `${characterName} assigned -- they're a Member now` : `${characterName} assigned`, 'success');
+    await refreshCharacterViews(assigningAccountId === AUTH.session?.id);
   } catch(e) {
     showToast('Error: ' + e.message, 'error');
   }

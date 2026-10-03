@@ -1236,9 +1236,17 @@ module.exports = async (req, res) => {
 
       const { data: removed, error } = await supabase
         .from('characters').update({ active: false, account_id: null, claim_verified: false })
-        .eq('id', characterId).eq('team_id', teamId).select('id');
+        .eq('id', characterId).eq('team_id', teamId).select('id, name');
       if (error) throw error;
       if (!removed?.length) return res.status(404).json({ error: 'Character not found on this team' });
+
+      // Their upcoming "out" marks go too: they're not on the roster for those
+      // nights any more, and with no one connected to the character, nobody
+      // but an officer could clear them. (Past marks stay, as history.)
+      const today = new Date().toISOString().slice(0, 10);
+      const { error: marksErr } = await supabase.from('attendance_marks').delete()
+        .eq('team_id', teamId).eq('character_name', removed[0].name).gte('raid_date', today);
+      if (marksErr) console.error('[removeCharacter] upcoming marks:', marksErr.message);
 
       // Close their open membership period, if any -- best-effort: a
       // character added before this feature existed may have no period rows

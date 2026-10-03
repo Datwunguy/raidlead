@@ -207,15 +207,6 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: 'Server error' }); }
   }
 
-  // ── JOIN-GUILD: create a team_members row for a specific team ──
-  // A join code is always required -- this used to also accept a bare
-  // guildName+server match for unambiguous (single-team) guilds, but a
-  // guild's name and server aren't secret (they're public on Raider.io/WCL),
-  // so that path let any authenticated RaidLead account join any single-team
-  // guild's roster with zero proof they actually belong to it. Every team
-  // always has a join code available (auto-generated at creation, see
-  // api/guild.js), so this doesn't remove any real capability -- officers
-  // share that code instead of a name.
   // ── INVITE-INFO: which team an invite code is for, so the page can ask
   // "Join <team>?" -- an invite link never joins anyone by itself. ──
   if (action === 'invite-info') {
@@ -238,6 +229,15 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: 'Could not look up that invite.' }); }
   }
 
+  // ── JOIN-GUILD: create a team_members row for a specific team ──
+  // A join code is always required -- this used to also accept a bare
+  // guildName+server match for unambiguous (single-team) guilds, but a
+  // guild's name and server aren't secret (they're public on Raider.io/WCL),
+  // so that path let any authenticated RaidLead account join any single-team
+  // guild's roster with zero proof they actually belong to it. Every team
+  // always has a join code available (auto-generated at creation, see
+  // api/guild.js), so this doesn't remove any real capability -- officers
+  // share that code instead of a name.
   if (action === 'join-guild') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 

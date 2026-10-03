@@ -742,7 +742,7 @@ module.exports = async (req, res) => {
           .from('characters').select('id, name')
           .eq('id', b.characterId).eq('team_id', teamId).eq('account_id', session.id).eq('active', true)
           .maybeSingle();
-        if (!data) return res.status(400).json({ error: "That character isn't one you've claimed on this team." });
+        if (!data) return res.status(400).json({ error: "That character isn't connected to you on this team." });
         character = data;
       }
 

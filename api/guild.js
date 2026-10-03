@@ -15,6 +15,7 @@ const { getSession, setCommonHeaders } = require('../lib/session');
 const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
 const { isGame, gameFor, teamDifficulty } = require('../lib/games');
+const { randomCode } = require('../lib/codes');
 
 // The regions RaidLead offers. A guild's region goes into Blizzard API hostnames
 // (lib/battleNet.js), so it must be one of these, never free text.
@@ -44,12 +45,8 @@ function sanitizeTeam(team) {
 // characters (0/O, 1/I/L) are excluded since these get read aloud/typed by
 // hand a lot more than a typical random ID does.
 async function generateUniqueJoinCode(supabase) {
-  const { randomInt } = require('crypto');
-  const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  const genCode = () => Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
-
   for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = genCode();
+    const candidate = randomCode();
     const { data: clash } = await supabase.from('teams').select('id').eq('join_code', candidate).maybeSingle();
     if (!clash) return candidate;
   }

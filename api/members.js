@@ -8,6 +8,8 @@
 const { createClient } = require('@supabase/supabase-js');
 const { getSession, setCommonHeaders } = require('../lib/session');
 const { assertTeamMembership, isOfficerRole } = require('../lib/teamAuth');
+const { randomCode } = require('../lib/codes');
+const { promoteViewer } = require('../lib/characterClaims');
 
 const isDateString = v => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
@@ -130,13 +132,15 @@ module.exports = async (req, res) => {
       if (!targetMembership) return res.status(403).json({ error: 'That account is not a member of this team' });
 
       // A member's Discord link belongs to their account (every team they're on
-      // uses it), so an officer can link someone who hasn't linked yet, or clear
-      // a link -- not swap out one they already have (/link in Discord does that).
+      // uses it). An officer can link someone who hasn't linked yet -- never
+      // change or remove a link they have (removing it first would just be a
+      // way around that): only they can, with /link in Discord.
       const { data: target } = await supabase.from('accounts').select('discord_id').eq('id', targetAccountId).maybeSingle();
-      if (value && target?.discord_id === value) return res.status(200).json({ success: true });
-      if (value && target?.discord_id) {
-        return res.status(409).json({ error: 'They already have a Discord account linked. Clear it first, or they can change it with /link in Discord.' });
+      if (target?.discord_id) {
+        if (value === target.discord_id) return res.status(200).json({ success: true });
+        return res.status(409).json({ error: 'They already have a Discord account linked -- only they can change it, with /link in Discord.' });
       }
+      if (!value) return res.status(200).json({ success: true }); // nothing linked, nothing to remove
       const { error } = await supabase.from('accounts').update({ discord_id: value }).eq('id', targetAccountId);
       if (error) {
         if (error.code === '23505') return res.status(409).json({ error: 'That Discord account is already linked to a different RaidLead account.' });
@@ -149,9 +153,7 @@ module.exports = async (req, res) => {
   // ── GENERATE DISCORD LINK CODE: self-service linking (no team context) ──
   if (action === 'generateDiscordLinkCode') {
     try {
-      const { randomInt } = require('crypto');
-      const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-      const code = Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+      const code = randomCode();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
 
       const { error } = await supabase.from('accounts').update({
@@ -195,7 +197,10 @@ module.exports = async (req, res) => {
         return res.status(404).json({ error: "That character isn't on this team's roster" });
       }
 
-      return res.status(200).json({ success: true, characterName, accountId: targetAccountId });
+      // They have a character on this team now: a Viewer becomes a Member, the
+      // same as when Battle.net connects one.
+      const promoted = await promoteViewer(supabase, teamId, targetAccountId);
+      return res.status(200).json({ success: true, characterName, accountId: targetAccountId, promoted });
     } catch (err) {
       console.error('[assignCharacter] error:', err.message, { characterName, teamId });
       return res.status(err.status || 500).json({ error: err.message });
@@ -342,10 +347,10 @@ module.exports = async (req, res) => {
       isOfficer = isOfficerRole(myRole);
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
 
-    // A regular member can only mark the character THEY claimed; officers may
-    // mark any character on the roster -- not a made-up name, since it's shown
-    // on everyone's attendance calendar. (Officers can still clear a mark left
-    // on a character that's since been removed.)
+    // A regular member can only mark a character connected to them; officers
+    // may mark any character on the roster -- not a made-up name, since it's
+    // shown on everyone's attendance calendar. (A character removed from the
+    // roster loses its upcoming marks then -- see api/roster.js removeCharacter.)
     const { data: char } = await supabase
       .from('characters')
       .select('account_id')
@@ -355,7 +360,7 @@ module.exports = async (req, res) => {
       .limit(1)
       .maybeSingle();
     if (!isOfficer && (!char || char.account_id !== session.id)) {
-      return res.status(403).json({ error: 'You can only mark attendance for your own claimed character' });
+      return res.status(403).json({ error: 'You can only mark attendance for a character connected to you' });
     }
     if (isOfficer && unavailable && !char) {
       return res.status(404).json({ error: "That character isn't on this team's roster" });

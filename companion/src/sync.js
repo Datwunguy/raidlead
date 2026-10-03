@@ -152,7 +152,14 @@ class SyncManager {
         body: JSON.stringify({ teamId: this.getConfig().teamId, records: recordsList }),
       });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'Upload failed');
+      if (!resp.ok) {
+        // Refused for a reason sending it again won't fix (a Viewer's loot,
+        // this PC signed out on RaidLead): said once, then not resent every
+        // minute -- only when new loot comes in, or on Sync Now. Busy or
+        // rate-limited (5xx, 429) still retries on the next poll.
+        if (resp.status >= 400 && resp.status < 500 && resp.status !== 429) this.lastLootJson = json;
+        throw new Error(data.error || 'Upload failed');
+      }
       this.lastLootJson = json;
       this.log(`Uploaded ${data.imported} loot record(s).`);
     } catch (err) {

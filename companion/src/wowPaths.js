@@ -22,7 +22,6 @@ const SYSTEM32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
 const TOOLS = {
   tasklist: path.join(SYSTEM32, 'tasklist.exe'),
   reg: path.join(SYSTEM32, 'reg.exe'),
-  powershell: path.join(SYSTEM32, 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
 };
 
 /** True if a WoW client process is currently running. */
@@ -74,22 +73,31 @@ const DRIVE_FOLDERS = [
 ];
 const ALL_DRIVES = [...'CDEFGHIJKLMNOPQRSTUVWXYZ'].map(l => `${l}:\\`);
 
-// The PC's own drives ("Fixed": internal disks, not USB sticks, card
-// readers, discs or network drives -- a folder there isn't where Battle.net
-// put WoW, and a disconnected network drive can hang the check). Every
-// drive letter if Windows can't say.
-function parseDriveList(stdout) {
-  return String(stdout || '').split(/\r?\n/).map(l => l.trim().toUpperCase()).filter(l => /^[A-Z]:\\$/.test(l));
+// The PC's own drives: internal disks, not USB sticks, card readers, discs or
+// network drives -- a folder there isn't where Battle.net put WoW, and a
+// disconnected network drive can hang the check. Windows records every
+// drive letter it has mounted (HKLM\SYSTEM\MountedDevices): a disk as its
+// partition id ("DMIO:ID:" + a GUID) or disk signature (12 bytes), anything
+// removable as a device path ("\??\USBSTOR#..."), and network drives not at
+// all. Read with reg.exe, like the install lookup above -- no scripts. Every
+// drive letter if the registry can't be read.
+const DISK_ID_PREFIX = Buffer.from('DMIO:ID:').toString('hex').toUpperCase();
+function parseMountedDevices(stdout) {
+  const drives = [];
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const m = line.match(/\\DosDevices\\([A-Z]):\s+REG_BINARY\s+([0-9A-F]+)/i);
+    if (!m) continue;
+    const hex = m[2].toUpperCase();
+    if (hex.startsWith(DISK_ID_PREFIX) || hex.length === 24) drives.push(`${m[1].toUpperCase()}:\\`);
+  }
+  return drives.sort();
 }
 function fixedDrives() {
   return new Promise((resolve) => {
-    execFile(TOOLS.powershell,
-      ['-NoProfile', '-NonInteractive', '-Command', "[IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' } | ForEach-Object { $_.Name }"],
-      { windowsHide: true, timeout: 15000 },
-      (err, stdout) => {
-        const drives = err ? [] : parseDriveList(stdout);
-        resolve(drives.length ? drives : ALL_DRIVES);
-      });
+    execFile(TOOLS.reg, ['query', 'HKLM\\SYSTEM\\MountedDevices'], { windowsHide: true, timeout: 10000 }, (err, stdout) => {
+      const drives = err ? [] : parseMountedDevices(stdout);
+      resolve(drives.length ? drives : ALL_DRIVES);
+    });
   });
 }
 
@@ -235,6 +243,6 @@ function resolveAccount(wowRoot) {
 }
 
 module.exports = {
-  findWowInstall, fixedDrives, parseDriveList, wowRootFrom, isWowRoot, addonStatus, describeAddonProblem, parseRegValue, readInstallLocation,
+  findWowInstall, fixedDrives, parseMountedDevices, wowRootFrom, isWowRoot, addonStatus, describeAddonProblem, parseRegValue, readInstallLocation,
   listAccounts, listCharacters, accountSavedVariablesPath, characterSavedVariablesPath, resolveAccount, isWowRunning,
 };
