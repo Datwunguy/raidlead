@@ -185,7 +185,9 @@ module.exports = async (req, res) => {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
       const teamId = req.body?.teamId;
       try {
-        await assertTeamMembership(supabase, companionSession.id, teamId);
+        const role = await assertTeamMembership(supabase, companionSession.id, teamId);
+        // Viewers are read-only: their loot isn't recorded until they're a Member.
+        if (role === 'viewer') return res.status(403).json({ error: 'Viewers can\'t upload loot -- ask an officer to make you a Member.' });
         const { imported, merged, otherTeam } = await importLootRecords(supabase, {
           teamId, records: req.body?.records, reportedByAccountId: companionSession.id,
         });

@@ -18,6 +18,31 @@ const JOIN_FAIL_LIMIT = 5;
 const JOIN_FAIL_WINDOW_MS = 60 * 60 * 1000;
 const TOO_MANY_JOIN_CODES = 'Too many incorrect join codes. Try again in an hour, or ask an officer for an invite link.';
 
+// The team a join code belongs to, under the hourly wrong-code limit (shared
+// by join-guild and invite-info, so looking codes up isn't a way around it).
+// Returns { team } or { status, error } to send back.
+async function teamForJoinCode(supabase, accountId, joinCode) {
+  const since = new Date(Date.now() - JOIN_FAIL_WINDOW_MS).toISOString();
+  const { count: recentFailures, error: failErr } = await supabase
+    .from('join_code_failures').select('id', { count: 'exact', head: true })
+    .eq('account_id', accountId).gte('failed_at', since);
+  if (failErr) console.error('[join-guild] failure count:', failErr.message); // fails open (e.g. SQL not run yet)
+  if ((recentFailures || 0) >= JOIN_FAIL_LIMIT) return { status: 429, error: TOO_MANY_JOIN_CODES };
+
+  const { data: team, error: codeErr } = await supabase
+    .from('teams')
+    .select('id, name, guilds ( name, server )')
+    .eq('join_code', String(joinCode).trim().toUpperCase())
+    .maybeSingle();
+  if (codeErr) throw codeErr;
+  if (!team) {
+    await supabase.from('join_code_failures').insert({ account_id: accountId });
+    const last = (recentFailures || 0) + 1 >= JOIN_FAIL_LIMIT;
+    return { status: last ? 429 : 404, error: last ? TOO_MANY_JOIN_CODES : 'Invalid join code.' };
+  }
+  return { team };
+}
+
 module.exports = async (req, res) => {
   setCommonHeaders(res);
 
@@ -191,6 +216,28 @@ module.exports = async (req, res) => {
   // always has a join code available (auto-generated at creation, see
   // api/guild.js), so this doesn't remove any real capability -- officers
   // share that code instead of a name.
+  // ── INVITE-INFO: which team an invite code is for, so the page can ask
+  // "Join <team>?" -- an invite link never joins anyone by itself. ──
+  if (action === 'invite-info') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const session = getSession(req);
+    if (!session) return res.status(401).json({ error: 'Not authenticated' });
+    const { joinCode } = req.body || {};
+    if (!joinCode) return res.status(400).json({ error: 'Join code required' });
+
+    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+    try {
+      const found = await teamForJoinCode(supabase, session.id, joinCode);
+      if (found.error) return res.status(found.status).json({ error: found.error });
+      const { data: member } = await supabase
+        .from('team_members').select('id').eq('team_id', found.team.id).eq('account_id', session.id).maybeSingle();
+      return res.status(200).json({
+        teamName: found.team.name, guildName: found.team.guilds?.name || null, server: found.team.guilds?.server || null,
+        alreadyMember: !!member,
+      });
+    } catch (err) { return res.status(500).json({ error: 'Could not look up that invite.' }); }
+  }
+
   if (action === 'join-guild') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -202,24 +249,9 @@ module.exports = async (req, res) => {
 
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
     try {
-      const since = new Date(Date.now() - JOIN_FAIL_WINDOW_MS).toISOString();
-      const { count: recentFailures, error: failErr } = await supabase
-        .from('join_code_failures').select('id', { count: 'exact', head: true })
-        .eq('account_id', session.id).gte('failed_at', since);
-      if (failErr) console.error('[join-guild] failure count:', failErr.message); // fails open (e.g. SQL not run yet)
-      if ((recentFailures || 0) >= JOIN_FAIL_LIMIT) return res.status(429).json({ error: TOO_MANY_JOIN_CODES });
-
-      const { data: team, error: codeErr } = await supabase
-        .from('teams')
-        .select('id, name')
-        .eq('join_code', String(joinCode).trim().toUpperCase())
-        .maybeSingle();
-      if (codeErr) throw codeErr;
-      if (!team) {
-        await supabase.from('join_code_failures').insert({ account_id: session.id });
-        const last = (recentFailures || 0) + 1 >= JOIN_FAIL_LIMIT;
-        return res.status(last ? 429 : 404).json({ error: last ? TOO_MANY_JOIN_CODES : 'Invalid join code.' });
-      }
+      const found = await teamForJoinCode(supabase, session.id, joinCode);
+      if (found.error) return res.status(found.status).json({ error: found.error });
+      const { team } = found;
 
       const { data: existing } = await supabase
         .from('team_members')

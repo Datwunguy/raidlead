@@ -16,6 +16,11 @@ const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
 const { isGame, gameFor, teamDifficulty } = require('../lib/games');
 
+// The regions RaidLead offers. A guild's region goes into Blizzard API hostnames
+// (lib/battleNet.js), so it must be one of these, never free text.
+const REGIONS = ['us', 'oceanic', 'eu', 'kr', 'tw', 'cn'];
+const badRegion = r => r != null && r !== '' && !REGIONS.includes(r);
+
 const TEAM_FIELDS = `id, name, guild_id, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
   wowaudit_api_key_enc, wowaudit_api_key_hash,
@@ -170,6 +175,7 @@ module.exports = async (req, res) => {
     // same name and server are different guilds.
     const game = req.body.game || 'retail';
     if (!isGame(game)) return res.status(400).json({ error: 'Unknown game version' });
+    if (badRegion(region)) return res.status(400).json({ error: 'Unknown region' });
     if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
     if (tooLong(guild, server, teamName)) return res.status(400).json({ error: 'Names must be 64 characters or fewer' });
 
@@ -278,6 +284,7 @@ module.exports = async (req, res) => {
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
       if (!guild || !server) return res.status(400).json({ error: 'Missing required fields' });
       if (tooLong(guild, server, teamName)) return res.status(400).json({ error: 'Names must be 64 characters or fewer' });
+      if (badRegion(region)) return res.status(400).json({ error: 'Unknown region' });
 
       const { data: currentTeam } = await supabase.from('teams').select('guild_id').eq('id', teamId).single();
       if (!currentTeam) return res.status(404).json({ error: 'Team not found' });

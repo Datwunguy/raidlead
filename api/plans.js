@@ -223,7 +223,7 @@ module.exports = async (req, res) => {
 
       const { error } = await supabase
         .from('raid_plans')
-        .update({ swaps: JSON.stringify(swaps || []) })
+        .update({ swaps: JSON.stringify(cleanSwaps(swaps)) })
         .eq('id', plan.id);
       if (error) throw error;
 
@@ -235,3 +235,12 @@ module.exports = async (req, res) => {
 
   res.status(400).json({ error: 'Invalid action' });
 };
+
+// Swaps as the page makes them -- { id, boss, outName, inName } -- and nothing
+// else: a short id of letters and digits, short names, at most 100.
+function cleanSwaps(list) {
+  const text = (v, max) => String(v ?? '').slice(0, max);
+  return (Array.isArray(list) ? list : []).slice(0, 100)
+    .filter(s => s && typeof s === 'object' && /^[a-z0-9]{1,24}$/i.test(String(s.id)))
+    .map(s => ({ id: String(s.id), boss: text(s.boss, 80), outName: text(s.outName, 40), inName: text(s.inName, 40) }));
+}

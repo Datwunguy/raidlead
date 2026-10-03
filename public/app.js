@@ -272,6 +272,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (pendingInvite) {
     localStorage.removeItem('raidlead_pending_invite');
     try {
+      // An invite link never joins anyone by itself: say which team it's for and
+      // ask. (Already on it: just go there.) Declining carries on as normal.
+      if (!(await confirmInvite(pendingInvite))) throw Object.assign(new Error('Invite not accepted.'), { quiet: true });
       const joinResp = await fetch('/api/auth?action=join-guild', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -293,7 +296,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       checkAndAdvanceSeason();
       return;
     } catch(e) {
-      showToast(e.message || 'Could not use that invite link.', 'error');
+      if (!e.quiet) showToast(e.message || 'Could not use that invite link.', 'error');
     }
   }
 
@@ -1472,7 +1475,7 @@ function renderAttendanceCalendar() {
 
     const clickAttr = raidDay && myChar ? `onclick="toggleMyAttendance('${dateStr}')"` : '';
     const tag = unavailable ? 'Unavailable' : (raidDay ? 'Raid Night' : '');
-    const countBadge = (raidDay && unavailCount > 0) ? `<div class="attendance-day-count" title="Out: ${unavailNames.join(', ')}">${unavailCount} out</div>` : '';
+    const countBadge = (raidDay && unavailCount > 0) ? `<div class="attendance-day-count" title="Out: ${escapeHtml(unavailNames.join(', '))}">${unavailCount} out</div>` : '';
     // Officers can remove one-off extra raid nights directly from the calendar
     const removeBtn = (isExtraNight && isOfficerView)
       ? `<div class="attendance-day-remove" title="Remove this raid night" onclick="event.stopPropagation(); removeRaidNightFromCalendar('${dateStr}')">&times;</div>`
@@ -1994,7 +1997,7 @@ function renderProgressKills(data) {
         </div>`;
       }).join('')}</div>
     </div>`).join('')
-    + (data.profileUrl ? `<div class="recruit-links" style="margin-top:8px;"><a href="${escapeHtml(data.profileUrl)}" target="_blank" rel="noopener noreferrer">Guild on Raider.io</a></div>` : '');
+    + (/^https:\/\//.test(data.profileUrl || '') ? `<div class="recruit-links" style="margin-top:8px;"><a href="${escapeHtml(data.profileUrl)}" target="_blank" rel="noopener noreferrer">Guild on Raider.io</a></div>` : '');
 }
 
 // Bypasses the session cache and re-fetches live from Raider.io -- normally
@@ -4967,7 +4970,7 @@ function renderPlannerSwaps() {
             <div class="plan-role-label" style="font-size:9px; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #1EFF0033; color:#1EFF00;">IN</div>
             ${swapPill(swap.inName)}
           </div>
-          ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap('${swap.id}')" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : '<div></div>'}
+          ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap(${jsAttr(swap.id)})" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : '<div></div>'}
         `;
         rowsWrap.appendChild(row);
       });
@@ -5905,6 +5908,22 @@ function toggleSettingsTeam(radio) {
 // Handle invite link on page load -- the ?invite= value is just the team's
 // join code (see showInviteModal/ensureJoinCode), stashed until login
 // finishes since a brand-new visitor hits Battle.net's OAuth redirect first.
+// Before joining from an invite link: which team is it, and do they want in?
+// true to go ahead. Throws if the code isn't valid (shown as a toast).
+async function confirmInvite(joinCode) {
+  const resp = await fetch('/api/auth?action=invite-info', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ joinCode }),
+  });
+  const info = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(info.error || 'That invite is no longer valid.');
+  if (info.alreadyMember) return true;
+  const where = [info.guildName, info.teamName].filter(Boolean).join(' — ');
+  hideBootLoader();
+  return confirm(`Join ${where || 'this team'}?\n\nOnly accept invites from people you know.`);
+}
+
 function checkInviteParam() {
   const params = new URLSearchParams(window.location.search);
   const invite = params.get('invite');
@@ -6014,13 +6033,13 @@ function renderMemberClaimSection(members) {
         <span style="color:var(--text-mute); font-size:12px;">${escapeHtml(c.class)} · ${escapeHtml(c.primary_role)}</span>
         ${rankBadge}
         ${c.claim_verified ? '<span class="bnet-verified" title="Confirmed by your Battle.net account">✓ Battle.net</span>' : ''}
-        <button onclick="releaseCharacterClaim('${escapeHtml(c.name)}')" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>
+        <button onclick="releaseCharacterClaim(${jsAttr(c.name)})" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>
       </div>`;
     }).join('');
   }
 
   pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" onclick="syncFromBattleNet()">↻ Sync from Battle.net</button>
-    <button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter('${AUTH.session?.id}')">+ Claim ${chars.length ? 'Another ' : 'a '}Character</button>`;
+    ${STATE.myRole === 'viewer' ? '' : `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" onclick="showClaimCharacter(${jsAttr(AUTH.session?.id)})">+ Claim ${chars.length ? 'Another ' : 'a '}Character</button>`}`;
 }
 
 async function releaseCharacterClaim(characterName) {

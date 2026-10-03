@@ -169,7 +169,7 @@ module.exports = async (req, res) => {
   async function findExisting(name, realmSlug) {
     const { data } = await supabase
       .from('recruits').select(RECRUIT_FIELDS)
-      .eq('team_id', teamId).ilike('name', name.trim()).eq('realm_slug', realmSlug)
+      .eq('team_id', teamId).ilike('name', name.trim().replace(/[\\%_]/g, '\\$&')).eq('realm_slug', realmSlug)
       .maybeSingle();
     return data || null;
   }

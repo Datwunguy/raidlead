@@ -129,6 +129,14 @@ module.exports = async (req, res) => {
         .maybeSingle();
       if (!targetMembership) return res.status(403).json({ error: 'That account is not a member of this team' });
 
+      // A member's Discord link belongs to their account (every team they're on
+      // uses it), so an officer can link someone who hasn't linked yet, or clear
+      // a link -- not swap out one they already have (/link in Discord does that).
+      const { data: target } = await supabase.from('accounts').select('discord_id').eq('id', targetAccountId).maybeSingle();
+      if (value && target?.discord_id === value) return res.status(200).json({ success: true });
+      if (value && target?.discord_id) {
+        return res.status(409).json({ error: 'They already have a Discord account linked. Clear it first, or they can change it with /link in Discord.' });
+      }
       const { error } = await supabase.from('accounts').update({ discord_id: value }).eq('id', targetAccountId);
       if (error) {
         if (error.code === '23505') return res.status(409).json({ error: 'That Discord account is already linked to a different RaidLead account.' });
@@ -163,6 +171,8 @@ module.exports = async (req, res) => {
 
     try {
       const myRole = await assertTeamMembership(supabase, session.id, teamId);
+      // Viewers are read-only -- their characters connect from Battle.net, or an officer adds them.
+      if (myRole === 'viewer') return res.status(403).json({ error: "Viewers can't claim characters -- ask an officer to make you a Member." });
       const isOfficer = isOfficerRole(myRole);
 
       // Officers can claim on behalf of another account; regular members can only claim for themselves
@@ -189,6 +199,7 @@ module.exports = async (req, res) => {
         .update({ account_id: accountId, claim_verified: false })
         .eq('name', characterName)
         .eq('team_id', teamId)
+        .eq('active', true)
         .select('name');
       if (claimErr) throw new Error(claimErr.message);
 
@@ -346,17 +357,23 @@ module.exports = async (req, res) => {
       isOfficer = isOfficerRole(myRole);
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
 
-    // A regular member can only mark the character THEY claimed; officers may mark any character
-    if (!isOfficer) {
-      const { data: char } = await supabase
-        .from('characters')
-        .select('account_id')
-        .eq('team_id', teamId)
-        .eq('name', characterName)
-        .single();
-      if (!char || char.account_id !== session.id) {
-        return res.status(403).json({ error: 'You can only mark attendance for your own claimed character' });
-      }
+    // A regular member can only mark the character THEY claimed; officers may
+    // mark any character on the roster -- not a made-up name, since it's shown
+    // on everyone's attendance calendar. (Officers can still clear a mark left
+    // on a character that's since been removed.)
+    const { data: char } = await supabase
+      .from('characters')
+      .select('account_id')
+      .eq('team_id', teamId)
+      .eq('name', characterName)
+      .eq('active', true)
+      .limit(1)
+      .maybeSingle();
+    if (!isOfficer && (!char || char.account_id !== session.id)) {
+      return res.status(403).json({ error: 'You can only mark attendance for your own claimed character' });
+    }
+    if (isOfficer && unavailable && !char) {
+      return res.status(404).json({ error: "That character isn't on this team's roster" });
     }
 
     try {

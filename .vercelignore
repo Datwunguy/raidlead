@@ -10,3 +10,15 @@ companion/
 public/RaidLead-Companion-Setup.exe
 # Build output (scripts/build.js) -- Vercel builds its own
 dist/
+# Secrets kept on this PC (also in .gitignore) -- never part of a deploy
+.env*
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
+vercelrecoverycodes.txt
+Discord Bot Keys.txt
+Discord Bot Keys/
+RaidLead Session Secret.txt
+WCL Client Secret.txt
+WCL Credentials Key.txt

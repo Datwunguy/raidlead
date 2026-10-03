@@ -9,6 +9,12 @@ companion/out/
 public/RaidLead-Companion-Setup.exe
 .env
 .env.local
+# Any other env file or key a service hands out (this repo is public)
+.env.*
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
 .netlify/
 .vercel/
 vercelrecoverycodes.txt
