@@ -29,8 +29,15 @@ hash of each file's contents. So:
 - `npm run build` locally shows exactly what will be served. The build fails,
   and the deploy with it, if `index.html` doesn't have exactly one `app.js?v=`
   and one `styles.css?v=`.
-- Top-level function names survive minification on purpose: `onclick="..."`
-  attributes and string-named handlers call them.
+- No inline event handlers (`onclick="..."`, `onchange=`, ...) anywhere:
+  `vercel.json`'s content policy runs no inline JavaScript, so they'd silently
+  do nothing. A button names its action instead -- `data-click="fn"` (plus
+  `data-click-args='[...]'`, JSON) in `index.html`, or `act('click', 'fn',
+  ...args)` in HTML built by `app.js` -- and `fn` goes in the `ACTIONS` list at
+  the end of `app.js`. Events: click, change, input, blur, keydown,
+  mousedown; `"$el"`, `"$value"`, `"$checked"`, `"$event"` stand in for
+  `this`, `this.value`, `this.checked`, `event`. The build fails on an inline
+  handler or an unlisted action.
 - `public/games.js` (each WoW version's classes, specs, buffs, sizes and data
   sources) is a third file with its own `?v=`, stamped the same way. The
   server `require()`s the same file through `lib/games.js`.

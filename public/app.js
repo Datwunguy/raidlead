@@ -862,7 +862,7 @@ function renderNameSuggestions() {
   el.innerHTML = list.map((c, i) => {
     const onRoster = (STATE.players || []).some(p => p.name.toLowerCase() === c.name.toLowerCase() && p.server === c.realmSlug);
     return `<button type="button" class="name-suggest-item${i === NAME_SEARCH.active ? ' active' : ''}" role="option"
-      onmousedown="event.preventDefault()" onclick="pickNameSuggestion(${i})">
+      data-mousedown="keepFocus" data-mousedown-args='["$event"]' ${act('click', 'pickNameSuggestion', (i))}>
       <span class="name-suggest-name" style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>
       <span class="name-suggest-realm">${escapeHtml(c.realmName)}${c.class ? ' · ' + escapeHtml(c.class.replace(/\b\w/g, ch => ch.toUpperCase())) : ''}</span>
       ${onRoster ? '<span class="recruit-badge on-roster">On roster</span>' : ''}
@@ -1178,7 +1178,7 @@ function renderGuildResults(list, total, token) {
 
   results.innerHTML = list.map((m, idx) => {
     const alreadyOn = activeKeys.has(`${m.name.trim().toLowerCase()}|${(m.realmSlug || '').toLowerCase()}`);
-    return `<div class="guild-roster-row" onclick="pickGuildCharacter(${idx})">
+    return `<div class="guild-roster-row" ${act('click', 'pickGuildCharacter', (idx))}>
       <span>
         <span class="guild-roster-row-name">${escapeHtml(m.name)}</span>
         <span class="guild-roster-row-meta" id="cm-guild-spec-${idx}">${escapeHtml(m.class || 'Unknown')}</span>
@@ -1473,12 +1473,12 @@ function renderAttendanceCalendar() {
     if (unavailable) classes += ' unavailable';
     if (dateStr === todayStr) classes += ' today';
 
-    const clickAttr = raidDay && myChar ? `onclick="toggleMyAttendance('${dateStr}')"` : '';
+    const clickAttr = raidDay && myChar ? `${act('click', 'toggleMyAttendance', String(dateStr))}` : '';
     const tag = unavailable ? 'Unavailable' : (raidDay ? 'Raid Night' : '');
     const countBadge = (raidDay && unavailCount > 0) ? `<div class="attendance-day-count" title="Out: ${escapeHtml(unavailNames.join(', '))}">${unavailCount} out</div>` : '';
     // Officers can remove one-off extra raid nights directly from the calendar
     const removeBtn = (isExtraNight && isOfficerView)
-      ? `<div class="attendance-day-remove" title="Remove this raid night" onclick="event.stopPropagation(); removeRaidNightFromCalendar('${dateStr}')">&times;</div>`
+      ? `<div class="attendance-day-remove" title="Remove this raid night" ${act('click', 'removeRaidNightFromCalendar', String(dateStr))} data-stop>&times;</div>`
       : '';
 
     cells += `<div class="${classes}" ${clickAttr} title="${raidDay && !myChar ? 'No character connected yet -- use Sync from Battle.net in your profile' : ''}">
@@ -1929,7 +1929,7 @@ async function loadProgressTab() {
         <div class="empty-state-icon">🗺</div>
         <h3>Progress isn't set up yet</h3>
         <p>The current raid is detected from your WCL zone. Open the WCL Scores tab once (or set a WCL Guild Progress URL in Guild Settings) so a zone is on file, then come back here.</p>
-        <button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>
+        <button class="btn-primary" style="margin-top:12px;" data-click="showSetup">Go to Guild Settings</button>
       </div>`;
     return;
   }
@@ -2032,7 +2032,7 @@ function renderProgress(data) {
         <div class="empty-state-icon">${icon}</div>
         <h3>${title}</h3>
         <p>${message}</p>
-        ${(!isRateLimited && !isOutage && data.reason !== 'RAID_NOT_FOUND') ? `<button class="btn-primary" style="margin-top:12px;" onclick="showSetup()">Go to Guild Settings</button>` : ''}
+        ${(!isRateLimited && !isOutage && data.reason !== 'RAID_NOT_FOUND') ? `<button class="btn-primary" style="margin-top:12px;" data-click="showSetup">Go to Guild Settings</button>` : ''}
       </div>`;
     return;
   }
@@ -2115,7 +2115,7 @@ function renderProgress(data) {
   const defaultBracketStart = progressDefaultBracketStart(data.yourGuild?.regionRank);
   bracketRow.innerHTML = `
     <span style="font-size:11px; color:var(--text-mute); text-transform:uppercase; letter-spacing:1px;">Avg Pulls vs:</span>
-    <select id="progress-pulls-bracket" class="themed-select" onchange="onProgressPullsBracketChange()">
+    <select id="progress-pulls-bracket" class="themed-select" data-change="onProgressPullsBracketChange">
       ${progressPullsBracketOptions(data.yourGuild?.regionRank).map(o =>
         `<option value="${o.start}" ${o.start === defaultBracketStart ? 'selected' : ''}>${o.label}</option>`
       ).join('')}
@@ -2546,7 +2546,7 @@ async function loadConnectedDevices() {
             ${t.revoked_at ? 'Revoked' : (t.last_used_at ? 'Last used ' + new Date(t.last_used_at).toLocaleString() : 'Never used yet')}
           </div>
         </div>
-        ${t.revoked_at ? '' : `<button class="btn-secondary" style="padding:4px 12px; font-size:12px;" onclick="revokeConnectedDevice('${t.id}')">Revoke</button>`}
+        ${t.revoked_at ? '' : `<button class="btn-secondary" style="padding:4px 12px; font-size:12px;" ${act('click', 'revokeConnectedDevice', String(t.id))}>Revoke</button>`}
       </div>
     `).join('');
   } catch (e) {
@@ -2714,7 +2714,7 @@ function renderTierRoster() {
   el.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
       <div class="section-title" style="font-size:14px;">Tier Token Checklist</div>
-      ${isOfficer ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="resetTierChecklist()">Reset for New Tier</button>` : ''}
+      ${isOfficer ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" data-click="resetTierChecklist">Reset for New Tier</button>` : ''}
     </div>
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px;">
       ${groups.map(g => g.name).map(armor => `
@@ -2726,7 +2726,7 @@ function renderTierRoster() {
             const recorded = tokensByName[c.name];
             return `
               <label style="display:flex; align-items:center; gap:6px; padding:3px 0; font-size:12px; ${isOfficer ? 'cursor:pointer;' : ''}">
-                <input type="checkbox" ${checked ? 'checked' : ''} ${isOfficer ? '' : 'disabled'} ${c.id ? `onchange="toggleTierCheck('${c.id}', this.checked)"` : 'disabled'} />
+                <input type="checkbox" ${checked ? 'checked' : ''} ${isOfficer ? '' : 'disabled'} ${c.id ? `${act('change', 'toggleTierCheck', String(c.id), "$checked")}` : 'disabled'} />
                 <span style="color:${color};">${escapeHtml(c.name)}</span>
                 ${recorded ? `<span title="${recorded} tier token drop recorded by the addon" style="color:var(--gold); font-size:11px;">🎁</span>` : ''}
               </label>
@@ -2834,7 +2834,7 @@ function renderLootRuns(drops, targetId, filterFn, emptyMessage) {
             <span style="color:var(--text-mute); font-size:12px; margin-left:8px;">${bossCount} boss${bossCount === 1 ? '' : 'es'} · ${items.length} item${items.length === 1 ? '' : 's'}</span>
             ${likelyPug ? '<span style="margin-left:8px; font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#ff6b6b; border:1px solid rgba(196,30,58,0.4); border-radius:3px; padding:2px 6px;">Likely PUG</span>' : ''}
           </div>
-          ${isOfficer && allowDeleteRun ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" onclick="deleteLootRun(${jsAttr(sessionId)})">Delete Run</button>` : ''}
+          ${isOfficer && allowDeleteRun ? `<button class="btn-secondary" style="padding:4px 10px; font-size:12px;" ${act('click', 'deleteLootRun', String(sessionId))}>Delete Run</button>` : ''}
         </div>
         <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
           ${orderedItems.map(d => renderLootRow(d, isOfficer)).join('')}
@@ -2870,10 +2870,10 @@ function renderLootRow(d, isOfficer) {
       <div style="display:flex; align-items:center; gap:8px;">
         <span>${escapeHtml(d.current_holder_name || '?')}${traded ? ` <span style="color:var(--text-mute);">(was ${escapeHtml(d.recipient_name)})</span>` : ''}</span>
         ${isOfficer ? `
-          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType(${jsAttr(d.id)},'BoE')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
-          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="setLootBindType(${jsAttr(d.id)},'Warbound Until Equipped')" title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
-          <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="reassignLootItem(${jsAttr(d.id)})">Reassign</button>
-          <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" onclick="deleteLootItem(${jsAttr(d.id)})">✕</button>
+          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'BoE' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" ${act('click', 'setLootBindType', String(d.id), "BoE")} title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark BoE</button>` : ''}
+          ${d.bind_type !== 'Soulbound' && d.bind_type !== 'Warbound Until Equipped' ? `<button class="btn-secondary" style="padding:2px 8px; font-size:11px;" ${act('click', 'setLootBindType', String(d.id), "Warbound Until Equipped")} title="The addon's auto-detected bind type can be wrong for Warbound Until Equipped items -- correct it here if you know better.">Mark Warbound</button>` : ''}
+          <button class="btn-secondary" style="padding:2px 8px; font-size:11px;" ${act('click', 'reassignLootItem', String(d.id))}>Reassign</button>
+          <button class="btn-secondary" style="padding:2px 8px; font-size:11px; color:#ff6b6b;" ${act('click', 'deleteLootItem', String(d.id))}>✕</button>
         ` : ''}
       </div>
     </div>
@@ -3771,7 +3771,7 @@ function wclNotConnectedHtml() {
       ${isOfficer ? `
         <div style="display:flex; gap:10px; margin-top:12px;">
           <a class="btn-secondary" style="padding:8px 16px; font-size:13px; text-decoration:none; display:inline-flex; align-items:center;" href="https://${GAME.sources.wclHost}.warcraftlogs.com/api/clients/" target="_blank" rel="noopener noreferrer">Create WCL Credentials ↗</a>
-          <button class="btn-primary" onclick="showSetup()">Go to Guild Settings</button>
+          <button class="btn-primary" data-click="showSetup">Go to Guild Settings</button>
         </div>
       ` : ''}
     </div>`;
@@ -3849,7 +3849,7 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
             <div class="player-name-cell">
               <div class="class-dot" style="background:${color};"></div>
               <span style="color:${color}; font-family:'Rajdhani',sans-serif; font-weight:600;${nameClick ? ' cursor:pointer;' : ''}"
-                ${nameClick ? `onclick="${nameClick}(${jsAttr(p.name)})"` : ''}>${escapeHtml(p.name)}</span>
+                ${nameClick ? act('click', nameClick, String(p.name)) : ''}>${escapeHtml(p.name)}</span>
             </div>
           </td>
           <td style="color:var(--text-mute); font-family:'Rajdhani',sans-serif;">${escapeHtml(p.serverDisplay || p.server || '—')}</td>`;
@@ -3864,12 +3864,12 @@ function buildScoresTableHtml({ scores, bossNames, view, sortCol: rawSortCol, ro
   const showMedian = view === 'performance' || view === 'oppoparse';
   const col1Label  = view === 'survival' ? 'Avg Surv%' : view === 'mitigation' ? 'Avg Mitig%' : 'Average';
   const headerCols = showMedian ? `
-    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('best')" title="Sort by ${col1Label === 'Average' ? 'Best' : col1Label}">Best${sortArrow('best')}</th><th class="sep-col"></th>
-    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('median')" title="Sort by Median">Median${sortArrow('median')}</th><th class="sep-col"></th>`
-  : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" onclick="${sortHandler}('best')" title="Sort by ${col1Label}">${col1Label}${sortArrow('best')}</th><th class="sep-col"></th>`;
+    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" ${act('click', sortHandler, 'best')} title="Sort by ${col1Label === 'Average' ? 'Best' : col1Label}">Best${sortArrow('best')}</th><th class="sep-col"></th>
+    <th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" ${act('click', sortHandler, 'median')} title="Sort by Median">Median${sortArrow('median')}</th><th class="sep-col"></th>`
+  : `<th style="width:52px; min-width:52px; max-width:52px; text-align:center; cursor:pointer;" ${act('click', sortHandler, 'best')} title="Sort by ${col1Label}">${col1Label}${sortArrow('best')}</th><th class="sep-col"></th>`;
 
   const bossHeaders = bosses.map(b =>
-    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${escapeHtml(b)}" onclick="${sortHandler}(${jsAttr(b)})">
+    `<th style="width:52px; min-width:52px; max-width:52px; overflow:hidden; text-align:center; cursor:pointer;" title="Sort by ${escapeHtml(b)}" ${act('click', sortHandler, String(b))}>
       <span style="display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px;">${escapeHtml(b.substring(0,5))}${sortArrow(b)}</span>
     </th>`
   ).join('');
@@ -4662,23 +4662,71 @@ function applyPlanData(planData) {
   }
 }
 
-// Escapes text for safe insertion into innerHTML as visible content (does NOT make
-// a value safe inside an onclick="..." attribute -- only use for text nodes/content).
+// Escapes text for safe insertion into innerHTML -- as visible content, or as
+// a quoted attribute value.
 function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
 }
 
-// Safely embeds a value as an argument in an inline HTML event-handler
-// attribute, e.g. `onclick="fn(${jsAttr(name)})"`. JSON.stringify makes it a
-// correctly-escaped JS string literal (handles quotes/backslashes for the JS
-// context); escapeHtml on top of that stops the literal's own quotes from
-// closing the surrounding double-quoted HTML attribute early. Verified this
-// round-trips real names correctly and neutralizes injected HTML/JS alike.
-function jsAttr(value) {
-  return escapeHtml(JSON.stringify(String(value)));
+// ── Page actions ──────────────────────────────────────────────────────────
+// Buttons and inputs name the action they run in data attributes, never with
+// inline onclick="..." JavaScript -- so the site's content policy can refuse
+// every inline script, and an injected onclick/onerror never runs:
+//   <button data-click="showTab" data-click-args='["roster"]'>
+// In HTML built here, act('click', 'removePlannerSwap', swap.id) writes them.
+// Events: click, change, input, blur, keydown, mousedown. The args are JSON,
+// with these filled in when the action runs: "$el" (the element), "$value"
+// (its value), "$checked", "$event". data-stop: the click goes no further
+// (event.stopPropagation()). Only what's listed in ACTIONS (end of this
+// file) can run this way.
+function act(event, name, ...args) {
+  return `data-${event}="${escapeHtml(name)}"` + (args.length ? ` data-${event}-args="${escapeHtml(JSON.stringify(args))}"` : '');
 }
+
+// One listener per event for the whole page, run before anything else sees
+// the event (capture), then each element with an action from the one clicked
+// outward -- the same order inline handlers ran in.
+const ACTION_EVENTS = { click: 'click', change: 'change', input: 'input', focusout: 'blur', keydown: 'keydown', mousedown: 'mousedown' };
+function runAction(name, args) {
+  const fn = Object.prototype.hasOwnProperty.call(ACTIONS, name) ? ACTIONS[name] : null;
+  if (!fn) { console.error(`RaidLead: no page action "${name}"`); return; }
+  try { return fn(...args); }
+  catch (err) { if (typeof reportError === 'function') reportError(err); else console.error(err); } // like an inline handler: the error is reported, the next action still runs
+}
+function dispatchPageAction(e) {
+  const key = ACTION_EVENTS[e.type];
+  const sel = `[data-${key}]`;
+  let el = e.target instanceof Element ? e.target.closest(sel) : null;
+  while (el) {
+    let args = [];
+    const raw = el.getAttribute(`data-${key}-args`);
+    if (raw) { try { args = JSON.parse(raw); } catch { console.error(`RaidLead: bad data-${key}-args`, raw); } }
+    args = args.map(a => (a === '$el' ? el : a === '$value' ? el.value : a === '$checked' ? el.checked : a === '$event' ? e : a));
+    runAction(el.getAttribute(`data-${key}`), args);
+    if (el.hasAttribute('data-stop')) e.stopPropagation();
+    if (e.cancelBubble) break;
+    el = el.parentElement ? el.parentElement.closest(sel) : null;
+  }
+}
+Object.keys(ACTION_EVENTS).forEach(type => document.addEventListener(type, dispatchPageAction, true));
+
+// Small actions for what used to be two statements or a condition inline.
+function reloadPage(e) { e.preventDefault(); location.reload(); }
+function accountMenuItem(name) { runAction(name, []); toggleAccountMenu(); }
+function onBackdrop(e, el, name, ...args) { if (e.target === el) runAction(name, args); }           // a modal's backdrop, not its content
+function onEnter(e, name, ...args) { if (e.key === 'Enter') runAction(name, args); }
+function keepFocus(e) { e.preventDefault(); }                                                        // mousedown that mustn't take focus
+function titleCaseServerInput(el) { el.value = titleCaseServer(el.value); }
+function characterNameInput() { checkCharacterRename(); onCharacterNameInput(); }
+function characterNameBlur() { hideNameSuggestions(); lookupTypedCharacter(); }
+function characterClassChanged(el) { populateSpecDropdown(el.value, null, characterModalRole()); }
+function characterServerBlur(el) { titleCaseServerInput(el); lookupTypedCharacter(); }
+function saveDisplayNameFromInput() { saveDisplayName(document.getElementById('display-name-input').value); }
+function editProfileCharacter() { closeProfile(); openEditCharacterModal(CURRENT_PROFILE_PLAYER.id); }
+function closeAssignPicker() { document.getElementById('claim-picker')?.remove(); }
+function copyTemplateFromSelect(el, recruitId) { copyTemplateForRecruit(el.value, recruitId); el.value = ''; }
 
 // Helper — detect if a hex color is light (needs dark text)
 function isLightColor(hex) {
@@ -4997,7 +5045,7 @@ function renderPlannerSwaps() {
             <div class="plan-role-label" style="font-size:9px; margin-bottom:5px; padding-bottom:4px; border-bottom:1px solid #1EFF0033; color:#1EFF00;">IN</div>
             ${swapPill(swap.inName)}
           </div>
-          ${isOfficer ? `<div title="Remove swap" onclick="removePlannerSwap(${jsAttr(swap.id)})" style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : '<div></div>'}
+          ${isOfficer ? `<div title="Remove swap" ${act('click', 'removePlannerSwap', String(swap.id))} style="cursor:pointer; color:var(--text-mute); font-size:16px; line-height:1; padding:2px 4px;">&times;</div>` : '<div></div>'}
         `;
         rowsWrap.appendChild(row);
       });
@@ -6059,12 +6107,12 @@ function renderMemberClaimSection(members) {
         <span style="color:var(--text-mute); font-size:12px;">${escapeHtml(c.class)} · ${escapeHtml(c.primary_role)}</span>
         ${rankBadge}
         ${c.claim_verified ? '<span class="bnet-verified" title="Confirmed by your Battle.net account">✓ Battle.net</span>'
-          : `<button onclick="releaseCharacterClaim(${jsAttr(c.name)})" title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>`}
+          : `<button ${act('click', 'releaseCharacterClaim', String(c.name))} title="Release this character" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; padding:0 2px;">✕</button>`}
       </div>`;
     }).join('');
   }
 
-  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" onclick="syncFromBattleNet()">↻ Sync from Battle.net</button>`;
+  pickerEl.innerHTML = `<button class="btn-secondary" style="font-size:12px; padding:6px 12px;" title="Refresh your characters from your Battle.net account" data-click="syncFromBattleNet">↻ Sync from Battle.net</button>`;
 }
 
 // My Profile: let go of one of my characters an officer assigned by hand.
@@ -6184,7 +6232,7 @@ function renderMembersListFromDB(members) {
     // Officers can disconnect any of them (a wrong connection), then assign it to the right person.
     const charLabels = chars.filter(c => c.name).map(c => escapeHtml(c.name)
       + (c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : '')
-      + (isOfficer ? `<button onclick="releaseMemberCharacter(${jsAttr(c.name)}, ${jsAttr(accountId)})" title="Disconnect ${escapeHtml(c.name)}" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:11px; line-height:1; padding:0 2px;">✕</button>` : ''));
+      + (isOfficer ? `<button ${act('click', 'releaseMemberCharacter', String(c.name), String(accountId))} title="Disconnect ${escapeHtml(c.name)}" style="background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:11px; line-height:1; padding:0 2px;">✕</button>` : ''));
     const isSelf = AUTH.session?.id === accountId;
     const discordId = acct?.discord_id || null;
 
@@ -6203,21 +6251,21 @@ function renderMembersListFromDB(members) {
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
-        ${isSelf ? `<button onclick="showAssignCharacter(${jsAttr(accountId)})" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to yourself">+ Assign</button>` : ''}
+        ${isSelf ? `<button ${act('click', 'showAssignCharacter', String(accountId))} class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to yourself">+ Assign</button>` : ''}
         ${isOfficer && !isSelf ? `
           <div style="display:flex; align-items:center; gap:6px;">
-            <button onclick="promptSetMemberDiscordId('${accountId}', ${discordId ? `'${discordId}'` : 'null'})" class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — only they can change it (/link in Discord)' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
-            <button onclick="showAssignCharacter(${jsAttr(accountId)})" class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
+            <button ${act('click', 'promptSetMemberDiscordId', String(accountId), discordId ? String(discordId) : null)} class="btn-secondary" style="padding:4px 10px; font-size:12px; color:${discordId ? '#5865F2' : 'var(--text-mute)'};" title="${discordId ? 'Discord linked — only they can change it (/link in Discord)' : 'Click to link this member on Discord'}">${discordId ? '🔗 Discord' : 'Discord: —'}</button>
+            <button ${act('click', 'showAssignCharacter', String(accountId))} class="btn-secondary" style="padding:4px 10px; font-size:12px;" title="Assign a character to this member">+ Assign</button>
             ${m.role === 'owner'
               ? `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--gold);" title="Hand the team to someone else from Team Management > Roles">Owner</span>`
-              : `<select onchange="updateRoleFromDB('${accountId}', this.value)"
+              : `<select ${act('change', 'updateRoleFromDB', String(accountId), "$value")}
                   style="background:var(--bg2); border:1px solid var(--border); border-radius:4px; color:var(--text); font-family:'Rajdhani',sans-serif; font-size:13px; padding:4px 8px; cursor:pointer;">
                   <option value="viewer"  ${m.role==='viewer'  ?'selected':''}>Viewer</option>
                   <option value="member"  ${m.role==='member'  ?'selected':''}>Member</option>
                   <option value="officer" ${m.role==='officer'?'selected':''}>Officer</option>
                 </select>`
             }
-            ${(isOfficer && m.role !== 'owner') ? `<button onclick="removeMember('${accountId}')" style="background:rgba(196,30,58,0.1); border:1px solid rgba(196,30,58,0.3); border-radius:4px; color:#ff6b6b; font-family:'Rajdhani',sans-serif; font-size:12px; padding:4px 8px; cursor:pointer;">✕</button>` : ''}
+            ${(isOfficer && m.role !== 'owner') ? `<button ${act('click', 'removeMember', String(accountId))} style="background:rgba(196,30,58,0.1); border:1px solid rgba(196,30,58,0.3); border-radius:4px; color:#ff6b6b; font-family:'Rajdhani',sans-serif; font-size:12px; padding:4px 8px; cursor:pointer;">✕</button>` : ''}
           </div>
         ` : `<span style="font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--text-mute);">${m.role}</span>`}
       </div>
@@ -6312,7 +6360,7 @@ function showAssignCharacter(accountId) {
 
   const options = available.map(p => {
     const color = CLASS_COLORS[p.class] || '#888';
-    return `<div onclick="assignCharacter(${jsAttr(p.name)})" style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" onmouseover="this.style.background='var(--bg4)'" onmouseout="this.style.background='transparent'">
+    return `<div ${act('click', 'assignCharacter', String(p.name))} style="padding:10px 14px; cursor:pointer; border-radius:4px; border:1px solid var(--border); margin-bottom:6px; display:flex; align-items:center; gap:10px; transition:background 0.15s;" class="assign-option">
       <div style="width:10px; height:10px; border-radius:50%; background:${color};"></div>
       <span style="color:${color}; font-weight:700; font-size:14px;">${escapeHtml(p.name)}</span>
       <span style="color:var(--text-mute); font-size:12px; margin-left:auto;">${escapeHtml(p.class)} · ${escapeHtml(p.serverDisplay || p.server)}</span>
@@ -6326,7 +6374,7 @@ function showAssignCharacter(accountId) {
     <div id="claim-picker" style="background:var(--bg3); border:1px solid var(--gold-dim); border-radius:6px; padding:16px; margin-bottom:16px;">
       <div style="font-size:13px; font-weight:700; color:var(--gold); margin-bottom:12px;">Assign a character to ${escapeHtml(who)}:</div>
       <div style="max-height:300px; overflow-y:auto;">${options}</div>
-      <button onclick="document.getElementById('claim-picker').remove()" class="btn-secondary" style="margin-top:8px; width:100%;">Cancel</button>
+      <button data-click="closeAssignPicker" class="btn-secondary" style="margin-top:8px; width:100%;">Cancel</button>
     </div>
   `);
   const picker = document.getElementById('claim-picker');
@@ -6576,7 +6624,7 @@ function applyGameRules(gameId) {
 // The WCL Scores and Recruits difficulty buttons, from the version's list.
 function renderDifficultyFilters() {
   const buttons = (current, handler) => GAME.difficulties.map(d =>
-    `<button class="filter-btn${d.key === current ? ' active' : ''}" onclick="${handler}(${jsAttr(d.key)}, this)">${escapeHtml(d.label)}</button>`).join('');
+    `<button class="filter-btn${d.key === current ? ' active' : ''}" ${act('click', handler, String(d.key), '$el')}>${escapeHtml(d.label)}</button>`).join('');
   const scores = document.getElementById('difficulty-filter');
   if (scores) scores.innerHTML = buttons(STATE.scoreDifficulty, 'setScoreDifficulty');
   const recruits = document.getElementById('recruit-difficulty-filter');
@@ -6654,7 +6702,7 @@ function renderTeamSwitcher() {
   const item = t => {
     const otherGuild = current && t.guildId !== current.guildId;
     const isCurrent = t.teamId === STATE.teamId;
-    return `<button class="dropdown-item team-menu-item${isCurrent ? ' active' : ''}" onclick="chooseTeam(${jsAttr(t.teamId)})">
+    return `<button class="dropdown-item team-menu-item${isCurrent ? ' active' : ''}" ${act('click', 'chooseTeam', String(t.teamId))}>
       <span class="team-menu-check">${isCurrent ? '✓' : ''}</span>
       <span class="team-menu-name">${escapeHtml(t.teamName || 'Team')}${otherGuild
         ? `<span class="team-menu-guild">${escapeHtml(t.guildName || '')}${t.guildServer ? ' – ' + escapeHtml(titleCaseServer(t.guildServer)) : ''}</span>` : ''}</span>
@@ -6668,7 +6716,7 @@ function renderTeamSwitcher() {
         teams.filter(t => (t.game || 'retail') === id).map(item).join('')).join('')
     : teams.map(item).join('');
   menu.innerHTML = body +
-    `<button class="dropdown-item team-menu-item team-menu-another" onclick="startAnotherGuild()"><span class="team-menu-check">＋</span><span class="team-menu-name">Start or join another guild</span></button>`;
+    `<button class="dropdown-item team-menu-item team-menu-another" data-click="startAnotherGuild"><span class="team-menu-check">＋</span><span class="team-menu-name">Start or join another guild</span></button>`;
   renderGameBadge();
 }
 
@@ -7168,7 +7216,7 @@ function recruitSpecLineHtml(r) {
   const rest = recruitStatLine(null, r.class, r.lookup);
   return `<select class="recruit-spec-select${TEAM_MGMT.specDrafts[r.id] ? ' changed' : ''}" aria-label="Spec"
       title="Their main spec. Sets their role, and whether WCL scores use DPS or HPS."
-      onchange="setRecruitSpecDraft(${jsAttr(r.id)}, this.value)">${options}</select> ${escapeHtml(rest)}`;
+      ${act('change', 'setRecruitSpecDraft', String(r.id), "$value")}>${options}</select> ${escapeHtml(rest)}`;
 }
 
 // The spec their WCL logs are on, from the last score fetch (the selected
@@ -7190,7 +7238,7 @@ function recruitSpecHintHtml(r) {
   if (!logged) return '';
   const action = TEAM_MGMT.specEditing ? 'setRecruitSpecDraft' : 'setRecruitSpec';
   return `<button class="recruit-spec-hint" title="Their ranked Warcraft Logs parses are on ${escapeHtml(logged)}. Switch their spec to match."
-    onclick="${action}(${jsAttr(r.id)}, ${jsAttr(logged)})">Logs as ${escapeHtml(logged)} on WCL · Use ${escapeHtml(logged)}</button>`;
+    ${act('click', action, String(r.id), String(logged))}>Logs as ${escapeHtml(logged)} on WCL · Use ${escapeHtml(logged)}</button>`;
 }
 
 // "Change Recruit Specs", or Cancel / Save Changes while editing.
@@ -7199,16 +7247,16 @@ function renderRecruitSpecToolbar() {
   if (!el) return;
   if (TEAM_MGMT.recruits.length === 0) { el.innerHTML = ''; return; }
   if (!TEAM_MGMT.specEditing) {
-    el.innerHTML = `<button class="btn-secondary recruit-small-btn" onclick="startRecruitSpecEdit()"
+    el.innerHTML = `<button class="btn-secondary recruit-small-btn" data-click="startRecruitSpecEdit"
       title="Raider.io only shows the spec they last logged out in. Set each recruit's real main spec here.">Change Recruit Specs</button>`;
     return;
   }
   const n = Object.keys(TEAM_MGMT.specDrafts).length;
   const busy = TEAM_MGMT.specSaving ? ' disabled' : '';
   // Left-aligned, over the spec column; Save takes Change Recruit Specs' spot.
-  el.innerHTML = `<button class="btn-primary recruit-small-btn" onclick="saveRecruitSpecEdits()"${busy || (n ? '' : ' disabled')}>${
+  el.innerHTML = `<button class="btn-primary recruit-small-btn" data-click="saveRecruitSpecEdits"${busy || (n ? '' : ' disabled')}>${
       TEAM_MGMT.specSaving ? 'Saving...' : `Save Changes${n ? ` (${n})` : ''}`}</button>
-    <button class="btn-secondary recruit-small-btn" onclick="cancelRecruitSpecEdit()"${busy}>Cancel</button>
+    <button class="btn-secondary recruit-small-btn" data-click="cancelRecruitSpecEdit"${busy}>Cancel</button>
     <span class="recruit-spec-toolbar-note">Pick each recruit's main spec, then save.</span>`;
 }
 
@@ -7333,7 +7381,7 @@ function renderRecruits() {
             <span class="recruit-name" style="color:${color};">${escapeHtml(r.name)}</span>
             <span class="recruit-realm">${escapeHtml(r.realm)}</span>
             ${r.lookup?.renamedFrom ? `<span class="recruit-renamed" title="${escapeHtml(RENAMED_TOOLTIP)}">formerly ${escapeHtml(formerCharacterText(r.lookup.renamedFrom))}</span>` : ''}
-            ${r.application_key ? `<button class="recruit-badge clickable" title="View their application" onclick="openApplicationModal(${jsAttr(r.application_key)})">Application</button>` : ''}
+            ${r.application_key ? `<button class="recruit-badge clickable" title="View their application" ${act('click', 'openApplicationModal', String(r.application_key))}>Application</button>` : ''}
           </div>
           <div class="recruit-sub">${recruitSpecLineHtml(r)}</div>
           ${recruitSpecHintHtml(r)}
@@ -7347,25 +7395,25 @@ function renderRecruits() {
           <div class="recruit-date-line">
             <input type="date" class="recruit-date-input" value="${escapeHtml(r.contacted_at || '')}" max="${attendanceDateStr(new Date())}"
               title="When you last contacted them. Change it if you've talked to them again, or to fix a wrong date."
-              aria-label="Last contacted" onchange="queueRecruitDateSave(${jsAttr(r.id)}, this)" onblur="queueRecruitDateSave(${jsAttr(r.id)}, this, true)" />
+              aria-label="Last contacted" ${act('change', 'queueRecruitDateSave', String(r.id), "$el")} ${act('blur', 'queueRecruitDateSave', String(r.id), "$el", true)} />
             <span class="recruit-sub">${ago}</span>
           </div>
           <div class="recruit-sub">${escapeHtml(RECRUIT_CHANNEL_LABELS[r.channel] || '—')}${addedBy ? ' · ' + escapeHtml(addedBy) : ''}</div>
         </div>
         <div class="recruit-status">
-          <select onchange="updateRecruitField(${jsAttr(r.id)}, 'status', this.value)">${statusOptions}</select>
-          ${r.status === 'joined' ? `<button class="btn-secondary recruit-small-btn" onclick="addRecruitToRoster(${jsAttr(r.id)})">Add to roster</button>` : ''}
+          <select ${act('change', 'updateRecruitField', String(r.id), "status", "$value")}>${statusOptions}</select>
+          ${r.status === 'joined' ? `<button class="btn-secondary recruit-small-btn" ${act('click', 'addRecruitToRoster', String(r.id))}>Add to roster</button>` : ''}
         </div>
         <div class="recruit-notes">
           <input type="text" value="${escapeHtml(r.notes || '')}" placeholder="Notes" maxlength="500"
-            onchange="updateRecruitField(${jsAttr(r.id)}, 'notes', this.value)" />
+            ${act('change', 'updateRecruitField', String(r.id), "notes", "$value")} />
         </div>
         <div class="recruit-actions">
           ${templateOptions ? `<select class="recruit-template-select" title="Copy a message template with this recruit's name filled in"
-            onchange="copyTemplateForRecruit(this.value, ${jsAttr(r.id)}); this.value='';"><option value="">Copy template…</option>${templateOptions}</select>` : ''}
+            ${act('change', 'copyTemplateFromSelect', '$el', String(r.id))}><option value="">Copy template…</option>${templateOptions}</select>` : ''}
           ${r.status === 'rejected'
-            ? `<button class="recruit-delete" title="Delete permanently" onclick="deleteRecruit(${jsAttr(r.id)})">✕</button>`
-            : `<button class="recruit-delete" title="Reject" onclick="rejectRecruit(${jsAttr(r.id)})">✕</button>`}
+            ? `<button class="recruit-delete" title="Delete permanently" ${act('click', 'deleteRecruit', String(r.id))}>✕</button>`
+            : `<button class="recruit-delete" title="Reject" ${act('click', 'rejectRecruit', String(r.id))}>✕</button>`}
         </div>
       </div>`;
   }).join('');
@@ -7593,8 +7641,8 @@ function renderRecruitTemplates() {
       <div class="template-card-header">
         <div class="template-card-title">${escapeHtml(t.title)}</div>
         <div style="display:flex; gap:8px;">
-          <button class="btn-secondary recruit-small-btn" onclick="copyTemplateRaw(${jsAttr(t.id)})">Copy</button>
-          <button class="btn-secondary recruit-small-btn" onclick="openRecruitTemplateModal(${jsAttr(t.id)})">Edit</button>
+          <button class="btn-secondary recruit-small-btn" ${act('click', 'copyTemplateRaw', String(t.id))}>Copy</button>
+          <button class="btn-secondary recruit-small-btn" ${act('click', 'openRecruitTemplateModal', String(t.id))}>Edit</button>
         </div>
       </div>
       <div class="template-card-body">${escapeHtml(t.body)}</div>
@@ -7968,18 +8016,18 @@ function renderApplicants() {
 
     // Whichever action is likely -- Resolve when they're already on the
     // roster, otherwise Add to Recruitment -- gets the highlighted button.
-    const promoteBtn = cls => `<button class="${cls} recruit-small-btn" onclick="promoteApplication(${jsAttr(a.key)})">Add to Recruitment</button>`;
-    const resolveBtn = cls => `<button class="${cls} recruit-small-btn" title="${escapeHtml(RESOLVE_TOOLTIP)}" onclick="resolveApplication(${jsAttr(a.key)})">Resolve</button>`;
+    const promoteBtn = cls => `<button class="${cls} recruit-small-btn" ${act('click', 'promoteApplication', String(a.key))}>Add to Recruitment</button>`;
+    const resolveBtn = cls => `<button class="${cls} recruit-small-btn" title="${escapeHtml(RESOLVE_TOOLTIP)}" ${act('click', 'resolveApplication', String(a.key))}>Resolve</button>`;
     const actions = pending
       ? (onRoster ? resolveBtn('btn-primary') + promoteBtn('btn-secondary') : promoteBtn('btn-primary') + resolveBtn('btn-secondary'))
-        + `<button class="btn-secondary recruit-small-btn applicant-reject" onclick="rejectApplication(${jsAttr(a.key)})">Reject</button>`
+        + `<button class="btn-secondary recruit-small-btn applicant-reject" ${act('click', 'rejectApplication', String(a.key))}>Reject</button>`
       : (a.decision === 'rejected' || a.decision === 'resolved')
-        ? `<button class="btn-secondary recruit-small-btn" title="Move back to Needs decision" onclick="undoApplicationDecision(${jsAttr(a.key)})">Undo</button>`
+        ? `<button class="btn-secondary recruit-small-btn" title="Move back to Needs decision" ${act('click', 'undoApplicationDecision', String(a.key))}>Undo</button>`
         : '';
 
     const selectCell = pending
       ? `<input type="checkbox" class="applicant-check" aria-label="Select ${escapeHtml(name || 'application')}"
-           ${TEAM_MGMT.selectedApplicants.has(a.key) ? 'checked' : ''} onchange="toggleApplicantSelected(${jsAttr(a.key)}, this.checked)" />`
+           ${TEAM_MGMT.selectedApplicants.has(a.key) ? 'checked' : ''} ${act('change', 'toggleApplicantSelected', String(a.key), "$checked")} />`
       : '<span></span>';
 
     return `
@@ -8001,7 +8049,7 @@ function renderApplicants() {
           ${decisionHtml}
         </div>
         <div class="applicant-actions">
-          <button class="btn-secondary recruit-small-btn" onclick="openApplicationModal(${jsAttr(a.key)})">View application</button>
+          <button class="btn-secondary recruit-small-btn" ${act('click', 'openApplicationModal', String(a.key))}>View application</button>
           ${actions}
         </div>
       </div>`;
@@ -8173,14 +8221,14 @@ function renderApplicantBulkBar(pendingVisible) {
   bar.style.display = '';
   bar.innerHTML = `
     <label class="applicant-select-all">
-      <input type="checkbox" ${allChecked ? 'checked' : ''}${busy} onchange="selectAllApplicants(this.checked)" />
+      <input type="checkbox" ${allChecked ? 'checked' : ''}${busy} data-change="selectAllApplicants" data-change-args='["$checked"]' />
       ${n ? `${n} selected` : 'Select all'}
     </label>
     ${n ? `<div class="applicant-bulk-actions">
-      <button class="btn-primary recruit-small-btn" id="bulk-promote-btn"${busy} onclick="bulkPromoteApplications()">Add to Recruitment</button>
-      <button class="btn-secondary recruit-small-btn"${busy} title="${escapeHtml(RESOLVE_TOOLTIP)}" onclick="bulkDecideApplications('resolved')">Resolve</button>
-      <button class="btn-secondary recruit-small-btn applicant-reject"${busy} onclick="bulkDecideApplications('rejected')">Reject</button>
-      <button class="applicant-clear-selection"${busy} onclick="selectAllApplicants(false)">Clear</button>
+      <button class="btn-primary recruit-small-btn" id="bulk-promote-btn"${busy} data-click="bulkPromoteApplications">Add to Recruitment</button>
+      <button class="btn-secondary recruit-small-btn"${busy} title="${escapeHtml(RESOLVE_TOOLTIP)}" data-click="bulkDecideApplications" data-click-args='["resolved"]'>Resolve</button>
+      <button class="btn-secondary recruit-small-btn applicant-reject"${busy} data-click="bulkDecideApplications" data-click-args='["rejected"]'>Reject</button>
+      <button class="applicant-clear-selection"${busy} data-click="selectAllApplicants" data-click-args='[false]'>Clear</button>
     </div>` : ''}`;
 }
 
@@ -8267,14 +8315,14 @@ function renderApplicantSettings() {
     <div class="applicant-step"><span class="applicant-step-num">1</span><div style="flex:1; min-width:0;">
       <div>Open your application form's <strong>responses spreadsheet</strong> and share it with this address as a <strong>Viewer</strong>:</div>
       <div class="applicant-email-row"><code>${escapeHtml(d.serviceEmail || '')}</code>
-        <button class="btn-secondary recruit-small-btn" onclick="copyServiceEmail()">Copy</button></div>
+        <button class="btn-secondary recruit-small-btn" data-click="copyServiceEmail">Copy</button></div>
     </div></div>`;
   const urlStep = `
     <div class="applicant-step"><span class="applicant-step-num">2</span><div style="flex:1; min-width:0;">
       <div>Paste the spreadsheet's link:</div>
       <div class="applicant-url-row">
         <input type="text" id="applicant-sheet-url" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off" />
-        <button class="btn-primary recruit-small-btn" id="applicant-connect-btn" onclick="connectApplicationSheet()">Connect</button>
+        <button class="btn-primary recruit-small-btn" id="applicant-connect-btn" data-click="connectApplicationSheet">Connect</button>
       </div>
       <div id="applicant-connect-msg" class="status-msg" style="margin-top:6px;"></div>
     </div></div>`;
@@ -8293,7 +8341,7 @@ function renderApplicantSettings() {
     el.innerHTML = `<div class="applicant-setup-title">Couldn't read your application responses</div>
       <div class="recruit-lookup warn" style="margin:6px 0 14px;">${escapeHtml(d.error)}</div>
       ${shareStep}${urlStep}
-      <div style="display:flex; justify-content:flex-end;"><button class="btn-secondary recruit-small-btn" onclick="disconnectApplicationSheet()">Disconnect</button></div>`;
+      <div style="display:flex; justify-content:flex-end;"><button class="btn-secondary recruit-small-btn" data-click="disconnectApplicationSheet">Disconnect</button></div>`;
     return;
   }
 
@@ -8312,8 +8360,8 @@ function renderApplicantSettings() {
     <div class="recruit-add-footer">
       <div id="applicant-map-msg" class="status-msg"></div>
       <div style="display:flex; gap:8px;">
-        <button class="btn-secondary recruit-small-btn" onclick="disconnectApplicationSheet()">Disconnect</button>
-        <button class="btn-primary recruit-small-btn" onclick="saveApplicantColumnMap()">Save fields</button>
+        <button class="btn-secondary recruit-small-btn" data-click="disconnectApplicationSheet">Disconnect</button>
+        <button class="btn-primary recruit-small-btn" data-click="saveApplicantColumnMap">Save fields</button>
       </div>
     </div>`;
 }
@@ -8702,8 +8750,8 @@ function renderSeasonPrompt() {
   el.className = 'survey-banner';
   el.innerHTML = `<div class="survey-banner-text">${text}</div>
     <div class="survey-banner-actions">
-      <button class="btn-primary recruit-small-btn" onclick="startSurveyFromPrompt()">Create survey</button>
-      <button class="btn-secondary recruit-small-btn" onclick="dismissSeasonPrompt()">Not now</button>
+      <button class="btn-primary recruit-small-btn" data-click="startSurveyFromPrompt">Create survey</button>
+      <button class="btn-secondary recruit-small-btn" data-click="dismissSeasonPrompt">Not now</button>
     </div>`;
 }
 
@@ -8749,11 +8797,11 @@ function renderSurveyBanner() {
   el.innerHTML = mine.response
     ? `<div class="survey-banner-text"><strong>${title}</strong> · Thanks, you've answered. You can change your answers until it closes.</div>
        <div class="survey-banner-actions">
-         <button class="btn-secondary recruit-small-btn" onclick="openSurveyModal()">Edit my answers</button>
-         <button class="survey-banner-dismiss" title="Hide this reminder" aria-label="Hide this reminder" onclick="dismissSurveyBanner()">&times;</button>
+         <button class="btn-secondary recruit-small-btn" data-click="openSurveyModal">Edit my answers</button>
+         <button class="survey-banner-dismiss" title="Hide this reminder" aria-label="Hide this reminder" data-click="dismissSurveyBanner">&times;</button>
        </div>`
     : `<div class="survey-banner-text"><strong>${title}</strong> · Let your officers know if you're coming back next season, and what you'd like to play.</div>
-       <div class="survey-banner-actions"><button class="btn-primary recruit-small-btn" onclick="openSurveyModal()">Answer the survey</button></div>`;
+       <div class="survey-banner-actions"><button class="btn-primary recruit-small-btn" data-click="openSurveyModal">Answer the survey</button></div>`;
 }
 
 function surveySpecOptions(selected) {
@@ -8814,7 +8862,7 @@ function renderSurveyForm() {
     <div class="survey-q">
       <div class="survey-q-label">${escapeHtml(fixed.returning.prompt)}${req}</div>
       <div class="survey-choice-row">
-        ${['returning', 'unsure', 'not_returning'].map(s => surveyChoice('radio', 'sv-status', s, fixed.returning.labels[s], status === s, ' onchange="updateSurveyFormVisibility()"')).join('')}
+        ${['returning', 'unsure', 'not_returning'].map(s => surveyChoice('radio', 'sv-status', s, fixed.returning.labels[s], status === s, ' data-change="updateSurveyFormVisibility"')).join('')}
       </div>
     </div>
     <div id="sv-staying-fields">${specsHtml}${flexHtml}</div>
@@ -8827,8 +8875,8 @@ function renderSurveyForm() {
     <div id="sv-msg" class="status-msg"></div>
     <div class="survey-form-actions">
       <span class="recruit-sub">Only officers can see your answers.</span>
-      <button class="btn-secondary" onclick="closeSurveyModal()">Cancel</button>
-      <button class="btn-primary" id="sv-submit-btn" onclick="submitSurvey()">${r ? 'Save changes' : 'Send answers'}</button>
+      <button class="btn-secondary" data-click="closeSurveyModal">Cancel</button>
+      <button class="btn-primary" id="sv-submit-btn" data-click="submitSurvey">${r ? 'Save changes' : 'Send answers'}</button>
     </div>`;
   updateSurveyFormVisibility();
 }
@@ -9017,7 +9065,7 @@ function renderSeasonTab() {
     panel.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📋</div><h3>Ask your raiders about next season</h3>
       <p>Raiders answer on RaidLead: whether they're coming back, what they want to play, and what they can flex to.
       You'll see who hasn't answered yet, the roster it adds up to, and any raid buffs or roles you're missing.</p>
-      <button class="btn-primary" style="margin-top:14px;" onclick="openSurveyEditor('new')">Create survey</button></div>`;
+      <button class="btn-primary" style="margin-top:14px;" data-click="openSurveyEditor" data-click-args='["new"]'>Create survey</button></div>`;
     return;
   }
 
@@ -9031,23 +9079,23 @@ function renderSeasonTab() {
   const gaps = surveyGaps(projection);
 
   const picker = SURVEY.surveys.length > 1
-    ? `<select class="season-survey-select" onchange="selectSeasonSurvey(this.value)" aria-label="Survey">${SURVEY.surveys.map(s =>
+    ? `<select class="season-survey-select" data-change="selectSeasonSurvey" data-change-args='["$value"]' aria-label="Survey">${SURVEY.surveys.map(s =>
         `<option value="${escapeHtml(s.id)}"${s.id === survey.id ? ' selected' : ''}>${escapeHtml(s.title)} (${s.closed_at ? 'closed ' + surveyDate(s.closed_at) : 'open'})</option>`).join('')}</select>`
     : '';
   const actions = isOpen
-    ? `<button class="btn-primary recruit-small-btn" onclick="copySurveyLink()">Copy survey link</button>
-       <button class="btn-secondary recruit-small-btn" onclick="openSurveyEditor('edit')">Edit questions</button>
-       <button class="btn-secondary recruit-small-btn" onclick="closeSeasonSurvey()">Close survey</button>`
-    : `${openOne ? '' : `<button class="btn-primary recruit-small-btn" onclick="openSurveyEditor('new')">New survey</button>
-       <button class="btn-secondary recruit-small-btn" onclick="reopenSeasonSurvey()">Reopen</button>`}
-       <button class="btn-secondary recruit-small-btn applicant-reject" onclick="deleteSeasonSurvey()">Delete</button>`;
+    ? `<button class="btn-primary recruit-small-btn" data-click="copySurveyLink">Copy survey link</button>
+       <button class="btn-secondary recruit-small-btn" data-click="openSurveyEditor" data-click-args='["edit"]'>Edit questions</button>
+       <button class="btn-secondary recruit-small-btn" data-click="closeSeasonSurvey">Close survey</button>`
+    : `${openOne ? '' : `<button class="btn-primary recruit-small-btn" data-click="openSurveyEditor" data-click-args='["new"]'>New survey</button>
+       <button class="btn-secondary recruit-small-btn" data-click="reopenSeasonSurvey">Reopen</button>`}
+       <button class="btn-secondary recruit-small-btn applicant-reject" data-click="deleteSeasonSurvey">Delete</button>`;
 
   // Who hasn't answered
   const waitingHtml = (tracker.waitingClaimed.length || tracker.waitingUnclaimed.length) ? `
     <div class="season-section">
       <div class="season-section-head">
         <div class="season-section-title">Still waiting on (${tracker.waitingClaimed.length + tracker.waitingUnclaimed.length})</div>
-        ${tracker.waitingClaimed.length ? `<button class="btn-secondary recruit-small-btn" onclick="copySurveyWaitingNames()">Copy names</button>` : ''}
+        ${tracker.waitingClaimed.length ? `<button class="btn-secondary recruit-small-btn" data-click="copySurveyWaitingNames">Copy names</button>` : ''}
       </div>
       <div class="season-chips">${tracker.waitingClaimed.map(surveyChip).join('')}</div>
       ${tracker.waitingUnclaimed.length ? `
@@ -9093,7 +9141,7 @@ function renderSeasonTab() {
   // Every response
   const visible = responses.filter(r => SURVEY.responseFilter === 'all' || r.status === SURVEY.responseFilter);
   const filterBtn = (value, label) =>
-    `<button class="filter-btn${SURVEY.responseFilter === value ? ' active' : ''}" onclick="setSurveyResponseFilter('${value}')">${label}</button>`;
+    `<button class="filter-btn${SURVEY.responseFilter === value ? ' active' : ''}" ${act('click', 'setSurveyResponseFilter', String(value))}>${label}</button>`;
   const responsesHtml = `
     <div class="season-section">
       <div class="season-section-head">
@@ -9125,7 +9173,7 @@ function renderSeasonTab() {
     <div class="season-section">
       <div class="season-section-head">
         <div class="season-section-title">Projected roster <span class="recruit-sub">· first choices · ${projection.counted.length} raiders, ${dpsCount} DPS (${GAME.compLabel} needs ${GAME.compTarget.tank} tanks, ${GAME.compTarget.heal} healers, ${GAME.compTarget.dps} DPS)</span></div>
-        <label class="season-toggle"><input type="checkbox" ${SURVEY.includeUnsure ? 'checked' : ''} onchange="setSurveyIncludeUnsure(this.checked)" /> Count "not sure yet"</label>
+        <label class="season-toggle"><input type="checkbox" ${SURVEY.includeUnsure ? 'checked' : ''} data-change="setSurveyIncludeUnsure" data-change-args='["$checked"]' /> Count "not sure yet"</label>
       </div>
       ${gaps.length
         ? `<div class="season-gaps"><strong>Gaps to recruit for:</strong> ${gaps.map(escapeHtml).join(' · ')}</div>`
@@ -9290,7 +9338,7 @@ function renderSurveyEditor() {
     `<div class="survey-editor-item"><div class="survey-editor-item-head"><div class="survey-editor-item-title">${title}</div>${tag}</div>${body}</div>`;
   const lockedTag = '<span class="survey-editor-tag">Always asked</span>';
   const askToggle = (id, on) =>
-    `<label class="season-toggle"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} onchange="surveyEditorRefresh()" /> Ask this</label>`;
+    `<label class="season-toggle"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} data-change="surveyEditorRefresh" /> Ask this</label>`;
   const opts = (map, selected) => Object.entries(map).map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`).join('');
 
   const fixedHtml = [
@@ -9303,7 +9351,7 @@ function renderSurveyEditor() {
       </div>`),
     card('Class and spec choices', '<span class="survey-editor-tag">First choice always asked</span>', `
       <div class="survey-editor-row">
-        ${field('Ask for', `<select id="se-fx-spec-count" onchange="surveyEditorRefresh()">${opts({ 1: 'First choice only', 2: 'First and second choice', 3: 'First, second, and third choice' }, String(f.specs.count))}</select>`)}
+        ${field('Ask for', `<select id="se-fx-spec-count" data-change="surveyEditorRefresh">${opts({ 1: 'First choice only', 2: 'First and second choice', 3: 'First, second, and third choice' }, String(f.specs.count))}</select>`)}
       </div>
       ${Array.from({ length: f.specs.count }, (_, i) => `
         <div class="survey-editor-row">
@@ -9326,9 +9374,9 @@ function renderSurveyEditor() {
         ${(it.options || []).map((o, j) => `<div class="survey-editor-option">
             <input type="text" id="se-item-${i}-opt-${j}" maxlength="200" value="${escapeHtml(o.label || '')}" placeholder="Answer ${j + 1}" />
             ${it.type === 'single' ? `<label class="season-toggle"><input type="checkbox" id="se-item-${i}-flag-${j}" ${o.flag ? 'checked' : ''} /> Flag</label>` : ''}
-            <button class="survey-editor-icon" title="Remove this answer" onclick="surveyEditorRemoveOption(${i}, ${j})">✕</button>
+            <button class="survey-editor-icon" title="Remove this answer" ${act('click', 'surveyEditorRemoveOption', (i), (j))}>✕</button>
           </div>`).join('')}
-        <button class="btn-secondary recruit-small-btn" onclick="surveyEditorAddOption(${i})">+ Add answer</button>
+        <button class="btn-secondary recruit-small-btn" ${act('click', 'surveyEditorAddOption', (i))}>+ Add answer</button>
       </div>`;
     } else if (it.type === 'scale') {
       body = `<div class="survey-editor-row three">
@@ -9341,13 +9389,13 @@ function renderSurveyEditor() {
       <div class="survey-editor-item-head">
         <div class="survey-editor-item-title">Question ${i + 1}</div>
         <div class="survey-editor-item-tools">
-          <button class="survey-editor-icon" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="surveyEditorMove(${i}, -1)">↑</button>
-          <button class="survey-editor-icon" title="Move down" ${i === ed.items.length - 1 ? 'disabled' : ''} onclick="surveyEditorMove(${i}, 1)">↓</button>
-          <button class="survey-editor-remove" onclick="surveyEditorRemove(${i})">Remove</button>
+          <button class="survey-editor-icon" title="Move up" ${i === 0 ? 'disabled' : ''} ${act('click', 'surveyEditorMove', (i), -1)}>↑</button>
+          <button class="survey-editor-icon" title="Move down" ${i === ed.items.length - 1 ? 'disabled' : ''} ${act('click', 'surveyEditorMove', (i), 1)}>↓</button>
+          <button class="survey-editor-remove" ${act('click', 'surveyEditorRemove', (i))}>Remove</button>
         </div>
       </div>
       <div class="survey-editor-row three">
-        ${field('Type', `<select id="se-item-${i}-type" onchange="surveyEditorRefresh()">${opts(SURVEY_TYPE_LABELS, it.type)}</select>`)}
+        ${field('Type', `<select id="se-item-${i}-type" data-change="surveyEditorRefresh">${opts(SURVEY_TYPE_LABELS, it.type)}</select>`)}
         ${field('Ask', `<select id="se-item-${i}-audience">${opts(SURVEY_AUDIENCE_LABELS, it.audience || 'returning')}</select>`)}
         <div class="survey-editor-required"><label class="season-toggle"><input type="checkbox" id="se-item-${i}-required" ${it.required ? 'checked' : ''} /> Required</label></div>
       </div>
@@ -9372,7 +9420,7 @@ function renderSurveyEditor() {
       <div class="survey-editor-note" style="margin-bottom:10px;">Asked after the questions above, in this order.</div>
       ${itemsHtml || '<div class="survey-editor-note">None yet.</div>'}
       <div class="form-group survey-editor-add">
-        <select id="se-add" onchange="surveyEditorAdd(this.value)" aria-label="Add a question">
+        <select id="se-add" data-change="surveyEditorAdd" data-change-args='["$value"]' aria-label="Add a question">
           <option value="">+ Add a question...</option>
           <option value="policy">Policy acknowledgement (Yes, or a flagged answer)</option>
           <option value="single">Multiple choice (pick one)</option>
@@ -9386,8 +9434,8 @@ function renderSurveyEditor() {
 
     <div id="se-msg" class="status-msg"></div>
     <div class="survey-form-actions">
-      <button class="btn-secondary" onclick="closeSurveyEditor()">Cancel</button>
-      <button class="btn-primary" id="se-save-btn" onclick="saveSurveyEditor()">${ed.mode === 'edit' ? 'Save changes' : 'Open survey'}</button>
+      <button class="btn-secondary" data-click="closeSurveyEditor">Cancel</button>
+      <button class="btn-primary" id="se-save-btn" data-click="saveSurveyEditor">${ed.mode === 'edit' ? 'Save changes' : 'Open survey'}</button>
     </div>`;
 }
 
@@ -9694,7 +9742,7 @@ function renderJoinOrderTab() {
       <p>Join Order numbers your raiders by when they joined this season. When more than ${GAME.raidCap} want to raid (${escapeHtml(GAME.raidCapLabel)}),
       #${GAME.raidCap + 1} is next in if someone in the first ${GAME.raidCap} is missing.</p>
       <p>Opening a Next Season survey starts a new order automatically, in the order raiders finish it. You can also start one now from your current roster and arrange it by hand.</p>
-      <button class="btn-primary" style="margin-top:14px;" onclick="startJoinOrderFromRoster()">Start from current roster</button></div>`;
+      <button class="btn-primary" style="margin-top:14px;" data-click="startJoinOrderFromRoster">Start from current roster</button></div>`;
     return;
   }
 
@@ -9707,18 +9755,18 @@ function renderJoinOrderTab() {
   };
 
   const picker = JOIN.lists.length > 1
-    ? `<select class="season-survey-select" onchange="selectJoinOrderList(this.value)" aria-label="Join order">${JOIN.lists.map(l =>
+    ? `<select class="season-survey-select" data-change="selectJoinOrderList" data-change-args='["$value"]' aria-label="Join order">${JOIN.lists.map(l =>
         `<option value="${escapeHtml(l.id)}"${l.id === JOIN.list.id ? ' selected' : ''}>${escapeHtml(l.title)}${l.id === JOIN.currentId ? ' (this season)' : ` (${surveyDate(l.created_at)})`}</option>`).join('')}</select>`
     : '';
 
   const rows = active.map((e, i) => {
     const tools = isCurrent ? `
       <div class="join-tools">
-        <button class="survey-editor-icon" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="joinMove(${jsAttr(e.id)}, -1)">↑</button>
-        <button class="survey-editor-icon" title="Move down" ${i === active.length - 1 ? 'disabled' : ''} onclick="joinMove(${jsAttr(e.id)}, 1)">↓</button>
+        <button class="survey-editor-icon" title="Move up" ${i === 0 ? 'disabled' : ''} ${act('click', 'joinMove', String(e.id), -1)}>↑</button>
+        <button class="survey-editor-icon" title="Move down" ${i === active.length - 1 ? 'disabled' : ''} ${act('click', 'joinMove', String(e.id), 1)}>↓</button>
         <input type="number" class="join-moveto" min="1" max="${active.length}" value="${i + 1}" title="Move to this number" aria-label="Move ${escapeHtml(e.character_name)} to number"
-          onchange="joinMoveTo(${jsAttr(e.id)}, this.value)" />
-        <button class="survey-editor-icon" title="Take out of the order" onclick="joinRemove(${jsAttr(e.id)})">✕</button>
+          ${act('change', 'joinMoveTo', String(e.id), "$value")} />
+        <button class="survey-editor-icon" title="Take out of the order" ${act('click', 'joinRemove', String(e.id))}>✕</button>
       </div>` : '';
     const row = `<div class="join-row${i >= GAME.raidCap ? ' over-cap' : ''}">
       <div class="join-num">${i + 1}</div>
@@ -9739,11 +9787,11 @@ function renderJoinOrderTab() {
     <div class="season-section">
       <div class="season-section-head">
         <div class="season-section-title">On the roster, not in the order (${missing.length})</div>
-        <button class="btn-secondary recruit-small-btn" onclick="joinAdd(${jsAttr(missing.map(p => p.id).join(','))})">Add all to the end</button>
+        <button class="btn-secondary recruit-small-btn" ${act('click', 'joinAdd', String(missing.map(p => p.id).join(',')))}>Add all to the end</button>
       </div>
       <div class="recruit-sub" style="margin-bottom:8px;">Haven't answered the survey yet, or were on the roster before the order started.</div>
       <div class="season-chips">${missing.map(p => `<button class="season-chip join-add-chip" style="color:${CLASS_COLORS[p.class] || 'var(--text)'};"
-        title="Add ${escapeHtml(p.name)} to the end" onclick="joinAdd(${jsAttr(p.id)})">+ ${escapeHtml(p.name)}</button>`).join('')}</div>
+        title="Add ${escapeHtml(p.name)} to the end" ${act('click', 'joinAdd', String(p.id))}>+ ${escapeHtml(p.name)}</button>`).join('')}</div>
     </div>` : '';
 
   const leftHtml = left.length ? `
@@ -9752,7 +9800,7 @@ function renderJoinOrderTab() {
       ${left.map(e => `<div class="join-row left">
         <div class="join-num">–</div>
         <div class="join-main">${nameHtml(e)}<span class="recruit-sub">${escapeHtml(e.left_reason || 'Left')} · ${surveyDate(e.left_at)} · joined ${surveyDate(e.joined_at)}</span></div>
-        ${isCurrent ? `<div class="join-tools"><button class="btn-secondary recruit-small-btn" onclick="joinRestore(${jsAttr(e.id)})">Put back</button></div>` : ''}
+        ${isCurrent ? `<div class="join-tools"><button class="btn-secondary recruit-small-btn" ${act('click', 'joinRestore', String(e.id))}>Put back</button></div>` : ''}
       </div>`).join('')}
     </div>` : '';
 
@@ -9989,16 +10037,16 @@ function renderRolesTab() {
     const charHtml = chars.length
       ? chars.map(c => `<span style="color:${CLASS_COLORS[c.class] || 'var(--text)'};">${escapeHtml(c.name)}</span>${c.claim_verified ? ' <span class="bnet-verified" title="Confirmed by their Battle.net account">✓</span>' : ''}${(c.rank || 'Main') !== 'Main' ? '<span class="recruit-sub"> (alt)</span>' : ''}`).join(', ')
       : '<span class="roles-none">No character connected</span>';
-    const id = jsAttr(m.account_id);
+    const id = String(m.account_id);
     let control;
     if (m.role === 'owner' || isSelf) {
       control = `<span class="roles-badge role-${escapeHtml(m.role)}">${escapeHtml(ROLE_LABELS[m.role] || m.role)}</span>`;
     } else {
-      control = `<select class="roles-select" aria-label="Role for ${escapeHtml(memberDisplayName(m))}" onchange="changeMemberRole(${id}, this.value)"${ROLES.busy ? ' disabled' : ''}>
+      control = `<select class="roles-select" aria-label="Role for ${escapeHtml(memberDisplayName(m))}" ${act('change', 'changeMemberRole', (id), "$value")}${ROLES.busy ? ' disabled' : ''}>
           ${['viewer', 'member', 'officer'].map(r => `<option value="${r}"${m.role === r ? ' selected' : ''}>${ROLE_LABELS[r]}</option>`).join('')}
         </select>
-        ${isOwner ? `<button class="btn-secondary recruit-small-btn" title="Hand this team over to them -- you become an officer" onclick="transferTeamOwnership(${id})">Make owner</button>` : ''}
-        <button class="survey-editor-icon" title="Remove from the team" onclick="removeTeamMember(${id})">✕</button>`;
+        ${isOwner ? `<button class="btn-secondary recruit-small-btn" title="Hand this team over to them -- you become an officer" ${act('click', 'transferTeamOwnership', (id))}>Make owner</button>` : ''}
+        <button class="survey-editor-icon" title="Remove from the team" ${act('click', 'removeTeamMember', (id))}>✕</button>`;
     }
     return `<div class="roles-row">
       <div class="roles-main">
@@ -10016,7 +10064,7 @@ function renderRolesTab() {
         <div class="season-title">Roles</div>
         <div class="recruit-sub">${counts || 'Nobody yet'}. Officers can change anyone's role except the owner's.</div>
       </div>
-      <div class="season-header-actions"><button class="btn-secondary recruit-small-btn" onclick="showInviteModal()">Invite people</button></div>
+      <div class="season-header-actions"><button class="btn-secondary recruit-small-btn" data-click="showInviteModal">Invite people</button></div>
     </div>
     <div class="roles-legend">
       ${ROLE_INFO.map(([k, l, d]) => `<div class="roles-legend-item"><span class="roles-badge role-${k}">${l}</span><span>${escapeHtml(d)}</span></div>`).join('')}
@@ -10126,13 +10174,13 @@ async function loadOfficerNudge() {
   el.innerHTML = others.length
     ? `<div class="survey-banner-text"><strong>Want help running ${team}?</strong> Make one or more members an Officer so they can edit the roster, plan Raid Night, and help with recruiting.</div>
        <div class="survey-banner-actions">
-         <button class="btn-primary recruit-small-btn" onclick="openRolesTab()">Choose officers</button>
-         <button class="btn-secondary recruit-small-btn" onclick="dismissOfficerNudge()">Not now</button>
+         <button class="btn-primary recruit-small-btn" data-click="openRolesTab">Choose officers</button>
+         <button class="btn-secondary recruit-small-btn" data-click="dismissOfficerNudge">Not now</button>
        </div>`
     : `<div class="survey-banner-text"><strong>Your roster's in.</strong> Invite your raiders next. Once they join, you can pick your officers in Team Management &rarr; Roles.</div>
        <div class="survey-banner-actions">
-         <button class="btn-primary recruit-small-btn" onclick="showInviteModal()">Invite people</button>
-         <button class="btn-secondary recruit-small-btn" onclick="dismissOfficerNudge()">Not now</button>
+         <button class="btn-primary recruit-small-btn" data-click="showInviteModal">Invite people</button>
+         <button class="btn-secondary recruit-small-btn" data-click="dismissOfficerNudge">Not now</button>
        </div>`;
 }
 
@@ -10140,3 +10188,48 @@ function dismissOfficerNudge() {
   try { localStorage.setItem(officerNudgeKey(), '1'); } catch (e) {}
   loadOfficerNudge();
 }
+
+// ── Every action the page's buttons and inputs can run (see act() and
+// dispatchPageAction near escapeHtml). Listed by name, so HTML -- even
+// injected HTML -- can only ever trigger one of these, never other code. ──
+const ACTIONS = {
+  accountMenuItem, addRecruit, addRecruitToRoster, assignCharacter, beginDiscordConnect,
+  bulkDecideApplications, bulkPromoteApplications, cancelRecruitSpecEdit, cancelSetup, changeAttendanceMonth,
+  changeMemberRole, characterClassChanged, characterNameBlur, characterNameInput, characterServerBlur,
+  chooseTeam, clearRaidRoster, closeAddRaidNightModal, closeApplicationModal, closeAssignPicker,
+  closeBnetPermissionHelp, closeBnetPrompt, closeCharacterModal, closeInviteModal, closeMembersModal,
+  closeProfile, closeRaidScheduleModal, closeRecruitTemplateModal, closeSeasonSurvey, closeSurveyEditor,
+  closeSurveyModal, closeWowauditKeyPrompt, connectApplicationSheet, copyDiscordConnectLink, copyInviteLink,
+  copyJoinCode, copyServiceEmail, copyShareUrl, copySurveyLink, copySurveyWaitingNames,
+  copyTemplateFromSelect, copyTemplateRaw, createGuild, deleteLootItem, deleteLootRun, deleteRecruit,
+  deleteRecruitTemplate, deleteSeasonSurvey, disconnectApplicationSheet, dismissOfficerNudge,
+  dismissSeasonPrompt, dismissSurveyBanner, dismissZoneBanner, editProfileCharacter, enterEditMode,
+  exitEditMode, fetchCurrentScoreView, filterGuildRosterResults, generateJoinCode, importFromWowaudit,
+  importLastRaidRoster, joinAdd, joinGuildByCode, joinMove, joinMoveTo, joinRemove, joinRestore, keepFocus,
+  loadApplications, loadGuild, loadLootTab, navigatePlannerDate, onBackdrop, onCharacterNameKey, onEnter,
+  onProgressPullsBracketChange, onSeasonHistoryChange, openAddCharacterModal, openAddRaidNightModal,
+  openApplicationModal, openPlannerDatePicker, openProfileByName, openRaidScheduleModal,
+  openRecruitTemplateModal, openRolesTab, openSurveyEditor, openSurveyModal, pickGuildCharacter,
+  pickNameSuggestion, promoteApplication, promptSetMemberDiscordId, publishRaidPlan, queueRecruitDateSave,
+  reassignLootItem, rebuildCurrentScoreCache, refreshProgressTab, refreshRecruitScores, refreshRoster,
+  rejectApplication, rejectRecruit, releaseCharacterClaim, releaseMemberCharacter, reloadPage,
+  removeCharacterFromModal, removeMember, removePlannerSwap, removeRaidNightFromCalendar, removeTeamMember,
+  reopenSeasonSurvey, resetTierChecklist, resolveApplication, respondToCompanionPair, returnToTeam,
+  revokeConnectedDevice, saveApplicantColumnMap, saveCharacterModal, saveDiscordGuildId,
+  saveDisplayNameFromInput, saveFlexChange, saveRaidSchedule, saveRecruitSpecEdits, saveRecruitTemplate,
+  saveSurveyEditor, saveWclCredentials, saveWowauditKey, scheduleRecruitLookup, selectAllApplicants,
+  selectJoinOrderList, selectSeasonSurvey, setApplicantFilter, setAttendanceActingAs, setLootBindType,
+  setLootSubTab, setPlannerDate, setProgressDifficulty, setProgressRaid, setRecruitScoreDifficulty,
+  setRecruitScoreSort, setRecruitScoreView, setRecruitSpec, setRecruitSpecDraft, setRecruitStatusFilter,
+  setRecruitView, setRosterRankFilter, setScoreDifficulty, setScoreMetricMode, setScoreSort, setScoreView,
+  setSurveyIncludeUnsure, setSurveyResponseFilter, setTeamSubTab, showAddTeamScreen, showAssignCharacter,
+  showGuildSetup, showInviteModal, showJoinGuildScreen, showLandingChoice, showMembersModal, showSetup,
+  showTab, signOut, startAnotherGuild, startDiscordLink, startJoinOrderFromRoster, startRecruitSpecEdit,
+  startSurveyFromPrompt, submitAddRaidNight, submitSurvey, surveyEditorAdd, surveyEditorAddOption,
+  surveyEditorMove, surveyEditorRefresh, surveyEditorRemove, surveyEditorRemoveOption, switchToDetectedZone,
+  syncFromBattleNet, titleCaseServerInput, toggleAccountMenu, toggleAddFromGuild, toggleApplicantSelected,
+  toggleApplicantSettings, toggleMobileNav, toggleMyAttendance, toggleSettingsTeam, toggleShowOrderJoined,
+  toggleTeamMenu, toggleTeamName, toggleTierCheck, toggleWowSyncExplainer, transferTeamOwnership,
+  undoApplicationDecision, updateDisplayNameSaveState, updateRecruitField, updateRoleFromDB,
+  updateSpecRoleLabel, updateSurveyFormVisibility, updateTemplateCharCount,
+};

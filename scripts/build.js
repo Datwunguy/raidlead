@@ -19,12 +19,35 @@ const OUT  = path.join(ROOT, 'dist');
 
 const contentHash = buf => crypto.createHash('sha256').update(buf).digest('hex').slice(0, 10);
 
+// The site's content policy (vercel.json) runs no inline JavaScript, so an
+// onclick="..." would silently do nothing in a browser. Buttons and inputs
+// name their action instead (data-click="fn", or act() in app.js), and only
+// actions listed in app.js's ACTIONS run. Fail the build on an inline handler,
+// or on an action that isn't listed.
+function checkPageActions(html, js) {
+  const problems = [];
+  const code = js.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n'); // not comments
+  for (const [file, text] of [['index.html', html], ['app.js', code]]) {
+    for (const m of text.matchAll(/(?:^|[\s'"`])(on[a-z]+)\s*=\s*["'\\]/g)) problems.push(`${file}: inline ${m[1]}= handler`);
+  }
+  const list = js.match(/\nconst ACTIONS = \{([\s\S]*?)\};/);
+  if (!list) return [...problems, 'app.js: no ACTIONS list'];
+  const listed = new Set(list[1].split(',').map(s => s.trim()).filter(Boolean));
+  const named = [
+    ...[html, js].flatMap(t => [...t.matchAll(/data-(?:click|change|input|blur|keydown|mousedown)="([A-Za-z_$][\w$]*)"/g)].map(m => m[1])),
+    ...[...js.matchAll(/act\('[a-z]+', '([A-Za-z_$][\w$]*)'/g)].map(m => m[1]),
+  ];
+  for (const n of new Set(named)) if (!listed.has(n)) problems.push(`action "${n}" isn't in ACTIONS`);
+  return problems;
+}
+
 (async () => {
+  const problems = checkPageActions(fs.readFileSync(path.join(SRC, 'index.html'), 'utf8'), fs.readFileSync(path.join(SRC, 'app.js'), 'utf8'));
+  if (problems.length) throw new Error('Page actions:\n  ' + problems.join('\n  '));
+
   fs.rmSync(OUT, { recursive: true, force: true });
   fs.cpSync(SRC, OUT, { recursive: true });
 
-  // Top-level names are left alone (terser's default for scripts): the page's
-  // onclick="..." attributes, and code that picks handlers by name, call them.
   const source = fs.readFileSync(path.join(SRC, 'app.js'), 'utf8');
   const { code } = await minify(source, { compress: true, mangle: true, format: { comments: false } });
   if (!code) throw new Error('terser produced no output');

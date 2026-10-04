@@ -2099,6 +2099,8 @@
 
   /* A character Blizzard confirmed is on this player's Battle.net account */
   .bnet-verified { color: #3fa9ff; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; cursor: help; }
+  /* Guild Members > + Assign: a character to pick */
+  .assign-option:hover { background: var(--bg4); }
 
   /* Add Character: name suggestions from Raider.io */
   .name-suggest-wrap { position: relative; }
