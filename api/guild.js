@@ -16,6 +16,7 @@ const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
 const { isGame, gameFor, teamDifficulty } = require('../lib/games');
 const { randomCode } = require('../lib/codes');
+const { checkGuildLeader, verificationFields } = require('../lib/guildVerification');
 
 // The regions RaidLead offers. A guild's region goes into Blizzard API hostnames
 // (lib/battleNet.js), so it must be one of these, never free text.
@@ -25,7 +26,7 @@ const badRegion = r => r != null && r !== '' && !REGIONS.includes(r);
 const TEAM_FIELDS = `id, name, guild_id, wcl_url, wcl_team_id, zone_id, zone_name,
   difficulty, raid_days, discord_guild_id, join_code, wcl_client_id, wcl_client_secret_enc,
   wowaudit_api_key_enc, wowaudit_api_key_hash,
-  guilds ( id, name, server, region, game )`;
+  guilds ( id, name, server, region, game, verification )`;
 
 // Strips encrypted secrets before a team row is ever sent to the client.
 function sanitizeTeam(team) {
@@ -179,10 +180,17 @@ module.exports = async (req, res) => {
     try {
       const normServer = server.trim().toLowerCase();
 
+      // Only someone who's the Guild Master or one of the next two ranks in
+      // this guild, per Blizzard, can put its name on a team -- a new guild
+      // or a new team under one (lib/guildVerification.js).
+      const check = await checkGuildLeader(supabase, session.id, { guild: guild.trim(), server: server.trim(), region: region || 'us', game });
+      if (!check.ok) return res.status(check.status).json({ error: check.error, code: check.code });
+      const guildName = check.guildName || guild.trim(); // Blizzard's spelling when it confirmed
+
       const { data: existingGuild } = await supabase
         .from('guilds')
         .select('id, name, server, region, game')
-        .ilike('name', guild.trim().replace(/[\\%_]/g, '\\$&'))
+        .ilike('name', guildName.replace(/[\\%_]/g, '\\$&'))
         .ilike('server', normServer)
         .eq('game', game)
         .maybeSingle();
@@ -202,7 +210,7 @@ module.exports = async (req, res) => {
         ? existingGuild.id
         : (await (async () => {
             const { data: g, error: ge } = await supabase.from('guilds')
-              .insert({ name: guild.trim(), server: normServer, region: region || 'us', game, created_by: session.id })
+              .insert({ name: guildName, server: normServer, region: region || 'us', game, created_by: session.id, ...verificationFields(check) })
               .select('id').single();
             if (ge) throw new Error(ge.message);
             return g.id;
@@ -289,9 +297,9 @@ module.exports = async (req, res) => {
       // The guild's name/server/region are shared by every team under it, and
       // anyone can start a team under an existing guild -- so changing them
       // takes the guild's creator, or someone who runs every team in it.
-      const next = { name: guild.trim(), server: server.trim().toLowerCase(), region: region || 'us' };
+      let next = { name: guild.trim(), server: server.trim().toLowerCase(), region: region || 'us' };
       const { data: guildRow } = await supabase
-        .from('guilds').select('name, server, region, created_by').eq('id', currentTeam.guild_id).single();
+        .from('guilds').select('name, server, region, game, created_by').eq('id', currentTeam.guild_id).single();
       const changed = guildRow && (guildRow.name !== next.name || guildRow.server !== next.server || (guildRow.region || 'us') !== next.region);
       if (changed && guildRow.created_by !== session.id) {
         const [{ data: siblings }, mine] = await Promise.all([
@@ -303,7 +311,15 @@ module.exports = async (req, res) => {
           return res.status(403).json({ error: "Other teams share this guild's name, server, and region, so only the person who created the guild can change them." });
         }
       }
-      if (changed) await supabase.from('guilds').update(next).eq('id', currentTeam.guild_id);
+      // A new name/server/region is a different guild: the same check as
+      // creating one, against what it would become (otherwise renaming would
+      // be a way around it).
+      if (changed) {
+        const check = await checkGuildLeader(supabase, session.id, { guild: next.name, server: server.trim(), region: next.region, game: guildRow.game || 'retail' });
+        if (!check.ok) return res.status(check.status).json({ error: check.error, code: check.code });
+        next = { ...next, name: check.guildName || next.name, ...verificationFields(check) };
+        await supabase.from('guilds').update(next).eq('id', currentTeam.guild_id);
+      }
 
       const { data, error } = await supabase
         .from('teams')

@@ -533,7 +533,8 @@ function showSetup() {
     set('inp-server',   titleCaseServer(s.server));
     set('inp-region',   s.region);
     const gameNote = document.getElementById('settings-game-note');
-    if (gameNote) gameNote.textContent = `Game: ${GAME.label}${GAME.beta ? ' (launches November 4)' : ''}`;
+    if (gameNote) gameNote.textContent = `Game: ${GAME.label}${GAME.beta ? ' (launches November 4)' : ''}`
+      + (s.verification === 'not_available' ? ` · Not verified with Blizzard -- its API doesn't cover ${GAME.label} yet.` : '');
     const wclLink = document.getElementById('wcl-clients-link');
     if (wclLink && GAME.sources.wclHost) {
       wclLink.href = `https://${GAME.sources.wclHost}.warcraftlogs.com/api/clients/`;
@@ -681,6 +682,7 @@ async function loadGuild() {
     });
     const data = await resp.json();
 
+    if (!resp.ok && data.code) { showGuildCheckProblem('setup-status', data); document.getElementById('load-btn').disabled = false; return; }
     if (!resp.ok) throw new Error(data.error || 'Failed to save changes');
     // Persist updated config to localStorage so refresh picks it up immediately
     localStorage.setItem('raidlead_config', JSON.stringify(STATE.config));
@@ -700,6 +702,17 @@ function setStatus(msg, type='') {
   const el = document.getElementById('setup-status');
   el.textContent = msg;
   el.className = 'status-msg ' + type;
+}
+
+// Why Blizzard didn't confirm this person can set the guild up (Create Guild,
+// or a new name/server/region in Guild Settings -- lib/guildVerification.js),
+// with a Sync from Battle.net button when their characters are what's missing.
+function showGuildCheckProblem(statusId, data) {
+  const el = document.getElementById(statusId);
+  const needsSync = data.code === 'NEED_BNET_CHARACTERS' || data.code === 'NOT_IN_GUILD';
+  el.innerHTML = escapeHtml(data.error || 'Blizzard could not confirm this guild.')
+    + (needsSync ? ` <button class="btn-secondary" style="padding:3px 10px; font-size:12px; margin-left:6px;" ${act('click', 'syncFromBattleNet')}>Sync from Battle.net</button>` : '');
+  el.className = 'status-msg error';
 }
 
 // ─────────────────────────────────────────────
@@ -5805,7 +5818,7 @@ async function createGuild(confirmNewTeam) {
     return;
   }
 
-  document.getElementById('gs-status').textContent = 'Creating guild...';
+  document.getElementById('gs-status').textContent = 'Checking with Blizzard...';
   document.getElementById('gs-status').className   = 'status-msg loading';
 
   try {
@@ -5834,6 +5847,7 @@ async function createGuild(confirmNewTeam) {
       return;
     }
 
+    if (!resp.ok && data.code) { showGuildCheckProblem('gs-status', data); return; }
     if (!resp.ok) throw new Error(data.error || 'Failed to create guild');
 
     if (isOnTeam() && data.team?.id && data.team.id !== STATE.teamId) {
@@ -6565,6 +6579,7 @@ function applyGuildData(guildData) {
     server:      t.guilds?.server || null,
     region:      t.guilds?.region || 'us',
     game:        game.id,
+    verification: t.guilds?.verification || null, // how Blizzard confirmed the guild (lib/guildVerification.js)
     difficulty:  t.difficulty || game.defaultDifficulty,
     wclUrl:      t.wcl_url || '',
     wclTeamId:   t.wcl_team_id || null,
