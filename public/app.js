@@ -541,7 +541,6 @@ function showSetup() {
     }
 
     set('inp-wcl-team',  s.wclTeamId);
-    set('inp-discord-guild', STATE.discordGuildId);
     renderDiscordConnectStatus();
     set('inp-wcl-client-id', s.wclClientId);
     renderWclCredsStatus();
@@ -1555,27 +1554,24 @@ async function saveRaidSchedule() {
   }
 }
 
-async function saveDiscordGuildId() {
-  const discordGuildId = document.getElementById('inp-discord-guild').value.trim();
-  const statusEl = document.getElementById('discord-guild-status');
-  statusEl.textContent = 'Saving...';
-  statusEl.className   = 'status-msg loading';
+// A team connects to a Discord server only through Connect to Discord, where
+// Discord itself checks the person can manage that server. This just unlinks
+// it (the bot stays in the server until someone removes it there).
+async function disconnectDiscord() {
+  if (!confirm('Disconnect this team from its Discord server? /attendance there stops working for this team until you connect again.')) return;
   try {
-    const resp = await fetch('/api/guild?action=setDiscordGuildId', {
+    const resp = await fetch('/api/guild?action=disconnectDiscord', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ teamId: STATE.teamId, discordGuildId }),
+      body: JSON.stringify({ teamId: STATE.teamId }),
     });
     const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || 'Failed to save');
-    STATE.discordGuildId = data.discordGuildId;
+    if (!resp.ok) throw new Error(data.error || 'Could not disconnect');
+    STATE.discordGuildId = null;
     renderDiscordConnectStatus();
-    statusEl.textContent = 'Saved!';
-    statusEl.className   = 'status-msg success';
-    setTimeout(() => { statusEl.textContent = ''; statusEl.className = 'status-msg'; }, 3000);
+    showToast('Disconnected from Discord', 'success');
   } catch(e) {
-    statusEl.textContent = 'Error: ' + e.message;
-    statusEl.className   = 'status-msg error';
+    showToast('Error: ' + e.message, 'error');
   }
 }
 
@@ -1583,7 +1579,8 @@ function renderDiscordConnectStatus() {
   const el = document.getElementById('discord-connect-status');
   if (!el) return;
   el.innerHTML = STATE.discordGuildId
-    ? `<span style="color:#5865F2;">🔗 Connected</span> <span style="color:var(--text-mute);">(Server ID: ${escapeHtml(STATE.discordGuildId)})</span>`
+    ? `<span style="color:#5865F2;">🔗 Connected</span> <span style="color:var(--text-mute);">(Server ID: ${escapeHtml(STATE.discordGuildId)})</span>
+       <button class="btn-secondary" style="padding:3px 10px; font-size:12px; margin-left:8px;" data-click="disconnectDiscord">Disconnect</button>`
     : '<span style="color:var(--text-mute);">Not connected yet.</span>';
 }
 
@@ -10202,26 +10199,26 @@ const ACTIONS = {
   closeSurveyModal, closeWowauditKeyPrompt, connectApplicationSheet, copyDiscordConnectLink, copyInviteLink,
   copyJoinCode, copyServiceEmail, copyShareUrl, copySurveyLink, copySurveyWaitingNames,
   copyTemplateFromSelect, copyTemplateRaw, createGuild, deleteLootItem, deleteLootRun, deleteRecruit,
-  deleteRecruitTemplate, deleteSeasonSurvey, disconnectApplicationSheet, dismissOfficerNudge,
-  dismissSeasonPrompt, dismissSurveyBanner, dismissZoneBanner, editProfileCharacter, enterEditMode,
-  exitEditMode, fetchCurrentScoreView, filterGuildRosterResults, generateJoinCode, importFromWowaudit,
-  importLastRaidRoster, joinAdd, joinGuildByCode, joinMove, joinMoveTo, joinRemove, joinRestore, keepFocus,
-  loadApplications, loadGuild, loadLootTab, navigatePlannerDate, onBackdrop, onCharacterNameKey, onEnter,
-  onProgressPullsBracketChange, onSeasonHistoryChange, openAddCharacterModal, openAddRaidNightModal,
-  openApplicationModal, openPlannerDatePicker, openProfileByName, openRaidScheduleModal,
-  openRecruitTemplateModal, openRolesTab, openSurveyEditor, openSurveyModal, pickGuildCharacter,
-  pickNameSuggestion, promoteApplication, promptSetMemberDiscordId, publishRaidPlan, queueRecruitDateSave,
-  reassignLootItem, rebuildCurrentScoreCache, refreshProgressTab, refreshRecruitScores, refreshRoster,
-  rejectApplication, rejectRecruit, releaseCharacterClaim, releaseMemberCharacter, reloadPage,
+  deleteRecruitTemplate, deleteSeasonSurvey, disconnectApplicationSheet, disconnectDiscord,
+  dismissOfficerNudge, dismissSeasonPrompt, dismissSurveyBanner, dismissZoneBanner, editProfileCharacter,
+  enterEditMode, exitEditMode, fetchCurrentScoreView, filterGuildRosterResults, generateJoinCode,
+  importFromWowaudit, importLastRaidRoster, joinAdd, joinGuildByCode, joinMove, joinMoveTo, joinRemove,
+  joinRestore, keepFocus, loadApplications, loadGuild, loadLootTab, navigatePlannerDate, onBackdrop,
+  onCharacterNameKey, onEnter, onProgressPullsBracketChange, onSeasonHistoryChange, openAddCharacterModal,
+  openAddRaidNightModal, openApplicationModal, openPlannerDatePicker, openProfileByName,
+  openRaidScheduleModal, openRecruitTemplateModal, openRolesTab, openSurveyEditor, openSurveyModal,
+  pickGuildCharacter, pickNameSuggestion, promoteApplication, promptSetMemberDiscordId, publishRaidPlan,
+  queueRecruitDateSave, reassignLootItem, rebuildCurrentScoreCache, refreshProgressTab, refreshRecruitScores,
+  refreshRoster, rejectApplication, rejectRecruit, releaseCharacterClaim, releaseMemberCharacter, reloadPage,
   removeCharacterFromModal, removeMember, removePlannerSwap, removeRaidNightFromCalendar, removeTeamMember,
   reopenSeasonSurvey, resetTierChecklist, resolveApplication, respondToCompanionPair, returnToTeam,
-  revokeConnectedDevice, saveApplicantColumnMap, saveCharacterModal, saveDiscordGuildId,
-  saveDisplayNameFromInput, saveFlexChange, saveRaidSchedule, saveRecruitSpecEdits, saveRecruitTemplate,
-  saveSurveyEditor, saveWclCredentials, saveWowauditKey, scheduleRecruitLookup, selectAllApplicants,
-  selectJoinOrderList, selectSeasonSurvey, setApplicantFilter, setAttendanceActingAs, setLootBindType,
-  setLootSubTab, setPlannerDate, setProgressDifficulty, setProgressRaid, setRecruitScoreDifficulty,
-  setRecruitScoreSort, setRecruitScoreView, setRecruitSpec, setRecruitSpecDraft, setRecruitStatusFilter,
-  setRecruitView, setRosterRankFilter, setScoreDifficulty, setScoreMetricMode, setScoreSort, setScoreView,
+  revokeConnectedDevice, saveApplicantColumnMap, saveCharacterModal, saveDisplayNameFromInput,
+  saveFlexChange, saveRaidSchedule, saveRecruitSpecEdits, saveRecruitTemplate, saveSurveyEditor,
+  saveWclCredentials, saveWowauditKey, scheduleRecruitLookup, selectAllApplicants, selectJoinOrderList,
+  selectSeasonSurvey, setApplicantFilter, setAttendanceActingAs, setLootBindType, setLootSubTab,
+  setPlannerDate, setProgressDifficulty, setProgressRaid, setRecruitScoreDifficulty, setRecruitScoreSort,
+  setRecruitScoreView, setRecruitSpec, setRecruitSpecDraft, setRecruitStatusFilter, setRecruitView,
+  setRosterRankFilter, setScoreDifficulty, setScoreMetricMode, setScoreSort, setScoreView,
   setSurveyIncludeUnsure, setSurveyResponseFilter, setTeamSubTab, showAddTeamScreen, showAssignCharacter,
   showGuildSetup, showInviteModal, showJoinGuildScreen, showLandingChoice, showMembersModal, showSetup,
   showTab, signOut, startAnotherGuild, startDiscordLink, startJoinOrderFromRoster, startRecruitSpecEdit,

@@ -1,7 +1,7 @@
 // ============================================================
 //  guild.js — handles guild + team actions
 //  Actions: get, create, addTeam, update, generateJoinCode,
-//           beginDiscordConnect, setDiscordGuildId, setWclCredentials,
+//           beginDiscordConnect, disconnectDiscord, setWclCredentials,
 //           setWowauditApiKey, setRaidSchedule, transferOwner
 //
 //  A "guild" (name/server/region) is a lightweight shared identity that one
@@ -369,22 +369,20 @@ module.exports = async (req, res) => {
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
-  // ── SET DISCORD GUILD ID: link a Discord server to THIS team manually (officers+) ──
-  if (action === 'setDiscordGuildId') {
+  // ── DISCONNECT DISCORD: unlink THIS team from its Discord server (officers+).
+  // There's deliberately no way to type in a server ID: a team links to a
+  // server only through beginDiscordConnect above, where Discord itself
+  // checks the person has Manage Server there. ──
+  if (action === 'disconnectDiscord') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
     try {
-      const { teamId, discordGuildId } = req.body;
+      const { teamId } = req.body;
       await assertTeamMembership(supabase, session.id, teamId, { requireOfficer: true });
 
-      const value = (discordGuildId || '').trim() || null;
-      if (value && !/^\d{5,25}$/.test(value)) {
-        return res.status(400).json({ error: 'That doesn\'t look like a Discord Server ID (should be a long number).' });
-      }
-
-      const { error } = await supabase.from('teams').update({ discord_guild_id: value }).eq('id', teamId);
+      const { error } = await supabase.from('teams').update({ discord_guild_id: null }).eq('id', teamId);
       if (error) throw error;
 
-      return res.status(200).json({ success: true, discordGuildId: value });
+      return res.status(200).json({ success: true });
     } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
   }
 
