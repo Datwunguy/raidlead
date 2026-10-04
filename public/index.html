@@ -302,9 +302,18 @@
     <div class="setup-card" style="max-width:580px;">
       <div class="setup-header">
         <h1>Create Your Guild</h1>
-        <p>You're signed in! Now set up your guild to get started. You can update these settings anytime.</p>
+        <p>Pick your guild -- RaidLead finds it from your Battle.net characters. You can update these settings anytime.</p>
       </div>
       <div class="setup-body">
+        <div class="form-row">
+          <div class="form-group full">
+            <label>Your Guild</label>
+            <div id="gs-my-guilds" class="my-guilds"></div>
+            <a href="#" class="my-guilds-manual" data-click="showManualGuildFields" data-click-args='["$event"]'>My guild isn't listed</a>
+          </div>
+        </div>
+        <!-- Typed in by hand: only when the guild isn't in the list (e.g. Forever, until Blizzard's API covers it) -->
+        <div id="gs-manual-fields" style="display:none;">
         <div class="form-row">
           <div class="form-group">
             <label>Guild Name</label>
@@ -332,6 +341,7 @@
             </select>
           </div>
         </div>
+        </div><!-- end gs-manual-fields -->
         <div class="form-row">
           <div class="form-group full">
             <label>Does your guild have more than one team?</label>
@@ -398,12 +408,19 @@
     <div class="setup-card" style="max-width:520px;">
       <div class="setup-header">
         <h1>Join a Guild</h1>
-        <p>Ask an officer for a join code or invite link to join their team.</p>
+        <p>Join a team in one of your guilds, or use an invite code or link from an officer.</p>
       </div>
       <div class="setup-body">
         <div class="form-row">
           <div class="form-group full">
-            <label>Join Code or Invite Link</label>
+            <label>Your Guilds on RaidLead</label>
+            <div id="jg-my-guilds" class="my-guilds"></div>
+            <div id="jg-my-guilds-status" class="status-msg" style="margin-top:8px;"></div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group full">
+            <label>Or a Join Code or Invite Link</label>
             <input type="text" id="jg-code" placeholder="e.g. K7XPQ2, or a pasted invite link" />
           </div>
         </div>

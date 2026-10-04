@@ -1,11 +1,12 @@
 // ============================================================
 //  auth.js — handles all authentication actions
-//  Actions: login, callback, session, join-guild
+//  Actions: login, callback, session, invite-info, join-guild, join-my-guild-team
 // ============================================================
 const { createClient } = require('@supabase/supabase-js');
 const { encodeSession, getSession, setCommonHeaders } = require('../lib/session');
 const { waitUntil } = require('@vercel/functions');
 const { recordSync, syncAccountCharacters, syncAccountClaims } = require('../lib/characterClaims');
+const { checkGuildMember } = require('../lib/guildVerification');
 
 // A sign-in that goes back through Battle.net asking it to show the approval
 // screen again (prompt=consent) carries this on the end of its OAuth state.
@@ -41,6 +42,21 @@ async function teamForJoinCode(supabase, accountId, joinCode) {
     return { status: last ? 429 : 404, error: last ? TOO_MANY_JOIN_CODES : 'Invalid join code.' };
   }
   return { team };
+}
+
+// Puts an account on a team -- by invite code or from the Join Guild list.
+// Everyone joins as a Viewer; if their Battle.net account has a character on
+// this roster, it's connected and they become a Member right away.
+async function joinTeam(supabase, accountId, teamId) {
+  const { data: existing } = await supabase
+    .from('team_members').select('id, role').eq('team_id', teamId).eq('account_id', accountId).maybeSingle();
+  if (existing) return { success: true, role: existing.role, alreadyMember: true, teamId };
+
+  await supabase.from('team_members').insert({ team_id: teamId, account_id: accountId, role: 'viewer' });
+  const connected = await syncAccountClaims(supabase, accountId);
+  const { data: joined } = await supabase
+    .from('team_members').select('role').eq('team_id', teamId).eq('account_id', accountId).maybeSingle();
+  return { success: true, role: joined?.role || 'viewer', teamId, connected };
 }
 
 module.exports = async (req, res) => {
@@ -251,23 +267,29 @@ module.exports = async (req, res) => {
     try {
       const found = await teamForJoinCode(supabase, session.id, joinCode);
       if (found.error) return res.status(found.status).json({ error: found.error });
-      const { team } = found;
+      return res.status(200).json(await joinTeam(supabase, session.id, found.team.id));
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
 
-      const { data: existing } = await supabase
-        .from('team_members')
-        .select('id, role')
-        .eq('team_id', team.id)
-        .eq('account_id', session.id)
-        .maybeSingle();
-      if (existing) return res.status(200).json({ success: true, role: existing.role, alreadyMember: true, teamId: team.id });
+  // ── JOIN MY GUILD'S TEAM: one click on the Join Guild screen's list -- no
+  // invite code, because Blizzard confirms they're in that team's guild (any
+  // rank; lib/guildVerification.js). Not for a version Blizzard's API doesn't
+  // cover yet -- those still take an invite. ──
+  if (action === 'join-my-guild-team') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const session = getSession(req);
+    if (!session) return res.status(401).json({ error: 'Not authenticated' });
+    const { teamId } = req.body || {};
+    if (!teamId) return res.status(400).json({ error: 'teamId required' });
 
-      // Everyone joins as a Viewer; if their Battle.net account has a character
-      // on this roster, it's connected and they become a Member right away.
-      await supabase.from('team_members').insert({ team_id: team.id, account_id: session.id, role: 'viewer' });
-      const connected = await syncAccountClaims(supabase, session.id);
-      const { data: joined } = await supabase
-        .from('team_members').select('role').eq('team_id', team.id).eq('account_id', session.id).maybeSingle();
-      return res.status(200).json({ success: true, role: joined?.role || 'viewer', teamId: team.id, connected });
+    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+    try {
+      const { data: team } = await supabase.from('teams').select('id, guilds ( name, server, region, game )').eq('id', teamId).maybeSingle();
+      if (!team?.guilds) return res.status(404).json({ error: 'That team no longer exists.' });
+      const g = team.guilds;
+      const check = await checkGuildMember(supabase, session.id, { guild: g.name, server: g.server, region: g.region || 'us', game: g.game || 'retail' });
+      if (!check.ok) return res.status(check.status).json({ error: check.error, code: check.code });
+      return res.status(200).json(await joinTeam(supabase, session.id, team.id));
     } catch (err) { return res.status(500).json({ error: err.message }); }
   }
 

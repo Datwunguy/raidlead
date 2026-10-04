@@ -1,6 +1,6 @@
 // ============================================================
 //  guild.js — handles guild + team actions
-//  Actions: get, create, addTeam, update, generateJoinCode,
+//  Actions: get, myGuilds, create, addTeam, update, generateJoinCode,
 //           beginDiscordConnect, disconnectDiscord, setWclCredentials,
 //           setWowauditApiKey, setRaidSchedule, transferOwner
 //
@@ -16,7 +16,7 @@ const { getMyTeams, assertTeamMembership } = require('../lib/teamAuth');
 const { ensureZoneName } = require('../lib/wclZone');
 const { isGame, gameFor, teamDifficulty } = require('../lib/games');
 const { randomCode } = require('../lib/codes');
-const { checkGuildLeader, verificationFields } = require('../lib/guildVerification');
+const { checkGuildLeader, verificationFields, listMyGuilds } = require('../lib/guildVerification');
 
 // The regions RaidLead offers. A guild's region goes into Blizzard API hostnames
 // (lib/battleNet.js), so it must be one of these, never free text.
@@ -167,6 +167,15 @@ module.exports = async (req, res) => {
 
   // ── CREATE: create a brand-new guild+team, OR (with confirmNewTeam) a new
   // sibling team under a guild that already exists by name+server ──
+  // ── MY GUILDS: the guilds the signed-in person's characters are in, per
+  // Blizzard -- their best rank in each, whether they can set it up here,
+  // and its RaidLead teams -- for the Create and Join screens. ──
+  if (action === 'myGuilds') {
+    try {
+      return res.status(200).json(await listMyGuilds(supabase, session.id));
+    } catch (err) { return res.status(500).json({ error: err.message }); }
+  }
+
   if (action === 'create') {
     const { guild, server, region, difficulty, teamName, wclTeamId, raidDays, confirmNewTeam } = req.body;
     // Which WoW version the guild plays -- a Retail and a Classic guild with the
@@ -178,14 +187,14 @@ module.exports = async (req, res) => {
     if (tooLong(guild, server, teamName)) return res.status(400).json({ error: 'Names must be 64 characters or fewer' });
 
     try {
-      const normServer = server.trim().toLowerCase();
-
       // Only someone who's the Guild Master or one of the next two ranks in
       // this guild, per Blizzard, can put its name on a team -- a new guild
       // or a new team under one (lib/guildVerification.js).
       const check = await checkGuildLeader(supabase, session.id, { guild: guild.trim(), server: server.trim(), region: region || 'us', game });
       if (!check.ok) return res.status(check.status).json({ error: check.error, code: check.code });
-      const guildName = check.guildName || guild.trim(); // Blizzard's spelling when it confirmed
+      // Blizzard's spelling of the guild and realm when it confirmed them
+      const guildName = check.guildName || guild.trim();
+      const normServer = (check.realmName || server).trim().toLowerCase();
 
       const { data: existingGuild } = await supabase
         .from('guilds')
@@ -317,7 +326,7 @@ module.exports = async (req, res) => {
       if (changed) {
         const check = await checkGuildLeader(supabase, session.id, { guild: next.name, server: server.trim(), region: next.region, game: guildRow.game || 'retail' });
         if (!check.ok) return res.status(check.status).json({ error: check.error, code: check.code });
-        next = { ...next, name: check.guildName || next.name, ...verificationFields(check) };
+        next = { ...next, name: check.guildName || next.name, server: (check.realmName || next.server).trim().toLowerCase(), ...verificationFields(check) };
         await supabase.from('guilds').update(next).eq('id', currentTeam.guild_id);
       }
 

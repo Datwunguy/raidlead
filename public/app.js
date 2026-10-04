@@ -5683,6 +5683,9 @@ function showGuildSetup() {
     document.getElementById('account-battletag').textContent  = AUTH.session.battletag;
     document.getElementById('dropdown-battletag').textContent = AUTH.session.battletag;
   }
+  // Your guilds from Battle.net; the typed fields stay tucked away unless yours isn't listed
+  document.getElementById('gs-manual-fields').style.display = 'none';
+  renderCreateGuildList();
 }
 
 function showLandingChoice() {
@@ -5725,6 +5728,7 @@ function showJoinGuildScreen() {
   document.getElementById('join-guild-screen').style.display  = 'flex';
   document.getElementById('jg-code-status').textContent = '';
   document.getElementById('jg-code-status').className   = 'status-msg';
+  renderJoinGuildList();
 }
 
 // Completes joining a guild by join code — hydrates STATE from the DB and
@@ -5737,7 +5741,12 @@ async function completeGuildJoin(joinCode) {
   });
   const joinData = await joinResp.json();
   if (!joinResp.ok) throw new Error(joinData.error || 'Failed to join guild');
+  MY_GUILDS = null; // your teams changed
+  await finishGuildJoin(joinData);
+}
 
+// After joining a team (invite code, or the Join Guild list): go to it.
+async function finishGuildJoin(joinData) {
   if (isOnTeam() && joinData.teamId && joinData.teamId !== STATE.teamId) {
     await switchActiveTeam(joinData.teamId);
     showToast(joinWelcomeMessage(), 'success');
@@ -5801,6 +5810,135 @@ function toggleTeamName(radio) {
   }
 }
 
+// ── Your guilds (Create / Join Guild) ────────────────────────────────────
+// The guilds your Battle.net characters are in, per Blizzard (api/guild.js
+// myGuilds): your best rank in each, whether you can set it up here (ranks
+// 0-2), and its RaidLead teams. Looked up once, shared by both screens.
+let MY_GUILDS = null;          // { needSync, incomplete, guilds } once loaded
+let MY_GUILDS_REQUEST = null;  // the lookup in flight
+
+function loadMyGuilds(refresh) {
+  if (MY_GUILDS && !refresh) return Promise.resolve(MY_GUILDS);
+  if (MY_GUILDS_REQUEST && !refresh) return MY_GUILDS_REQUEST;
+  MY_GUILDS_REQUEST = fetch('/api/guild?action=myGuilds', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(resp => resp.json().then(data => { if (!resp.ok) throw new Error(data.error || 'Could not look up your guilds'); return data; }))
+    .then(data => { MY_GUILDS = { needSync: !!data?.needSync, incomplete: !!data?.incomplete, guilds: Array.isArray(data?.guilds) ? data.guilds : [] }; return MY_GUILDS; })
+    .finally(() => { MY_GUILDS_REQUEST = null; });
+  return MY_GUILDS_REQUEST;
+}
+
+const myGuildWhere = g => `${g.realmName || g.realmSlug} (${String(g.region).toUpperCase()}) · ${GAMES_API.gameFor(g.game).label}`;
+const myGuildsRetry = () => `<button class="btn-secondary" ${act('click', 'refreshMyGuilds')}>Look again</button>`;
+
+// Both lists' shared states: still looking, couldn't look, no characters synced.
+// Returns the data to render, or null when one of those was shown instead.
+async function myGuildsOrMessage(el, refresh) {
+  el.innerHTML = '<div class="my-guilds-note">Looking up your guilds on Battle.net…</div>';
+  let data;
+  try { data = await loadMyGuilds(refresh); }
+  catch (e) { el.innerHTML = `<div class="my-guilds-note">${escapeHtml(e.message)} ${myGuildsRetry()}</div>`; return null; }
+  if (data.needSync) {
+    el.innerHTML = `<div class="my-guilds-note">RaidLead needs your characters from Battle.net to find your guilds. <button class="btn-secondary" ${act('click', 'syncFromBattleNet')}>Sync from Battle.net</button></div>`;
+    return null;
+  }
+  return data;
+}
+const myGuildsIncomplete = data => (data.incomplete
+  ? `<div class="my-guilds-note">Blizzard didn't answer for some of your characters, so a guild may be missing. ${myGuildsRetry()}</div>` : '');
+
+async function renderCreateGuildList(refresh) {
+  const el = document.getElementById('gs-my-guilds');
+  const data = await myGuildsOrMessage(el, refresh);
+  if (!data) return;
+  if (!data.guilds.length) {
+    el.innerHTML = `<div class="my-guilds-note">None of your characters are in a guild, according to Blizzard.</div>${myGuildsIncomplete(data)}`;
+    return;
+  }
+  el.innerHTML = data.guilds.map((g, i) => {
+    const who = g.character ? ` · ${g.character}, rank ${g.rank}` : '';
+    const note = !g.canCreate
+      ? (Number.isInteger(g.rank) ? `Only ranks 0–2 can set it up -- your best here is rank ${g.rank}.` : "Blizzard didn't answer for this guild -- look again in a minute.")
+      : g.teams.length ? `Already on RaidLead (${g.teams.map(t => t.name).join(', ')}) -- picking it starts another team.` : '';
+    return `<button type="button" class="my-guild" ${g.canCreate ? act('click', 'pickGuildToCreate', i, '$el') : 'disabled'}>
+      <div class="my-guild-name">${escapeHtml(g.name)}</div>
+      <div class="my-guild-sub">${escapeHtml(myGuildWhere(g) + who)}</div>
+      ${note ? `<div class="my-guild-note">${escapeHtml(note)}</div>` : ''}
+    </button>`;
+  }).join('') + myGuildsIncomplete(data);
+}
+
+// Fills the (hidden) typed fields Create Guild sends -- the server checks the
+// guild with Blizzard again either way.
+function pickGuildToCreate(i, el) {
+  const g = MY_GUILDS?.guilds?.[i];
+  if (!g) return;
+  document.querySelectorAll('#gs-my-guilds .my-guild').forEach(b => b.classList.toggle('selected', b === el));
+  document.getElementById('gs-guild').value  = g.name;
+  document.getElementById('gs-server').value = g.realmName || g.realmSlug;
+  document.getElementById('gs-region').value = g.region; // Blizzard's region (an Oceanic realm is US there)
+  document.getElementById('gs-game').value   = g.game;
+  document.getElementById('gs-manual-fields').style.display = 'none';
+  document.getElementById('gs-status').textContent = '';
+  document.getElementById('gs-status').className = 'status-msg';
+}
+
+function showManualGuildFields(e) {
+  e?.preventDefault?.();
+  document.querySelectorAll('#gs-my-guilds .my-guild.selected').forEach(b => b.classList.remove('selected'));
+  ['gs-guild', 'gs-server'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('gs-manual-fields').style.display = '';
+  document.getElementById('gs-guild').focus();
+}
+
+async function renderJoinGuildList(refresh) {
+  const el = document.getElementById('jg-my-guilds');
+  document.getElementById('jg-my-guilds-status').textContent = '';
+  const data = await myGuildsOrMessage(el, refresh);
+  if (!data) return;
+  const withTeams = data.guilds.filter(g => g.teams.length);
+  if (!withTeams.length) {
+    el.innerHTML = `<div class="my-guilds-note">None of your guilds have a RaidLead team yet -- create one, or use an invite code below.</div>${myGuildsIncomplete(data)}`;
+    return;
+  }
+  el.innerHTML = withTeams.map(g => `<div class="my-guild">
+      <div class="my-guild-name">${escapeHtml(g.name)}</div>
+      <div class="my-guild-sub">${escapeHtml(myGuildWhere(g))}</div>
+      ${g.teams.map(t => `<div class="my-guild-team"><span>${escapeHtml(t.name)}</span>${t.joined
+        ? '<span class="my-guild-joined">You\'re on this team</span>'
+        : `<button class="btn-primary" ${act('click', 'joinMyGuildTeam', t.teamId, '$el')}>Join</button>`}</div>`).join('')}
+    </div>`).join('') + myGuildsIncomplete(data);
+}
+
+function refreshMyGuilds() {
+  const showing = id => document.getElementById(id)?.style.display === 'flex';
+  if (showing('guild-setup-screen')) renderCreateGuildList(true);
+  if (showing('join-guild-screen')) renderJoinGuildList(true);
+}
+
+// One click: no invite code -- Blizzard confirms you're in the team's guild
+// (api/auth.js join-my-guild-team). You join as a Viewer, or a Member right
+// away when one of your characters is on its roster.
+async function joinMyGuildTeam(teamId, btn) {
+  const statusEl = document.getElementById('jg-my-guilds-status');
+  btn.disabled = true;
+  btn.textContent = 'Joining…';
+  try {
+    const resp = await fetch('/api/auth?action=join-my-guild-team', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ teamId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok && data.code) { showGuildCheckProblem('jg-my-guilds-status', data); btn.disabled = false; btn.textContent = 'Join'; return; }
+    if (!resp.ok) throw new Error(data.error || 'Could not join that team');
+    MY_GUILDS = null; // your teams changed
+    await finishGuildJoin(data);
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status-msg error';
+    btn.disabled = false;
+    btn.textContent = 'Join';
+  }
+}
+
 async function createGuild(confirmNewTeam) {
   const game       = document.getElementById('gs-game')?.value || 'retail';
   const guild      = document.getElementById('gs-guild').value.trim();
@@ -5813,7 +5951,9 @@ async function createGuild(confirmNewTeam) {
   const raidDays   = getRaidDaysFrom('gs-raid-days');
 
   if (!guild || !server) {
-    document.getElementById('gs-status').textContent = 'Please fill in Guild Name and Server.';
+    document.getElementById('gs-status').textContent = document.getElementById('gs-manual-fields').style.display === 'none'
+      ? "Pick your guild above, or choose \"My guild isn't listed\" and type it in."
+      : 'Please fill in Guild Name and Server.';
     document.getElementById('gs-status').className   = 'status-msg error';
     return;
   }
@@ -5849,6 +5989,7 @@ async function createGuild(confirmNewTeam) {
 
     if (!resp.ok && data.code) { showGuildCheckProblem('gs-status', data); return; }
     if (!resp.ok) throw new Error(data.error || 'Failed to create guild');
+    MY_GUILDS = null; // your teams changed
 
     if (isOnTeam() && data.team?.id && data.team.id !== STATE.teamId) {
       await switchActiveTeam(data.team.id);
@@ -10217,14 +10358,15 @@ const ACTIONS = {
   deleteRecruitTemplate, deleteSeasonSurvey, disconnectApplicationSheet, disconnectDiscord,
   dismissOfficerNudge, dismissSeasonPrompt, dismissSurveyBanner, dismissZoneBanner, editProfileCharacter,
   enterEditMode, exitEditMode, fetchCurrentScoreView, filterGuildRosterResults, generateJoinCode,
-  importFromWowaudit, importLastRaidRoster, joinAdd, joinGuildByCode, joinMove, joinMoveTo, joinRemove,
-  joinRestore, keepFocus, loadApplications, loadGuild, loadLootTab, navigatePlannerDate, onBackdrop,
-  onCharacterNameKey, onEnter, onProgressPullsBracketChange, onSeasonHistoryChange, openAddCharacterModal,
-  openAddRaidNightModal, openApplicationModal, openPlannerDatePicker, openProfileByName,
-  openRaidScheduleModal, openRecruitTemplateModal, openRolesTab, openSurveyEditor, openSurveyModal,
-  pickGuildCharacter, pickNameSuggestion, promoteApplication, promptSetMemberDiscordId, publishRaidPlan,
-  queueRecruitDateSave, reassignLootItem, rebuildCurrentScoreCache, refreshProgressTab, refreshRecruitScores,
-  refreshRoster, rejectApplication, rejectRecruit, releaseCharacterClaim, releaseMemberCharacter, reloadPage,
+  importFromWowaudit, importLastRaidRoster, joinAdd, joinGuildByCode, joinMove, joinMoveTo, joinMyGuildTeam,
+  joinRemove, joinRestore, keepFocus, loadApplications, loadGuild, loadLootTab, navigatePlannerDate,
+  onBackdrop, onCharacterNameKey, onEnter, onProgressPullsBracketChange, onSeasonHistoryChange,
+  openAddCharacterModal, openAddRaidNightModal, openApplicationModal, openPlannerDatePicker,
+  openProfileByName, openRaidScheduleModal, openRecruitTemplateModal, openRolesTab, openSurveyEditor,
+  openSurveyModal, pickGuildCharacter, pickGuildToCreate, pickNameSuggestion, promoteApplication,
+  promptSetMemberDiscordId, publishRaidPlan, queueRecruitDateSave, reassignLootItem,
+  rebuildCurrentScoreCache, refreshMyGuilds, refreshProgressTab, refreshRecruitScores, refreshRoster,
+  rejectApplication, rejectRecruit, releaseCharacterClaim, releaseMemberCharacter, reloadPage,
   removeCharacterFromModal, removeMember, removePlannerSwap, removeRaidNightFromCalendar, removeTeamMember,
   reopenSeasonSurvey, resetTierChecklist, resolveApplication, respondToCompanionPair, returnToTeam,
   revokeConnectedDevice, saveApplicantColumnMap, saveCharacterModal, saveDisplayNameFromInput,
@@ -10235,13 +10377,14 @@ const ACTIONS = {
   setRecruitScoreView, setRecruitSpec, setRecruitSpecDraft, setRecruitStatusFilter, setRecruitView,
   setRosterRankFilter, setScoreDifficulty, setScoreMetricMode, setScoreSort, setScoreView,
   setSurveyIncludeUnsure, setSurveyResponseFilter, setTeamSubTab, showAddTeamScreen, showAssignCharacter,
-  showGuildSetup, showInviteModal, showJoinGuildScreen, showLandingChoice, showMembersModal, showSetup,
-  showTab, signOut, startAnotherGuild, startDiscordLink, startJoinOrderFromRoster, startRecruitSpecEdit,
-  startSurveyFromPrompt, submitAddRaidNight, submitSurvey, surveyEditorAdd, surveyEditorAddOption,
-  surveyEditorMove, surveyEditorRefresh, surveyEditorRemove, surveyEditorRemoveOption, switchToDetectedZone,
-  syncFromBattleNet, titleCaseServerInput, toggleAccountMenu, toggleAddFromGuild, toggleApplicantSelected,
-  toggleApplicantSettings, toggleMobileNav, toggleMyAttendance, toggleSettingsTeam, toggleShowOrderJoined,
-  toggleTeamMenu, toggleTeamName, toggleTierCheck, toggleWowSyncExplainer, transferTeamOwnership,
-  undoApplicationDecision, updateDisplayNameSaveState, updateRecruitField, updateRoleFromDB,
-  updateSpecRoleLabel, updateSurveyFormVisibility, updateTemplateCharCount,
+  showGuildSetup, showInviteModal, showJoinGuildScreen, showLandingChoice, showManualGuildFields,
+  showMembersModal, showSetup, showTab, signOut, startAnotherGuild, startDiscordLink,
+  startJoinOrderFromRoster, startRecruitSpecEdit, startSurveyFromPrompt, submitAddRaidNight, submitSurvey,
+  surveyEditorAdd, surveyEditorAddOption, surveyEditorMove, surveyEditorRefresh, surveyEditorRemove,
+  surveyEditorRemoveOption, switchToDetectedZone, syncFromBattleNet, titleCaseServerInput, toggleAccountMenu,
+  toggleAddFromGuild, toggleApplicantSelected, toggleApplicantSettings, toggleMobileNav, toggleMyAttendance,
+  toggleSettingsTeam, toggleShowOrderJoined, toggleTeamMenu, toggleTeamName, toggleTierCheck,
+  toggleWowSyncExplainer, transferTeamOwnership, undoApplicationDecision, updateDisplayNameSaveState,
+  updateRecruitField, updateRoleFromDB, updateSpecRoleLabel, updateSurveyFormVisibility,
+  updateTemplateCharCount,
 };
